@@ -6,6 +6,7 @@ Strict buildingSMART IFC4 Schema compliance.
 
 import os
 import math
+import copy
 import uuid
 import tempfile
 import zipfile
@@ -117,6 +118,128 @@ class BimModelManager:
         }
         self.apply_georeferencing()
         self.load_constraints_from_ifc()
+
+    # ------------------------------------------------------------------
+    # Transactional state snapshots (GLM Master Spec v2.3 §3.2)
+    # A snapshot captures the complete IFC STEP text plus all in-memory
+    # tracking state. Entity references are excluded (they are re-resolved
+    # by GUID on restore, since they belong to the previous file object).
+    # ------------------------------------------------------------------
+    def snapshot_state(self) -> Dict[str, Any]:
+        def _clean_meta(meta: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
+            """Strips live entity refs; records their GlobalIds for re-attachment."""
+            safe: Dict[str, Any] = {}
+            refs: Dict[str, str] = {}
+            for k, v in meta.items():
+                if k == "entity" or k.endswith("_entity"):
+                    gid = getattr(v, "GlobalId", None)
+                    if gid:
+                        refs[k] = gid
+                    continue
+                safe[k] = copy.deepcopy(v)
+            return safe, refs
+
+        element_state, element_refs = {}, {}
+        for guid, meta in self.element_meta.items():
+            element_state[guid], element_refs[guid] = _clean_meta(meta)
+
+        levels_state, levels_refs = {}, {}
+        for lid, lv in self.levels.items():
+            levels_state[lid], levels_refs[lid] = _clean_meta(lv)
+
+        return {
+            "ifc_text": self.model.to_string(),
+            "element_meta": element_state,
+            "element_entity_refs": element_refs,
+            "levels": levels_state,
+            "levels_entity_refs": levels_refs,
+            "constraints": copy.deepcopy(self.constraints),
+            "join_policies": copy.deepcopy(self.join_policies),
+            "georeference_data": copy.deepcopy(self.georeference_data),
+            "project_name": self.project_name,
+        }
+
+    def restore_state(self, snap: Dict[str, Any]) -> None:
+        """Restores a full-state snapshot taken by snapshot_state()."""
+        self.model = ifcopenshell.file.from_string(snap["ifc_text"])
+
+        # Re-resolve structural entities
+        projects = self.model.by_type("IfcProject")
+        self.project = projects[0] if projects else None
+        sites = self.model.by_type("IfcSite")
+        self.site = sites[0] if sites else None
+        buildings = self.model.by_type("IfcBuilding")
+        self.building = buildings[0] if buildings else None
+
+        # Re-resolve representation contexts (recreate as fallback)
+        def _ctx(ctx_type: str, identifier: Optional[str]):
+            for c in self.model.by_type("IfcGeometricRepresentationContext"):
+                if getattr(c, "ContextType", None) != ctx_type:
+                    continue
+                cid = getattr(c, "ContextIdentifier", None)
+                if (identifier is None and cid in (None, "")) or (
+                    identifier is not None and cid == identifier
+                ):
+                    return c
+            return None
+
+        self.context_model = _ctx("Model", None)
+        self.context_body = _ctx("Model", "Body")
+        self.context_plan = _ctx("Plan", "FootPrint")
+        if self.context_model is None:
+            self.context_model = ifcopenshell.api.run(
+                "context.add_context", self.model, context_type="Model"
+            )
+        if self.context_body is None:
+            self.context_body = ifcopenshell.api.run(
+                "context.add_context",
+                self.model,
+                context_type="Model",
+                context_identifier="Body",
+                target_view="MODEL_VIEW",
+                parent=self.context_model,
+            )
+        if self.context_plan is None:
+            self.context_plan = ifcopenshell.api.run(
+                "context.add_context",
+                self.model,
+                context_type="Plan",
+                context_identifier="FootPrint",
+                target_view="PLAN_VIEW",
+                parent=self.context_model,
+            )
+
+        # Restore in-memory tracking and re-attach live entity references
+        self.element_meta = copy.deepcopy(snap["element_meta"])
+        element_refs = snap.get("element_entity_refs", {})
+        for guid, meta in self.element_meta.items():
+            try:
+                meta["entity"] = self.model.by_guid(guid)
+            except Exception:
+                meta.pop("entity", None)
+            for ref_key, ref_gid in element_refs.get(guid, {}).items():
+                try:
+                    meta[ref_key] = self.model.by_guid(ref_gid)
+                except Exception:
+                    pass  # referenced entity no longer exists (e.g. healed opening)
+
+        self.levels = copy.deepcopy(snap["levels"])
+        levels_refs = snap.get("levels_entity_refs", {})
+        for lid, lv in self.levels.items():
+            try:
+                lv["entity"] = self.model.by_guid(lid)
+            except Exception:
+                lv.pop("entity", None)
+            for ref_key, ref_gid in levels_refs.get(lid, {}).items():
+                try:
+                    lv[ref_key] = self.model.by_guid(ref_gid)
+                except Exception:
+                    pass
+
+        self.constraints = copy.deepcopy(snap["constraints"])
+        self.join_policies = copy.deepcopy(snap["join_policies"])
+        self.georeference_data = copy.deepcopy(snap["georeference_data"])
+        self.project_name = snap["project_name"]
 
     def add_level(self, name: str, elevation: float) -> str:
         """Adds an IfcBuildingStorey level."""
