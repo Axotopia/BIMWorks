@@ -383,6 +383,7 @@ class BimModelManager:
             "end0": {"allow_join": True, "mode": "butt"},
             "end1": {"allow_join": True, "mode": "butt"},
         }
+        self.recompute_wall_joins()
         return meta
 
     def add_door(
@@ -787,6 +788,8 @@ class BimModelManager:
                 except Exception as e:
                     print(f"Notice removing wall: {e}")
             del self.element_meta[guid]
+            # Neighbours may need to un-trim / re-trim at the removed junction
+            self.recompute_wall_joins()
             return True
 
         # Other elements
@@ -826,23 +829,9 @@ class BimModelManager:
             meta["end"][0] += dx
             meta["end"][1] += dy
             meta["end"][2] += dz
-
-            wall = meta["entity"]
-            matrix = np.identity(4)
-            cos_a = math.cos(meta["angle"])
-            sin_a = math.sin(meta["angle"])
-            matrix[0, 0] = cos_a
-            matrix[0, 1] = -sin_a
-            matrix[1, 0] = sin_a
-            matrix[1, 1] = cos_a
-            matrix[0, 3] = meta["start"][0]
-            matrix[1, 3] = meta["start"][1]
-            matrix[2, 3] = meta["start"][2]
-
-            ifcopenshell.api.run(
-                "geometry.edit_object_placement", self.model, product=wall, matrix=matrix
-            )
             translated = True
+            # Rebuild join-trimmed geometry and placement from the new baseline
+            self.recompute_wall_joins()
 
         elif ifc_class in ("IfcDoor", "IfcWindow"):
             # Move along wall
@@ -1083,10 +1072,314 @@ class BimModelManager:
             "allow_join": allow_join,
             "mode": mode if mode in ("butt", "miter", "square_off") else "butt",
         }
+        self.recompute_wall_joins()
         return self.join_policies[wall_guid]
 
     def get_wall_joins(self) -> Dict[str, Dict[str, Any]]:
         return self.join_policies
+
+    # =====================================================================
+    # WALL JOIN GEOMETRY ENGINE (GLM Master Spec v2.3 §3.3 Phase A)
+    # Computes trimmed footprint polygons per join type (miter via angle
+    # bisector half-plane clip; butt / square-off / T-junction via face-line
+    # clips) and rebuilds each wall's 3D representation as an extruded
+    # arbitrary profile. The 2D plan slice consumes the same polygons, so
+    # joined corners render without seam lines — matching Revit's plan
+    # cleanup semantics (butt is the default; per-endpoint Disallow Join).
+    # =====================================================================
+
+    _JOIN_TOL = 0.05          # endpoint coincidence tolerance (ft, ~15 mm)
+    _MITER_MIN_ANGLE = 15.0   # degrees; outside [15, 165] miter falls back to butt
+
+    @staticmethod
+    def _clip_poly_s(poly, sp, u, s_min=None, s_max=None):
+        """Clips a polygon to the slab s_min <= dot(p - sp, u) <= s_max.
+        Band lines are perpendicular to the baseline direction u."""
+        def proj(p):
+            return (p[0] - sp[0]) * u[0] + (p[1] - sp[1]) * u[1]
+
+        def clip_once(pts, limit, keep_less):
+            if not pts or limit is None:
+                return pts
+            out = []
+            n = len(pts)
+            for i in range(n):
+                a, b = pts[i], pts[(i + 1) % n]
+                sa, sb = proj(a) - limit, proj(b) - limit
+                in_a = (sa <= 0) if keep_less else (sa >= 0)
+                in_b = (sb <= 0) if keep_less else (sb >= 0)
+                if in_a:
+                    out.append(a)
+                if in_a != in_b:
+                    t = sa / (sa - sb)
+                    out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+            return out
+
+        pts = list(poly)
+        if s_min is not None:
+            pts = clip_once(pts, s_min, keep_less=False)
+        if s_max is not None:
+            pts = clip_once(pts, s_max, keep_less=True)
+        return pts
+
+    @staticmethod
+    def _clip_poly_line(poly, p0, d, keep_point):
+        """Clips a convex polygon against the half-plane bounded by the line
+        through p0 with direction d, keeping the side containing keep_point."""
+        n = (-d[1], d[0])
+        s0 = (keep_point[0] - p0[0]) * n[0] + (keep_point[1] - p0[1]) * n[1]
+        keep_sign = 1.0 if s0 >= 0 else -1.0
+
+        def side(p):
+            return ((p[0] - p0[0]) * n[0] + (p[1] - p0[1]) * n[1]) * keep_sign
+
+        out = []
+        N = len(poly)
+        for i in range(N):
+            a, b = poly[i], poly[(i + 1) % N]
+            sa, sb = side(a), side(b)
+            if sa >= 0:
+                out.append(a)
+            if (sa >= 0) != (sb >= 0):
+                t = sa / (sa - sb)
+                out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+        return out
+
+    def _wall_rect(self, meta):
+        """Plain (untrimmed) rectangular footprint of a wall, world XY."""
+        sp, ep = meta["start"], meta["end"]
+        ang = meta["angle"]
+        t = meta["thickness"]
+        nx, ny = -math.sin(ang) * (t / 2.0), math.cos(ang) * (t / 2.0)
+        return [
+            (sp[0] + nx, sp[1] + ny),
+            (ep[0] + nx, ep[1] + ny),
+            (ep[0] - nx, ep[1] - ny),
+            (sp[0] - nx, sp[1] - ny),
+        ]
+
+    def _find_join_partner(self, guid, end_index, walls):
+        """Finds the wall connected at this endpoint.
+        Returns (partner_guid, kind, partner_end_index) where kind is
+        'corner' (endpoint-to-endpoint) or 'tee' (endpoint on baseline), or None."""
+        meta = self.element_meta[guid]
+        E = (meta["start"][0], meta["start"][1]) if end_index == 0 else (meta["end"][0], meta["end"][1])
+
+        for other_guid, om in walls.items():
+            if other_guid == guid:
+                continue
+            osp, oep = om["start"], om["end"]
+            ox, oy = osp[0], osp[1]
+            oux, ouy = math.cos(om["angle"]), math.sin(om["angle"])
+            olen = om["length"]
+
+            # Corner: partner endpoint coincides with our endpoint
+            for oe in (0, 1):
+                P = (osp[0], osp[1]) if oe == 0 else (oep[0], oep[1])
+                if math.hypot(P[0] - E[0], P[1] - E[1]) <= self._JOIN_TOL:
+                    pol = self.join_policies.get(other_guid, {}).get(
+                        f"end{oe}", {"allow_join": True, "mode": "butt"})
+                    if pol.get("allow_join", True):
+                        return other_guid, "corner", oe
+
+            # Tee: our endpoint lies on the partner baseline (strictly inside)
+            qx = (E[0] - ox) * oux + (E[1] - oy) * ouy
+            qy = -(E[0] - ox) * ouy + (E[1] - oy) * oux
+            if 0.01 < qx < olen - 0.01 and abs(qy) <= self._JOIN_TOL + om["thickness"] / 2.0:
+                return other_guid, "tee", None
+        return None, None, None
+
+    def _partner_far_point(self, om, oe):
+        """The partner's endpoint opposite the shared corner."""
+        P = om["end"] if oe == 0 else om["start"]
+        return (P[0], P[1])
+
+    def recompute_wall_joins(self):
+        """Global pass: recomputes trimmed footprint polygons for all walls
+        from baseline + thickness + join policies, and rebuilds 3D
+        representations where the footprint changed. Also refreshes placements."""
+        walls = {
+            g: m for g, m in self.element_meta.items()
+            if m.get("ifc_class") == "IfcWallStandardCase" and "entity" in m
+        }
+        # creation order for deterministic butt "through wall" decisions
+        order = {g: i for i, g in enumerate(self.element_meta.keys())}
+
+        for guid, meta in walls.items():
+            sp, ep = meta["start"], meta["end"]
+            t = meta["thickness"]
+            ang = meta["angle"]
+            ux, uy = math.cos(ang), math.sin(ang)
+            poly = self._wall_rect(meta)
+
+            for end_index in (0, 1):
+                policy = self.join_policies.get(guid, {}).get(
+                    f"end{end_index}", {"allow_join": True, "mode": "butt"})
+                if not policy.get("allow_join", True):
+                    continue
+                E = (sp[0], sp[1]) if end_index == 0 else (ep[0], ep[1])
+                other = self._wall_rect_end_probe(meta, end_index)  # far-end centerline point
+                far = other
+
+                partner_guid, kind, oe = self._find_join_partner(guid, end_index, walls)
+                if not partner_guid:
+                    continue
+                om = walls[partner_guid]
+
+                if kind == "tee":
+                    # Butt into the partner's face (square-off cut: our end
+                    # stays square to our own wall).
+                    poly = self._clip_to_partner_face(meta, poly, om, far, E, square_off=True)
+                    continue
+
+                # Corner join
+                mode = policy.get("mode", "butt")
+                oend_pol = self.join_policies.get(partner_guid, {}).get(
+                    f"end{oe}", {"allow_join": True, "mode": "butt"})
+                omode = oend_pol.get("mode", "butt")
+
+                if mode == "miter" and omode == "miter":
+                    uW = (far[0] - E[0], far[1] - E[1])
+                    uXf = self._partner_far_point(om, oe)
+                    uX = (uXf[0] - E[0], uXf[1] - E[1])
+                    nw = math.hypot(*uW) or 1.0
+                    nxm = math.hypot(*uX) or 1.0
+                    uW = (uW[0] / nw, uW[1] / nw)
+                    uX = (uX[0] / nxm, uX[1] / nxm)
+                    dot = uW[0] * uX[0] + uW[1] * uX[1]
+                    angle_deg = math.degrees(math.acos(max(-1.0, min(1.0, dot))))
+                    if self._MITER_MIN_ANGLE <= angle_deg <= 180 - self._MITER_MIN_ANGLE:
+                        # Miter line = internal bisector of the two into-wall
+                        # directions through the shared point: it splits the
+                        # overlap wedge evenly between the two walls.
+                        bis = (uW[0] + uX[0], uW[1] + uX[1])
+                        nb = math.hypot(*bis)
+                        if nb > 1e-6:
+                            poly = self._clip_poly_line(poly, E, (bis[0] / nb, bis[1] / nb), far)
+                            continue
+                if mode == "square_off":
+                    poly = self._clip_to_partner_face(meta, poly, om, far, E, square_off=True)
+                    continue
+
+                # Butt: earlier-created wall runs through; later wall butts.
+                if order.get(guid, 0) < order.get(partner_guid, 0):
+                    continue  # we are the through wall — no trim
+                poly = self._clip_to_partner_face(meta, poly, om, far, E, square_off=False)
+
+            # Store footprint; rebuild representation if it changed
+            new_fp = [[round(x, 6), round(y, 6)] for x, y in poly]
+            if meta.get("footprint") != new_fp:
+                meta["footprint"] = new_fp
+                self._rebuild_wall_representation(guid)
+            else:
+                self._refresh_wall_placement(guid)
+
+    def _wall_rect_end_probe(self, meta, end_index):
+        """Centerline point at the opposite end from the join endpoint."""
+        sp, ep = meta["start"], meta["end"]
+        P = sp if end_index == 1 else ep
+        return (P[0], P[1])
+
+    def _clip_to_partner_face(self, meta, poly, om, far, E, square_off=False):
+        """Clips our polygon back to the partner wall's nearest face.
+        square_off=False: cut follows the partner's face line (plain butt).
+        square_off=True: cut is perpendicular to OUR baseline, through the
+        point where our centerline crosses the partner's face (Revit
+        'square-off' — the end remains square to its own wall)."""
+        osp, oep = om["start"], om["end"]
+        tX = om["thickness"]
+        oux, ouy = math.cos(om["angle"]), math.sin(om["angle"])
+        onx, ony = -ouy, oux
+
+        # Partner's two face lines; pick the one nearer to our body (far end)
+        cand = [
+            ((osp[0] + onx * tX / 2.0, osp[1] + ony * tX / 2.0), (oux, ouy)),
+            ((osp[0] - onx * tX / 2.0, osp[1] - ony * tX / 2.0), (oux, ouy)),
+        ]
+        face_p, face_d = min(
+            cand, key=lambda c: math.hypot(c[0][0] - far[0], c[0][1] - far[1])
+        )
+
+        if not square_off:
+            return self._clip_poly_line(poly, face_p, face_d, far)
+
+        # Square-off: perpendicular to our own baseline through the
+        # centerline/face intersection point.
+        ux, uy = math.cos(meta["angle"]), math.sin(meta["angle"])
+        Q = self._line_intersect(E, (ux, uy), face_p, (face_d[0], face_d[1]))
+        if Q is None:
+            return self._clip_poly_line(poly, face_p, face_d, far)
+        return self._clip_poly_line(poly, Q, (-uy, ux), far)
+
+    @staticmethod
+    def _line_intersect(p1, d1, p2, d2):
+        """Intersection of infinite lines p1+t*d1 and p2+s*d2, or None."""
+        det = d1[0] * d2[1] - d1[1] * d2[0]
+        if abs(det) < 1e-9:
+            return None
+        t = ((p2[0] - p1[0]) * d2[1] - (p2[1] - p1[1]) * d2[0]) / det
+        return (p1[0] + d1[0] * t, p1[1] + d1[1] * t)
+
+    def _refresh_wall_placement(self, guid):
+        meta = self.element_meta[guid]
+        wall = meta.get("entity")
+        if wall is None:
+            return
+        sp = meta["start"]
+        ang = meta["angle"]
+        matrix = np.identity(4)
+        cos_a, sin_a = math.cos(ang), math.sin(ang)
+        matrix[0, 0], matrix[0, 1] = cos_a, -sin_a
+        matrix[1, 0], matrix[1, 1] = sin_a, cos_a
+        matrix[0, 3], matrix[1, 3], matrix[2, 3] = sp[0], sp[1], sp[2]
+        ifcopenshell.api.run(
+            "geometry.edit_object_placement", self.model, product=wall, matrix=matrix
+        )
+
+    def _rebuild_wall_representation(self, guid):
+        """Rebuilds the wall's Body representation as an extruded arbitrary
+        profile from its (possibly join-trimmed) footprint polygon."""
+        meta = self.element_meta[guid]
+        wall = meta.get("entity")
+        if wall is None or not meta.get("footprint"):
+            return
+        sp = meta["start"]
+        ang = meta["angle"]
+        ca, sa = math.cos(ang), math.sin(ang)
+        # world -> wall-local (rotate by -angle around the baseline start)
+        local = [
+            ((x - sp[0]) * ca + (y - sp[1]) * sa,
+             -(x - sp[0]) * sa + (y - sp[1]) * ca)
+            for x, y in meta["footprint"]
+        ]
+        profile = ifcopenshell.api.run(
+            "profile.add_arbitrary_profile",
+            self.model,
+            profile=[[float(x), float(y)] for x, y in local],
+            name=f"Wall-Footprint-{guid}",
+        )
+        # remove old representations
+        old_rep = getattr(wall, "Representation", None)
+        if old_rep is not None:
+            for r in list(old_rep.Representations):
+                try:
+                    ifcopenshell.api.run(
+                        "geometry.remove_representation", self.model, representation=r
+                    )
+                except Exception:
+                    pass
+        rep = ifcopenshell.api.run(
+            "geometry.add_profile_representation",
+            self.model,
+            context=self.context_body,
+            profile=profile,
+            depth=float(meta["height"]),
+        )
+        ifcopenshell.api.run(
+            "geometry.assign_representation", self.model, product=wall, representation=rep
+        )
+        meta["representation_entity"] = rep
+        self._refresh_wall_placement(guid)
 
     def save_constraints_to_ifc(self):
         """
@@ -1275,17 +1568,17 @@ class BimModelManager:
                 # 2D offset normal vector
                 nx = -math.sin(ang) * (th / 2.0)
                 ny = math.cos(ang) * (th / 2.0)
+                ux, uy = math.cos(ang), math.sin(ang)
 
-                # Four corners of the wall footprint
-                c1 = (sp[0] + nx, sp[1] + ny)
-                c2 = (ep[0] + nx, ep[1] + ny)
-                c3 = (ep[0] - nx, ep[1] - ny)
-                c4 = (sp[0] - nx, sp[1] - ny)
+                # Join-trimmed footprint when available (GLM Spec §3.3 Phase A);
+                # falls back to the plain rectangle for legacy/external data.
+                footprint = meta.get("footprint") or self._wall_rect(meta)
+                footprint = [(float(p[0]), float(p[1])) for p in footprint]
 
                 # Check if wall has openings
                 openings = meta.get("hosted_openings", [])
                 if not openings:
-                    d = f"M {c1[0]:.3f} {c1[1]:.3f} L {c2[0]:.3f} {c2[1]:.3f} L {c3[0]:.3f} {c3[1]:.3f} L {c4[0]:.3f} {c4[1]:.3f} Z"
+                    d = "M " + " L ".join(f"{p[0]:.3f} {p[1]:.3f}" for p in footprint) + " Z"
                     target_paths.append({
                         "guid": guid,
                         "class": wall_class,
@@ -1293,36 +1586,45 @@ class BimModelManager:
                         "fill": wall_fill,
                     })
                 else:
-                    # Segment wall around door openings
-                    # Collect door segments along baseline
-                    sorted_openings = []
-                    for op_id in openings:
-                        op_meta = self.element_meta.get(op_id, {})
-                        offset = op_meta.get("offset_along_wall", 0.0)
-                        w = op_meta.get("width", 0.95)
-                        op_type = op_meta.get("ifc_class", "IfcDoor")
-                        sorted_openings.append((offset, w, op_type, op_id, op_meta))
-                    sorted_openings.sort(key=lambda x: x[0])
+                    # Segment wall around openings by clipping the (possibly
+                    # join-trimmed) footprint with each opening's perpendicular
+                    # band lines — preserves mitered/butted corner cuts.
+                    banded = sorted(
+                        (
+                            (
+                                om.get("offset_along_wall", 0.0),
+                                om.get("offset_along_wall", 0.0) + om.get("width", 0.95),
+                                om.get("ifc_class", "IfcDoor"),
+                                op_id,
+                                om,
+                            )
+                            for op_id, om in (
+                                (op_id, self.element_meta.get(op_id, {}))
+                                for op_id in openings
+                            )
+                        ),
+                        key=lambda x: x[0],
+                    )
+                    pieces = [footprint]
+                    for s0, s1, op_type, op_id, op_meta in banded:
+                        nxt = []
+                        for piece in pieces:
+                            nxt.extend(self._clip_poly_s(piece, sp, (ux, uy), s_max=s0))
+                            nxt.extend(self._clip_poly_s(piece, sp, (ux, uy), s_min=s1))
+                        pieces = nxt
+                    for piece in pieces:
+                        if len(piece) < 3:
+                            continue
+                        d = "M " + " L ".join(f"{p[0]:.3f} {p[1]:.3f}" for p in piece) + " Z"
+                        target_paths.append({
+                            "guid": guid,
+                            "class": wall_class,
+                            "d": d,
+                            "fill": wall_fill,
+                        })
 
-                    current_pos = 0.0
-                    for offset, w, op_type, op_id, op_meta in sorted_openings:
-                        # Segment before opening
-                        if offset > current_pos:
-                            seg_len = offset - current_pos
-                            p_start = (sp[0] + math.cos(ang) * current_pos, sp[1] + math.sin(ang) * current_pos)
-                            p_end = (sp[0] + math.cos(ang) * offset, sp[1] + math.sin(ang) * offset)
-
-                            sc1 = (p_start[0] + nx, p_start[1] + ny)
-                            sc2 = (p_end[0] + nx, p_end[1] + ny)
-                            sc3 = (p_end[0] - nx, p_end[1] - ny)
-                            sc4 = (p_start[0] - nx, p_start[1] - ny)
-                            d = f"M {sc1[0]:.3f} {sc1[1]:.3f} L {sc2[0]:.3f} {sc2[1]:.3f} L {sc3[0]:.3f} {sc3[1]:.3f} L {sc4[0]:.3f} {sc4[1]:.3f} Z"
-                            target_paths.append({
-                                "guid": guid,
-                                "class": wall_class,
-                                "d": d,
-                                "fill": wall_fill,
-                            })
+                    for s0, s1, op_type, op_id, op_meta in banded:
+                        offset, w = s0, s1 - s0
 
                         # Door / Window representation in plan
                         op_pt = (sp[0] + math.cos(ang) * offset, sp[1] + math.sin(ang) * offset)
@@ -1379,25 +1681,6 @@ class BimModelManager:
                                 "class": "IfcWindow glass",
                                 "d": f"M {op_pt[0]:.3f} {op_pt[1]:.3f} L {op_end_pt[0]:.3f} {op_end_pt[1]:.3f}",
                             })
-
-                        current_pos = offset + w
-
-                    # Segment after last opening
-                    if current_pos < length:
-                        p_start = (sp[0] + math.cos(ang) * current_pos, sp[1] + math.sin(ang) * current_pos)
-                        p_end = ep
-
-                        sc1 = (p_start[0] + nx, p_start[1] + ny)
-                        sc2 = (p_end[0] + nx, p_end[1] + ny)
-                        sc3 = (p_end[0] - nx, p_end[1] - ny)
-                        sc4 = (p_start[0] - nx, p_start[1] - ny)
-                        d = f"M {sc1[0]:.3f} {sc1[1]:.3f} L {sc2[0]:.3f} {sc2[1]:.3f} L {sc3[0]:.3f} {sc3[1]:.3f} L {sc4[0]:.3f} {sc4[1]:.3f} Z"
-                        target_paths.append({
-                            "guid": guid,
-                            "class": wall_class,
-                            "d": d,
-                            "fill": wall_fill,
-                        })
 
                 # Aligned dimensions along wall
                 dimensions_list.append({
