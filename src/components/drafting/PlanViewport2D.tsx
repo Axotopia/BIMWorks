@@ -18,7 +18,10 @@ export const PlanViewport2D: React.FC = () => {
     setAlignPickState,
     createAlignConstraint,
     setActiveTool,
+    elements,
   } = useBimStore();
+
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const handleElementClick = (guid: string) => {
     if (activeTool === 'AL') {
@@ -33,7 +36,7 @@ export const PlanViewport2D: React.FC = () => {
   };
 
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 300, y: 300 });
-  const [scale, setScale] = useState<number>(38); // 38 pixels per meter
+  const [scale, setScale] = useState<number>(38); // pixels per meter
   const isPanningRef = useRef<boolean>(false);
   const startMouseRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
@@ -64,42 +67,45 @@ export const PlanViewport2D: React.FC = () => {
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
     const factor = e.deltaY > 0 ? 0.9 : 1.1;
-    setScale((s) => Math.max(10, Math.min(250, s * factor)));
+    setScale((s) => Math.max(8, Math.min(250, s * factor)));
   };
 
   const fit2DToExtents = useCallback(() => {
     if (!sliced2D) return;
-    const allPaths = [...(sliced2D.cut_paths || []), ...(sliced2D.projection_paths || [])];
-    if (allPaths.length === 0) {
+    const pathsToFit = (sliced2D.cut_paths && sliced2D.cut_paths.length > 0)
+      ? sliced2D.cut_paths
+      : [...(sliced2D.projection_paths || []), ...(sliced2D.slabs || [])];
+
+    if (pathsToFit.length === 0) {
       setPan({ x: 350, y: 320 });
       setScale(40);
       return;
     }
+
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    allPaths.forEach((p) => {
-      const nums = p.d.match(/-?\d+(\.\d+)?/g);
-      if (nums) {
-        for (let i = 0; i < nums.length - 1; i += 2) {
-          const x = parseFloat(nums[i]);
-          const y = parseFloat(nums[i + 1]);
-          if (!isNaN(x) && !isNaN(y)) {
-            minX = Math.min(minX, x);
-            maxX = Math.max(maxX, x);
-            minY = Math.min(minY, y);
-            maxY = Math.max(maxY, y);
-          }
+    pathsToFit.forEach((p) => {
+      const matches = p.d.matchAll(/([ML])\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/g);
+      for (const m of matches) {
+        const x = parseFloat(m[2]);
+        const y = parseFloat(m[3]);
+        if (!isNaN(x) && !isNaN(y)) {
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
         }
       }
     });
-    if (minX !== Infinity) {
+
+    if (minX !== Infinity && maxX > minX && maxY > minY) {
       const cx = (minX + maxX) / 2;
       const cy = (minY + maxY) / 2;
-      const w = Math.max(maxX - minX, 2);
-      const h = Math.max(maxY - minY, 2);
-      const containerW = 800;
-      const containerH = 600;
-      const fitScale = Math.min(containerW / (w * 1.4), containerH / (h * 1.4));
-      const newScale = Math.max(5, Math.min(100, fitScale));
+      const w = Math.max(maxX - minX, 1);
+      const h = Math.max(maxY - minY, 1);
+      const containerW = containerRef.current?.clientWidth || 800;
+      const containerH = containerRef.current?.clientHeight || 600;
+      const fitScale = Math.min((containerW * 0.78) / w, (containerH * 0.78) / h);
+      const newScale = Math.max(10, Math.min(150, fitScale));
       setScale(newScale);
       setPan({
         x: containerW / 2 - cx * newScale,
@@ -118,6 +124,7 @@ export const PlanViewport2D: React.FC = () => {
 
   return (
     <div
+      ref={containerRef}
       className="relative w-full h-full bg-[#ffffff] overflow-hidden select-none cursor-grab active:cursor-grabbing"
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
@@ -154,7 +161,8 @@ export const PlanViewport2D: React.FC = () => {
               d={slab.d}
               className={slab.class}
               stroke="#cbd5e1"
-              strokeWidth="0.05"
+              strokeWidth="1"
+              vectorEffect="non-scaling-stroke"
               fill="#f8fafc"
             />
           ))}
@@ -165,8 +173,9 @@ export const PlanViewport2D: React.FC = () => {
               <path
                 d={grid.d}
                 stroke="#64748b"
-                strokeWidth="0.04"
-                strokeDasharray="0.3, 0.15, 0.05, 0.15"
+                strokeWidth="1.2"
+                vectorEffect="non-scaling-stroke"
+                strokeDasharray="8 4 2 4"
               />
               {/* Grid Bubble Circle */}
               <circle
@@ -175,7 +184,8 @@ export const PlanViewport2D: React.FC = () => {
                 r="0.5"
                 fill="#ffffff"
                 stroke="#0f172a"
-                strokeWidth="0.05"
+                strokeWidth="1.5"
+                vectorEffect="non-scaling-stroke"
               />
               {/* Inverted text scale to render right-side up */}
               <text
@@ -202,8 +212,11 @@ export const PlanViewport2D: React.FC = () => {
                 key={`cut-${idx}`}
                 d={p.d}
                 stroke={isSelected ? '#0284c7' : '#0f172a'}
-                strokeWidth={isSelected ? '0.08' : '0.06'}
-                fill={isSelected ? '#bae6fd' : p.fill || '#e2e8f0'}
+                strokeWidth={isSelected ? '2.5' : '1.75'}
+                vectorEffect="non-scaling-stroke"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                fill={isSelected ? '#bae6fd' : '#e2e8f0'}
                 onClick={(e) => {
                   e.stopPropagation();
                   handleElementClick(p.guid);
@@ -213,14 +226,15 @@ export const PlanViewport2D: React.FC = () => {
             );
           })}
 
-          {/* 4. Projections (Sills, Jambs) */}
+          {/* 4. Projections (Sills, Jambs, Sliding panels) */}
           {sliced2D?.projection_paths.map((p, idx) => (
             <path
               key={`proj-${idx}`}
               d={p.d}
               className={p.class}
               stroke="#334155"
-              strokeWidth="0.03"
+              strokeWidth="1.2"
+              vectorEffect="non-scaling-stroke"
               fill="none"
             />
           ))}
@@ -232,7 +246,8 @@ export const PlanViewport2D: React.FC = () => {
               d={p.d}
               className={p.class}
               stroke="#2563eb"
-              strokeWidth="0.025"
+              strokeWidth="1.2"
+              vectorEffect="non-scaling-stroke"
               fill="none"
             />
           ))}
@@ -270,7 +285,8 @@ export const PlanViewport2D: React.FC = () => {
                   x2={dim.start[0] + dx * 1.15}
                   y2={dim.start[1] + dy * 1.15}
                   stroke="#94a3b8"
-                  strokeWidth="0.015"
+                  strokeWidth="1"
+                  vectorEffect="non-scaling-stroke"
                 />
                 <line
                   x1={dim.end[0]}
@@ -278,7 +294,8 @@ export const PlanViewport2D: React.FC = () => {
                   x2={dim.end[0] + dx * 1.15}
                   y2={dim.end[1] + dy * 1.15}
                   stroke="#94a3b8"
-                  strokeWidth="0.015"
+                  strokeWidth="1"
+                  vectorEffect="non-scaling-stroke"
                 />
 
                 {/* Dimension line */}
@@ -288,7 +305,8 @@ export const PlanViewport2D: React.FC = () => {
                   x2={dim.end[0] + dx}
                   y2={dim.end[1] + dy}
                   stroke={isSelected ? '#0284c7' : '#64748b'}
-                  strokeWidth="0.02"
+                  strokeWidth="1.2"
+                  vectorEffect="non-scaling-stroke"
                 />
 
                 {/* Dimension Text */}
@@ -319,12 +337,13 @@ export const PlanViewport2D: React.FC = () => {
                       }
                     }}
                   >
-                    <circle cx="0" cy="0" r="0.14" fill={isLocked ? '#0284c7' : '#e2e8f0'} stroke="#0284c7" strokeWidth="0.02" />
+                    <circle cx="0" cy="0" r="0.14" fill={isLocked ? '#0284c7' : '#e2e8f0'} stroke="#0284c7" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
                     <rect x="-0.06" y="-0.05" width="0.12" height="0.10" rx="0.02" fill={isLocked ? '#ffffff' : '#475569'} />
                     <path
                       d={isLocked ? "M -0.04 -0.05 A 0.04 0.04 0 0 1 0.04 -0.05" : "M -0.04 -0.05 A 0.04 0.04 0 0 1 0.04 -0.09"}
                       stroke={isLocked ? '#ffffff' : '#475569'}
-                      strokeWidth="0.02"
+                      strokeWidth="1.5"
+                      vectorEffect="non-scaling-stroke"
                       fill="none"
                     />
                   </g>
@@ -348,7 +367,8 @@ export const PlanViewport2D: React.FC = () => {
                       rx="0.04"
                       fill={isEq ? '#0284c7' : '#ffffff'}
                       stroke="#0284c7"
-                      strokeWidth="0.02"
+                      strokeWidth="1.5"
+                      vectorEffect="non-scaling-stroke"
                     />
                     <text
                       x="0"
@@ -371,21 +391,34 @@ export const PlanViewport2D: React.FC = () => {
           {constraints
             .filter((c) => c.type === 'align')
             .map((c) => {
+              const elemA = elements[c.guid_a];
+              const elemB = elements[c.guid_b];
+              if (!elemA && !elemB) return null;
+              const posA = elemA?.start || [0, 0];
+              const posB = elemB?.start || posA;
+              const mx = (posA[0] + posB[0]) / 2;
+              const my = (posA[1] + posB[1]) / 2;
+              const isX = c.axis === 'x';
+              const x1 = isX ? mx : Math.min(posA[0], posB[0]) - 2;
+              const x2 = isX ? mx : Math.max(posA[0], posB[0]) + 2;
+              const y1 = isX ? Math.min(posA[1], posB[1]) - 2 : my;
+              const y2 = isX ? Math.max(posA[1], posB[1]) + 2 : my;
               return (
                 <g key={`align-${c.id}`}>
                   {/* Alignment guide line */}
                   <line
-                    x1="-5"
-                    y1="0"
-                    x2="18"
-                    y2="0"
+                    x1={x1}
+                    y1={y1}
+                    x2={x2}
+                    y2={y2}
                     stroke="#38bdf8"
-                    strokeWidth="0.03"
-                    strokeDasharray="0.3, 0.2"
+                    strokeWidth="1.5"
+                    vectorEffect="non-scaling-stroke"
+                    strokeDasharray="6 3"
                   />
                   {/* Alignment Padlock */}
                   <g
-                    transform="translate(6, 0.4) scale(1, -1)"
+                    transform={`translate(${mx}, ${my}) scale(1, -1)`}
                     className="cursor-pointer"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -395,23 +428,25 @@ export const PlanViewport2D: React.FC = () => {
                     <circle
                       cx="0"
                       cy="0"
-                      r="0.25"
+                      r="0.22"
                       fill={c.is_locked ? '#0284c7' : '#ffffff'}
                       stroke="#0284c7"
-                      strokeWidth="0.03"
+                      strokeWidth="1.5"
+                      vectorEffect="non-scaling-stroke"
                     />
                     <rect
-                      x="-0.10"
-                      y="-0.09"
-                      width="0.20"
-                      height="0.18"
+                      x="-0.08"
+                      y="-0.07"
+                      width="0.16"
+                      height="0.14"
                       rx="0.02"
                       fill={c.is_locked ? '#ffffff' : '#0284c7'}
                     />
                     <path
-                      d="M -0.07 -0.09 A 0.07 0.07 0 0 1 0.07 -0.09"
+                      d="M -0.05 -0.07 A 0.05 0.05 0 0 1 0.05 -0.07"
                       stroke={c.is_locked ? '#ffffff' : '#0284c7'}
-                      strokeWidth="0.03"
+                      strokeWidth="1.5"
+                      vectorEffect="non-scaling-stroke"
                       fill="none"
                     />
                   </g>

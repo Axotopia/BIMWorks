@@ -720,10 +720,13 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           projectName: data.project_name || filename,
           isLoadingFile: false,
           statusMessage: `Successfully loaded ${filename} (${data.elements_count} elements, ${data.levels_count} levels)`,
+          selectedGuid: null,
+          hoveredGuid: null,
         });
         await get().fetchGeometry();
         await get().fetch2DSlice();
         await get().fetchProjectState();
+        await get().fetchConstraints();
         return true;
       } else {
         const err = await res.json().catch(() => ({ detail: 'Unknown error' }));

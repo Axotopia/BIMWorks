@@ -1616,22 +1616,22 @@ class BimModelManager:
                     # Segment wall around openings by clipping the (possibly
                     # join-trimmed) footprint with each opening's perpendicular
                     # band lines — preserves mitered/butted corner cuts.
-                    banded = sorted(
-                        (
-                            (
-                                om.get("offset_along_wall", 0.0),
-                                om.get("offset_along_wall", 0.0) + om.get("width", 0.95),
-                                om.get("ifc_class", "IfcDoor"),
-                                op_id,
-                                om,
-                            )
-                            for op_id, om in (
-                                (op_id, self.element_meta.get(op_id, {}))
-                                for op_id in openings
-                            )
-                        ),
-                        key=lambda x: x[0],
-                    )
+                    banded = []
+                    for op_id in openings:
+                        om = self.element_meta.get(op_id)
+                        if not om:
+                            continue
+                        offset = om.get("offset_along_wall", 0.0)
+                        w = om.get("width", 0.90)
+                        if w <= 0.05 or offset < 0:
+                            continue
+                        s0 = max(0.0, min(length, offset))
+                        s1 = max(0.0, min(length, offset + w))
+                        if s1 - s0 < 0.08:
+                            continue
+                        banded.append((s0, s1, om.get("ifc_class", "IfcDoor"), op_id, om))
+                    banded.sort(key=lambda x: x[0])
+
                     pieces = [footprint]
                     for s0, s1, op_type, op_id, op_meta in banded:
                         nxt = []
@@ -1674,26 +1674,36 @@ class BimModelManager:
                                 "d": f"M {op_end_pt[0] + nx:.3f} {op_end_pt[1] + ny:.3f} L {op_end_pt[0] - nx:.3f} {op_end_pt[1] - ny:.3f}",
                             })
 
-                            # Standard 90-degree Door swing arc + door panel
-                            swing_flip = op_meta.get("swing_flipped", False)
-                            swing_sign = -1.0 if swing_flip else 1.0
-                            panel_end = (
-                                op_pt[0] - math.sin(ang) * w * swing_sign,
-                                op_pt[1] + math.cos(ang) * w * swing_sign,
-                            )
-                            # Door panel line
-                            svg_swing_paths.append({
-                                "guid": op_id,
-                                "class": "IfcDoor swing-panel",
-                                "d": f"M {op_pt[0]:.3f} {op_pt[1]:.3f} L {panel_end[0]:.3f} {panel_end[1]:.3f}",
-                            })
-                            # Door swing quarter arc
-                            sweep = 0 if swing_flip else 1
-                            svg_swing_paths.append({
-                                "guid": op_id,
-                                "class": "IfcDoor swing",
-                                "d": f"M {panel_end[0]:.3f} {panel_end[1]:.3f} A {w:.3f} {w:.3f} 0 0 {sweep} {op_end_pt[0]:.3f} {op_end_pt[1]:.3f}",
-                            })
+                            door_name = (op_meta.get("name") or "").lower()
+                            is_sliding = "slide" in door_name or "pocket" in door_name or "closet" in door_name
+                            is_overhead = "garage" in door_name or "overhead" in door_name or w > 2.5
+
+                            if is_sliding or is_overhead:
+                                # Sliding / Pocket / Overhead door: drawn along wall opening centerline
+                                svg_projection_paths.append({
+                                    "guid": op_id,
+                                    "class": "IfcDoor sliding-panel",
+                                    "d": f"M {op_pt[0]:.3f} {op_pt[1]:.3f} L {op_end_pt[0]:.3f} {op_end_pt[1]:.3f}",
+                                })
+                            else:
+                                # Standard swinging door: 90-degree swing arc + door panel
+                                swing_flip = op_meta.get("swing_flipped", False)
+                                swing_sign = -1.0 if swing_flip else 1.0
+                                panel_end = (
+                                    op_pt[0] - math.sin(ang) * w * swing_sign,
+                                    op_pt[1] + math.cos(ang) * w * swing_sign,
+                                )
+                                svg_swing_paths.append({
+                                    "guid": op_id,
+                                    "class": "IfcDoor swing-panel",
+                                    "d": f"M {op_pt[0]:.3f} {op_pt[1]:.3f} L {panel_end[0]:.3f} {panel_end[1]:.3f}",
+                                })
+                                sweep = 0 if swing_flip else 1
+                                svg_swing_paths.append({
+                                    "guid": op_id,
+                                    "class": "IfcDoor swing",
+                                    "d": f"M {panel_end[0]:.3f} {panel_end[1]:.3f} A {w:.3f} {w:.3f} 0 0 {sweep} {op_end_pt[0]:.3f} {op_end_pt[1]:.3f}",
+                                })
                         elif op_type == "IfcWindow":
                             # Window sill projection and glass center lines
                             svg_projection_paths.append({
@@ -2020,12 +2030,12 @@ class BimModelManager:
                     }
 
         # 5. Map Voids and Fills for door/window hosting
-        wall_to_openings: Dict[str, List[str]] = {}
+        wall_to_voids: Dict[str, List[str]] = {}
         for rel in self.model.by_type("IfcRelVoidsElement"):
             if hasattr(rel, "RelatingBuildingElement") and hasattr(rel, "RelatedOpeningElement"):
                 w_guid = rel.RelatingBuildingElement.GlobalId
                 op_guid = rel.RelatedOpeningElement.GlobalId
-                wall_to_openings.setdefault(w_guid, []).append(op_guid)
+                wall_to_voids.setdefault(w_guid, []).append(op_guid)
 
         opening_to_filling: Dict[str, str] = {}
         for rel in self.model.by_type("IfcRelFillsElement"):
@@ -2034,11 +2044,13 @@ class BimModelManager:
                 fill_guid = rel.RelatedBuildingElement.GlobalId
                 opening_to_filling[op_guid] = fill_guid
 
+        wall_to_fills: Dict[str, List[str]] = {}
         filling_to_wall: Dict[str, str] = {}
-        for w_guid, op_guids in wall_to_openings.items():
+        for w_guid, op_guids in wall_to_voids.items():
             for op_guid in op_guids:
                 fill_guid = opening_to_filling.get(op_guid)
                 if fill_guid:
+                    wall_to_fills.setdefault(w_guid, []).append(fill_guid)
                     filling_to_wall[fill_guid] = w_guid
 
         # 6. Extract Products with IfcGeom
@@ -2132,7 +2144,7 @@ class BimModelManager:
                     "height": max(dz, 2.5),
                     "length": length,
                     "angle": angle,
-                    "hosted_openings": wall_to_openings.get(guid, []),
+                    "hosted_openings": wall_to_fills.get(guid, []),
                 })
 
             elif ifc_class in ("IfcDoor", "IfcWindow"):
@@ -2177,6 +2189,7 @@ class BimModelManager:
                     h_meta = self.element_meta[host_guid]
                     h_start = h_meta.get("start", [0, 0, 0])
                     h_ang = h_meta.get("angle", 0.0)
+                    h_len = h_meta.get("length", 1.0)
                     b_min = meta.get("bbox", {}).get("min", [0, 0, 0])
                     b_max = meta.get("bbox", {}).get("max", [0, 0, 0])
                     cx = (b_min[0] + b_max[0]) / 2.0
@@ -2184,7 +2197,8 @@ class BimModelManager:
                     w = meta.get("width", 0.90)
                     # Project opening center onto wall baseline direction
                     proj = (cx - h_start[0]) * math.cos(h_ang) + (cy - h_start[1]) * math.sin(h_ang)
-                    meta["offset_along_wall"] = max(0.0, proj - (w / 2.0))
+                    offset = max(0.0, min(max(0.0, h_len - w), proj - (w / 2.0)))
+                    meta["offset_along_wall"] = offset
                     if guid not in h_meta.get("hosted_openings", []):
                         h_meta.setdefault("hosted_openings", []).append(guid)
 
