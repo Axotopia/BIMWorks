@@ -73,6 +73,8 @@ interface BimStoreState {
   isGeoreferenceModalOpen: boolean;
   isEditTypeModalOpen: boolean;
   isViewRangeModalOpen: boolean;
+  isLegalModalOpen: boolean;
+  setLegalModalOpen: (open: boolean) => void;
 
   // File Loading & Status
   isLoadingFile: boolean;
@@ -288,6 +290,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   isGeoreferenceModalOpen: false,
   isEditTypeModalOpen: false,
   isViewRangeModalOpen: false,
+  isLegalModalOpen: false,
 
   isLoadingFile: false,
   statusMessage: 'Ready (IFC4 Native BIM)',
@@ -514,6 +517,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   setGeoreferenceModalOpen: (open) => set({ isGeoreferenceModalOpen: open }),
   setEditTypeModalOpen: (open) => set({ isEditTypeModalOpen: open }),
   setViewRangeModalOpen: (open) => set({ isViewRangeModalOpen: open }),
+  setLegalModalOpen: (open) => set({ isLegalModalOpen: open }),
 
   // 1D/2D Parametric Constraints Implementation
   setAlignPickState: (state) => set({ alignPickState: state }),

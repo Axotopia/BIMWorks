@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useBimStore } from '../../store/useBimStore';
 import { Maximize2, ZoomIn, ZoomOut, Lock, Equal } from 'lucide-react';
 
@@ -67,10 +67,54 @@ export const PlanViewport2D: React.FC = () => {
     setScale((s) => Math.max(10, Math.min(250, s * factor)));
   };
 
-  const resetView = () => {
-    setPan({ x: 350, y: 320 });
-    setScale(40);
-  };
+  const fit2DToExtents = useCallback(() => {
+    if (!sliced2D) return;
+    const allPaths = [...(sliced2D.cut_paths || []), ...(sliced2D.projection_paths || [])];
+    if (allPaths.length === 0) {
+      setPan({ x: 350, y: 320 });
+      setScale(40);
+      return;
+    }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    allPaths.forEach((p) => {
+      const nums = p.d.match(/-?\d+(\.\d+)?/g);
+      if (nums) {
+        for (let i = 0; i < nums.length - 1; i += 2) {
+          const x = parseFloat(nums[i]);
+          const y = parseFloat(nums[i + 1]);
+          if (!isNaN(x) && !isNaN(y)) {
+            minX = Math.min(minX, x);
+            maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y);
+            maxY = Math.max(maxY, y);
+          }
+        }
+      }
+    });
+    if (minX !== Infinity) {
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      const w = Math.max(maxX - minX, 2);
+      const h = Math.max(maxY - minY, 2);
+      const containerW = 800;
+      const containerH = 600;
+      const fitScale = Math.min(containerW / (w * 1.4), containerH / (h * 1.4));
+      const newScale = Math.max(5, Math.min(100, fitScale));
+      setScale(newScale);
+      setPan({
+        x: containerW / 2 - cx * newScale,
+        y: containerH / 2 + cy * newScale,
+      });
+    }
+  }, [sliced2D]);
+
+  const resetView = fit2DToExtents;
+
+  useEffect(() => {
+    if (sliced2D && (sliced2D.cut_paths?.length || sliced2D.projection_paths?.length)) {
+      fit2DToExtents();
+    }
+  }, [sliced2D, fit2DToExtents]);
 
   return (
     <div
@@ -195,96 +239,130 @@ export const PlanViewport2D: React.FC = () => {
 
           {/* 6. Associative Dimensions with Interactive Padlock & EQ Toggles */}
           {sliced2D?.dimensions.map((dim, idx) => {
-            const mx = (dim.start[0] + dim.end[0]) / 2 + dim.offset_norm[0] * 3;
-            const my = (dim.start[1] + dim.end[1]) / 2 + dim.offset_norm[1] * 3;
+            const isSelected = selectedGuid === dim.guid;
+            const offDist = 0.8;
+            const dx = dim.offset_norm[0] * offDist;
+            const dy = dim.offset_norm[1] * offDist;
+            const mx = (dim.start[0] + dim.end[0]) / 2 + dx;
+            const my = (dim.start[1] + dim.end[1]) / 2 + dy;
 
             // Check if dimension is locked or equalized
             const dimConstraint = constraints.find(
               (c) => c.type === 'dimension_lock' && (c.guid_a === dim.guid || c.guid_b === dim.guid)
             );
             const isLocked = dimConstraint ? dimConstraint.is_locked : false;
-            const isEq = constraints.some((c) => c.type === 'equalize' && c.is_equalized);
+            const isEq = constraints.some(
+              (c) =>
+                c.type === 'equalize' &&
+                c.is_equalized &&
+                (c.interior_guids?.includes(dim.guid) ||
+                  c.span_start_guid === dim.guid ||
+                  c.span_end_guid === dim.guid)
+            );
+            const showBadges = isSelected || isLocked || isEq;
 
             return (
               <g key={`dim-${idx}`} className="text-dimension select-none">
+                {/* Witness lines from wall to dimension line */}
+                <line
+                  x1={dim.start[0]}
+                  y1={dim.start[1]}
+                  x2={dim.start[0] + dx * 1.15}
+                  y2={dim.start[1] + dy * 1.15}
+                  stroke="#94a3b8"
+                  strokeWidth="0.015"
+                />
+                <line
+                  x1={dim.end[0]}
+                  y1={dim.end[1]}
+                  x2={dim.end[0] + dx * 1.15}
+                  y2={dim.end[1] + dy * 1.15}
+                  stroke="#94a3b8"
+                  strokeWidth="0.015"
+                />
+
                 {/* Dimension line */}
                 <line
-                  x1={dim.start[0] + dim.offset_norm[0] * 3}
-                  y1={dim.start[1] + dim.offset_norm[1] * 3}
-                  x2={dim.end[0] + dim.offset_norm[0] * 3}
-                  y2={dim.end[1] + dim.offset_norm[1] * 3}
-                  stroke="#0284c7"
+                  x1={dim.start[0] + dx}
+                  y1={dim.start[1] + dy}
+                  x2={dim.end[0] + dx}
+                  y2={dim.end[1] + dy}
+                  stroke={isSelected ? '#0284c7' : '#64748b'}
                   strokeWidth="0.02"
                 />
+
                 {/* Dimension Text */}
                 <text
                   x={mx}
-                  y={-my - 0.15}
+                  y={-my - 0.10}
                   transform="scale(1, -1)"
                   textAnchor="middle"
-                  fontSize="0.30"
+                  fontSize="0.22"
                   fontFamily="JetBrains Mono, monospace"
-                  fill="#0284c7"
+                  fill={isSelected ? '#0284c7' : '#334155'}
                   fontWeight="600"
                 >
                   {isEq ? 'EQ' : dim.text}
                 </text>
 
-                {/* Interactive Padlock Icon */}
-                <g
-                  transform={`translate(${mx + 1.2}, ${my + 0.15}) scale(1, -1)`}
-                  className="cursor-pointer"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (dimConstraint) {
-                      toggleConstraintLock(dimConstraint.id, !isLocked);
-                    } else {
-                      lockDimension(dim.guid, dim.guid, dim.length);
-                    }
-                  }}
-                >
-                  <circle cx="0" cy="0" r="0.22" fill={isLocked ? '#0284c7' : '#e2e8f0'} stroke="#0284c7" strokeWidth="0.03" />
-                  {/* Lock Shackle & Body */}
-                  <rect x="-0.09" y="-0.08" width="0.18" height="0.16" rx="0.02" fill={isLocked ? '#ffffff' : '#475569'} />
-                  <path
-                    d={isLocked ? "M -0.06 -0.08 A 0.06 0.06 0 0 1 0.06 -0.08" : "M -0.06 -0.08 A 0.06 0.06 0 0 1 0.06 -0.13"}
-                    stroke={isLocked ? '#ffffff' : '#475569'}
-                    strokeWidth="0.03"
-                    fill="none"
-                  />
-                </g>
-
-                {/* Interactive EQ Toggle Pill */}
-                <g
-                  transform={`translate(${mx - 1.2}, ${my + 0.15}) scale(1, -1)`}
-                  className="cursor-pointer"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    equalizeSouthWallWindows();
-                  }}
-                >
-                  <rect
-                    x="-0.30"
-                    y="-0.15"
-                    width="0.60"
-                    height="0.30"
-                    rx="0.06"
-                    fill={isEq ? '#0284c7' : '#ffffff'}
-                    stroke="#0284c7"
-                    strokeWidth="0.03"
-                  />
-                  <text
-                    x="0"
-                    y="0.08"
-                    textAnchor="middle"
-                    fontSize="0.20"
-                    fontFamily="Inter, sans-serif"
-                    fontWeight="bold"
-                    fill={isEq ? '#ffffff' : '#0284c7'}
+                {/* Interactive Padlock Icon (only on selection or active lock) */}
+                {showBadges && (
+                  <g
+                    transform={`translate(${mx + 0.8}, ${my + 0.10}) scale(1, -1)`}
+                    className="cursor-pointer"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (dimConstraint) {
+                        toggleConstraintLock(dimConstraint.id, !isLocked);
+                      } else {
+                        lockDimension(dim.guid, dim.guid, dim.length);
+                      }
+                    }}
                   >
-                    EQ
-                  </text>
-                </g>
+                    <circle cx="0" cy="0" r="0.14" fill={isLocked ? '#0284c7' : '#e2e8f0'} stroke="#0284c7" strokeWidth="0.02" />
+                    <rect x="-0.06" y="-0.05" width="0.12" height="0.10" rx="0.02" fill={isLocked ? '#ffffff' : '#475569'} />
+                    <path
+                      d={isLocked ? "M -0.04 -0.05 A 0.04 0.04 0 0 1 0.04 -0.05" : "M -0.04 -0.05 A 0.04 0.04 0 0 1 0.04 -0.09"}
+                      stroke={isLocked ? '#ffffff' : '#475569'}
+                      strokeWidth="0.02"
+                      fill="none"
+                    />
+                  </g>
+                )}
+
+                {/* Interactive EQ Toggle Pill (only on selection or active EQ) */}
+                {showBadges && (
+                  <g
+                    transform={`translate(${mx - 0.8}, ${my + 0.10}) scale(1, -1)`}
+                    className="cursor-pointer"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      equalizeSouthWallWindows();
+                    }}
+                  >
+                    <rect
+                      x="-0.20"
+                      y="-0.10"
+                      width="0.40"
+                      height="0.20"
+                      rx="0.04"
+                      fill={isEq ? '#0284c7' : '#ffffff'}
+                      stroke="#0284c7"
+                      strokeWidth="0.02"
+                    />
+                    <text
+                      x="0"
+                      y="0.05"
+                      textAnchor="middle"
+                      fontSize="0.13"
+                      fontFamily="Inter, sans-serif"
+                      fontWeight="bold"
+                      fill={isEq ? '#ffffff' : '#0284c7'}
+                    >
+                      EQ
+                    </text>
+                  </g>
+                )}
               </g>
             );
           })}

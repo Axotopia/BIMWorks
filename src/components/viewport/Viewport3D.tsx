@@ -30,6 +30,7 @@ export const Viewport3D: React.FC = () => {
     alignPickState,
     setAlignPickState,
     createAlignConstraint,
+    projectName,
   } = useBimStore();
 
   // Internal Three.js state
@@ -438,25 +439,65 @@ export const Viewport3D: React.FC = () => {
     isNavigatingRef.current.mode = null;
   };
 
+  const fitToExtents = useCallback(() => {
+    if (meshes.length === 0) {
+      targetRef.current.set(6, 4.5, 1.5);
+      sphericalRef.current.radius = 22;
+      updateCameraPosition();
+      return;
+    }
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    meshes.forEach((m) => {
+      if (m.bbox) {
+        minX = Math.min(minX, m.bbox.min[0]);
+        minY = Math.min(minY, m.bbox.min[1]);
+        minZ = Math.min(minZ, m.bbox.min[2]);
+        maxX = Math.max(maxX, m.bbox.max[0]);
+        maxY = Math.max(maxY, m.bbox.max[1]);
+        maxZ = Math.max(maxZ, m.bbox.max[2]);
+      }
+    });
+    if (minX !== Infinity) {
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      const cz = (minZ + maxZ) / 2;
+      const maxDim = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 5);
+
+      targetRef.current.set(cx, cy, cz);
+      sphericalRef.current.radius = maxDim * 1.8;
+      if (cameraRef.current) {
+        cameraRef.current.far = Math.max(10000, maxDim * 20);
+        cameraRef.current.updateProjectionMatrix();
+      }
+      updateCameraPosition();
+    }
+  }, [meshes, updateCameraPosition]);
+
+  // Auto-fit extents when a new model is loaded
+  const prevProjectRef = useRef<string>(projectName);
+  useEffect(() => {
+    if (meshes.length > 0 && (prevProjectRef.current !== projectName || meshes.length !== 0)) {
+      fitToExtents();
+      prevProjectRef.current = projectName;
+    }
+  }, [projectName, meshes.length, fitToExtents]);
+
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
     const zoomFactor = e.deltaY > 0 ? 1.15 : 0.85;
-    sphericalRef.current.radius = Math.max(1, Math.min(200, sphericalRef.current.radius * zoomFactor));
+    sphericalRef.current.radius = Math.max(0.5, Math.min(10000, sphericalRef.current.radius * zoomFactor));
     updateCameraPosition();
   };
 
   // Zoom Extents listener
   useEffect(() => {
     const handleZoomExtents = () => {
-      targetRef.current.set(6, 4.5, 1.5);
-      sphericalRef.current.radius = 22;
-      sphericalRef.current.theta = Math.PI / 4;
-      sphericalRef.current.phi = Math.PI / 3;
-      updateCameraPosition();
+      fitToExtents();
     };
     window.addEventListener('orlt-zoom-extents', handleZoomExtents);
     return () => window.removeEventListener('orlt-zoom-extents', handleZoomExtents);
-  }, [updateCameraPosition]);
+  }, [fitToExtents]);
 
   return (
     <div
