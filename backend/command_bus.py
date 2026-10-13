@@ -303,9 +303,14 @@ class CommandBusEngine:
         """
         Executes an atomic transaction containing one or more typed commands.
         Emits one journal step and creates one undo entry tagged with origin.
+
+        Atomicity (GLM Master Spec v2.3 §3.2): a full-state snapshot is taken
+        before execution; any command failure restores that snapshot so the
+        model is never left partially mutated. Undo/redo use state snapshots,
+        so every command type (create/move/delete/constraint) round-trips.
         """
         tx_id = f"tx_{uuid.uuid4().hex[:8]}"
-        timestamp = time.time()
+        pre_state = self.manager.snapshot_state()
         results = []
 
         try:
@@ -313,20 +318,31 @@ class CommandBusEngine:
                 res = self.execute_single_command(item.command, item.params)
                 results.append({"command": item.command, "result": res})
         except Exception as e:
-            # Transaction failure - notify caller
-            raise RuntimeError(f"Transaction '{tx_id}' aborted: {str(e)}")
+            # Roll back the model to the exact pre-transaction state.
+            self.manager.restore_state(pre_state)
+            raise RuntimeError(
+                f"Transaction '{tx_id}' aborted and rolled back: {str(e)}"
+            ) from e
 
         tx_record = {
             "transaction_id": tx_id,
             "origin": origin,
             "description": description,
-            "timestamp": timestamp,
+            "timestamp": time.time(),
             "commands": [{"command": c.command, "params": c.params} for c in commands],
             "results": results,
         }
 
         self.journal.append(tx_record)
-        self.undo_stack.append(tx_record)
+        self.undo_stack.append(
+            {
+                "transaction_id": tx_id,
+                "origin": origin,
+                "description": description,
+                "pre_state": pre_state,
+                "post_state": self.manager.snapshot_state(),
+            }
+        )
         self.redo_stack.clear()
 
         return {
@@ -339,21 +355,13 @@ class CommandBusEngine:
         }
 
     def undo(self) -> Dict[str, Any]:
-        """Rolls back the latest transaction from the undo stack."""
+        """Rolls back the latest transaction via its pre-state snapshot."""
         if not self.undo_stack:
             return {"status": "empty", "message": "Nothing to undo"}
 
         tx = self.undo_stack.pop()
+        self.manager.restore_state(tx["pre_state"])
         self.redo_stack.append(tx)
-        # For elements created in this transaction, delete them
-        for item in reversed(tx.get("results", [])):
-            res = item.get("result", {})
-            guid = res.get("guid")
-            if guid and item.get("command") in ("WallCreate", "DoorInsert", "WindowInsert", "SlabCreate", "RoofCreate", "GridCreate"):
-                try:
-                    self.manager.delete_element(guid)
-                except Exception:
-                    pass
 
         return {
             "status": "undone",
@@ -363,14 +371,20 @@ class CommandBusEngine:
         }
 
     def redo(self) -> Dict[str, Any]:
-        """Re-applies the latest undone transaction."""
+        """Re-applies the latest undone transaction via its post-state snapshot."""
         if not self.redo_stack:
             return {"status": "empty", "message": "Nothing to redo"}
 
         tx = self.redo_stack.pop()
-        # Re-execute commands
-        re_commands = [CommandRequest(command=c["command"], params=c["params"], origin=tx["origin"]) for c in tx["commands"]]
-        return self.execute_transaction(re_commands, origin=tx["origin"], description=f"Redo: {tx.get('description', '')}")
+        self.manager.restore_state(tx["post_state"])
+        self.undo_stack.append(tx)
+
+        return {
+            "status": "redone",
+            "transaction_id": tx["transaction_id"],
+            "origin": tx["origin"],
+            "description": tx.get("description", ""),
+        }
 
     def get_journal(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Returns the replay journal history."""

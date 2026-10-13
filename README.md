@@ -27,7 +27,7 @@ Current state: a working **M0/M1-class prototype** — FastAPI + IfcOpenShell si
 - View-range 2D slicing with the Revit <6 ft not-cut rule; `.orlt` container round-trip; georeferencing dialog
 
 **Known gaps & divergences from the spec** (priority order):
-1. **Undo/redo is shallow** — undo only deletes created elements; moves/edits are reported "undone" without effect. "Atomic" transactions don't roll back on failure (partial transactions persist). Multi-step redo is broken (redo re-enters `execute_transaction`, clearing the redo stack). *Fix: inverse-command pairs or state snapshots per transaction.*
+1. ~~**Undo/redo is shallow**~~ **FIXED (2026-10-13)** — the transaction engine now takes a full-state snapshot (complete IFC STEP text + all tracking state) before every transaction: failed transactions roll back atomically, undo/redo restore exact states for *all* command types (create/move/delete/constraints, including hosted openings with `opening_entity` re-attachment by GUID), and multi-step redo works. Regression suite: `scratch/test_transactions.py` (28 checks, all passing).
 2. **Wall joins are policy-only** — `SetWallJoin` stores per-endpoint policies but neither the 3D solids nor the 2D slice implement miter/butt geometry or plan-view seam cleanup. *This is spec §3.3 Phase A — the single most important next build item.*
 3. **Units mislabeled** — internals are metric (3.0 m wall heights, 1.2 m cut plane) while metadata claims `decimal_feet` (spec §11.3). *Fix at the serializer/store boundary, not ad hoc.*
 4. **Constraint persistence uses the rejected `Pset_BIMWorks_Constraints` pset hack** (spec §0.1) *in addition to* the correct `parametric.json` overlay — round-trip currently depends on the pset. *Fix: overlay-only, keyed by GUID.*
