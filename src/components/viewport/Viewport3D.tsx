@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { useBimStore } from '../../store/useBimStore';
-import { Scissors, Maximize, RotateCw, Move } from 'lucide-react';
+import { Scissors, Maximize, RotateCw, Move, Lock } from 'lucide-react';
 
 export const Viewport3D: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -27,6 +27,9 @@ export const Viewport3D: React.FC = () => {
     tempDimension,
     applyTemporaryDimensionChange,
     activeVisualStyle,
+    alignPickState,
+    setAlignPickState,
+    createAlignConstraint,
   } = useBimStore();
 
   // Internal Three.js state
@@ -339,6 +342,21 @@ export const Viewport3D: React.FC = () => {
         return;
       }
 
+      // Tool: Align & Lock (AL)
+      if (activeTool === 'AL') {
+        const meshesList = Array.from(threeMeshesRef.current.values());
+        const intersects = raycaster.intersectObjects(meshesList, false);
+        if (intersects.length > 0) {
+          const hitGuid = intersects[0].object.userData.guid;
+          if (!alignPickState.refGuid) {
+            setAlignPickState({ step: 'pick_target', refGuid: hitGuid });
+          } else {
+            createAlignConstraint(alignPickState.refGuid, hitGuid, 'x', true);
+          }
+        }
+        return;
+      }
+
       // Tool: Select (default)
       const meshesList = Array.from(threeMeshesRef.current.values());
       const intersects = raycaster.intersectObjects(meshesList, false);
@@ -513,6 +531,27 @@ export const Viewport3D: React.FC = () => {
             onClick={() => {
               setActiveTool('select');
               setWallStartPoint(null);
+            }}
+            className="px-2 py-0.5 bg-[#3c3c3c] hover:bg-[#4a4a4a] rounded text-[10px]"
+          >
+            Cancel (Esc)
+          </button>
+        </div>
+      )}
+
+      {/* Align Tool Status Banner */}
+      {activeTool === 'AL' && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#094771]/95 backdrop-blur px-4 py-2 rounded-lg border border-[#38bdf8] text-xs text-white shadow-xl flex items-center space-x-3 z-10 animate-fade-in">
+          <Lock size={15} className="text-[#38bdf8] animate-pulse" />
+          <span>
+            {!alignPickState.refGuid
+              ? 'ALIGN (AL): Pick reference edge or element in 3D'
+              : 'Reference picked. Now pick target element to align & lock.'}
+          </span>
+          <button
+            onClick={() => {
+              setActiveTool('select');
+              setAlignPickState({ step: null, refGuid: null });
             }}
             className="px-2 py-0.5 bg-[#3c3c3c] hover:bg-[#4a4a4a] rounded text-[10px]"
           >

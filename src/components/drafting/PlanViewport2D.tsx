@@ -393,6 +393,27 @@ export const PlanViewport2D: React.FC = () => {
           )}
         </div>
       )}
+
+      {/* Align Tool Active Banner */}
+      {activeTool === 'AL' && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#094771]/95 text-white px-4 py-2 rounded-lg border border-[#38bdf8] text-xs shadow-xl flex items-center space-x-3 z-30 animate-fade-in">
+          <Lock size={15} className="text-[#38bdf8] animate-pulse" />
+          <span className="font-medium">
+            {!alignPickState.refGuid
+              ? 'ALIGN (AL): Pick reference edge or element (Grid / Wall)'
+              : 'Reference picked. Now pick target element to align & lock.'}
+          </span>
+          <button
+            onClick={() => {
+              setActiveTool('select');
+              setAlignPickState({ step: null, refGuid: null });
+            }}
+            className="px-2 py-0.5 bg-black/40 hover:bg-black/60 rounded text-[10px]"
+          >
+            Cancel (Esc)
+          </button>
+        </div>
+      )}
     </div>
   );
 };
