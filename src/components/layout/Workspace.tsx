@@ -79,6 +79,9 @@ export const Workspace: React.FC = () => {
       position: { referencePanel: centerPanel },
     });
 
+    // Default to {3D} view active
+    centerPanel.api.setActive();
+
     // 3. Add Right Dock: Properties Palette
     event.api.addPanel({
       id: 'panel-properties',

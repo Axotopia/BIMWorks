@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef, useEffect } from 'react';
 import {
   FolderOpen,
   Save,
@@ -24,11 +24,14 @@ import {
   Eye,
   Lock,
   Equal,
+  Sparkles,
+  Upload,
 } from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
 import { ActiveTool } from '../../types/bim';
 
 export const Ribbon: React.FC = () => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const {
     activeRibbonTab,
     setActiveRibbonTab,
@@ -37,12 +40,46 @@ export const Ribbon: React.FC = () => {
     toggleSectionBox,
     sectionBox,
     exportIfc,
+    exportOrltProject,
     loadSampleProject,
+    loadIfcFile,
+    loadOrltFile,
+    undoTransaction,
+    redoTransaction,
+    setPromptBarOpen,
+    isLoadingFile,
     setGeoreferenceModalOpen,
     setActiveViewId,
     setActiveSheetId,
     keyBuffer,
   } = useBimStore();
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        fileInputRef.current?.click();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const handleOpenFileClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.name.toLowerCase().endsWith('.orlt')) {
+        await loadOrltFile(file);
+      } else {
+        await loadIfcFile(file);
+      }
+      e.target.value = '';
+    }
+  };
 
   const tabs = ['Architecture', 'Annotate', 'View', 'Manage'] as const;
 
@@ -84,10 +121,10 @@ export const Ribbon: React.FC = () => {
       <div className="flex items-center justify-between px-3 py-1 bg-[#1e1e1e] border-b border-[#333333] text-xs">
         <div className="flex items-center space-x-3">
           <div className="flex items-center space-x-1.5">
-            <div className="w-5 h-5 bg-[#007acc] rounded flex items-center justify-center font-bold text-[11px] text-white shadow-sm">
-              R
+            <div className="w-6 h-5 bg-[#007acc] rounded flex items-center justify-center font-bold text-[10px] text-white shadow-sm tracking-tighter">
+              BW
             </div>
-            <span className="font-semibold text-white tracking-wide text-xs">OpenRevitLT</span>
+            <span className="font-semibold text-white tracking-wide text-xs">BIMWorks</span>
             <span className="text-[10px] text-[#858585] bg-[#2d2d2d] px-1.5 py-0.5 rounded border border-[#3c3c3c]">
               IFC4 Native
             </span>
@@ -98,28 +135,37 @@ export const Ribbon: React.FC = () => {
           {/* Quick Access Icons */}
           <div className="flex items-center space-x-1">
             <button
-              onClick={() => loadSampleProject()}
+              onClick={handleOpenFileClick}
               className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
-              title="Load Sample IFC Building"
+              title="Open IFC File (.ifc, .step) - Ctrl+O"
             >
-              <FolderOpen size={14} />
+              <FolderOpen size={14} className={isLoadingFile ? 'text-[#38bdf8] animate-pulse' : ''} />
+            </button>
+            <button
+              onClick={() => exportOrltProject()}
+              className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
+              title="Save Project Container (.orlt)"
+            >
+              <Save size={14} className="text-[#38bdf8]" />
             </button>
             <button
               onClick={() => exportIfc()}
               className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
-              title="Save IFC4 STEP File (Ctrl+S)"
+              title="Export Standard IFC4 (.ifc)"
             >
-              <Save size={14} />
+              <Download size={14} />
             </button>
             <button
-              className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white opacity-60"
-              title="Undo (Ctrl+Z)"
+              onClick={() => undoTransaction()}
+              className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
+              title="Undo Transaction (Ctrl+Z)"
             >
               <RotateCcw size={14} />
             </button>
             <button
-              className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white opacity-60"
-              title="Redo (Ctrl+Y)"
+              onClick={() => redoTransaction()}
+              className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
+              title="Redo Transaction (Ctrl+Y)"
             >
               <RotateCw size={14} />
             </button>
@@ -147,7 +193,7 @@ export const Ribbon: React.FC = () => {
 
         {/* Middle Project Title */}
         <div className="text-[11px] text-[#969696] font-medium hidden md:block">
-          OpenRevitLT 2026.1 — Standalone IFC4 Architectural BIM &amp; Construction Documents
+          BIMWorks 2026.1 — Native-IFC Architectural BIM &amp; Construction Documents
         </div>
 
         {/* Right Status / Hotkey Buffer Indicator */}
@@ -203,14 +249,52 @@ export const Ribbon: React.FC = () => {
               {renderToolButton('EQ', 'Equalize', 'EQ', <Equal size={20} className="text-[#10b981]" />)}
             </div>
 
-            {/* Presets */}
+            {/* Project Loading & File Open Panel */}
+            <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
+              <button
+                onClick={handleOpenFileClick}
+                disabled={isLoadingFile}
+                className="flex items-center space-x-1.5 px-3 py-2 bg-[#1e293b] hover:bg-[#334155] border border-[#0284c7] rounded text-xs text-white shadow-sm transition-colors cursor-pointer"
+                title="Open .orlt Hybrid Container or .ifc File (Ctrl+O)"
+              >
+                <FolderOpen size={15} className="text-[#38bdf8]" />
+                <span className="font-medium">{isLoadingFile ? 'Opening...' : 'Open Project / IFC...'}</span>
+              </button>
+              <button
+                onClick={() => exportOrltProject()}
+                className="flex items-center space-x-1.5 px-3 py-2 bg-[#064e3b] hover:bg-[#047857] border border-[#059669] rounded text-xs text-white shadow-sm transition-colors cursor-pointer"
+                title="Save BIMWorks .orlt Hybrid Container"
+              >
+                <Save size={14} className="text-[#34d399]" />
+                <span>Save Project (.orlt)</span>
+              </button>
+              <button
+                onClick={() => exportIfc()}
+                className="flex items-center space-x-1.5 px-3 py-2 bg-[#2a2d2e] hover:bg-[#383b3d] border border-[#3c3c3c] rounded text-xs text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-pointer"
+                title="Export Standard IFC4 STEP File (.ifc)"
+              >
+                <Download size={14} className="text-[#38bdf8]" />
+                <span>Export IFC</span>
+              </button>
+            </div>
+
+            {/* AI Driver & Samples Panel */}
             <div className="flex items-center space-x-2">
               <button
-                onClick={() => loadSampleProject()}
-                className="flex items-center space-x-1.5 px-3 py-2 bg-[#2a2d2e] hover:bg-[#383b3d] border border-[#3c3c3c] rounded text-xs text-[#38bdf8]"
+                onClick={() => setPromptBarOpen(true)}
+                className="flex items-center space-x-1.5 px-3 py-2 bg-[#0284c7] hover:bg-[#0369a1] border border-[#38bdf8] rounded text-xs text-white font-medium shadow-sm transition-colors cursor-pointer"
+                title="Open Tier-1 AI Prompt Bar (/ or Ctrl+Enter)"
               >
-                <FolderOpen size={15} />
-                <span>Load Sample BIM</span>
+                <Sparkles size={14} className="text-white" />
+                <span>AI Prompt Bar</span>
+              </button>
+              <button
+                onClick={() => loadSampleProject()}
+                disabled={isLoadingFile}
+                className="flex items-center space-x-1.5 px-3 py-2 bg-[#2a2d2e] hover:bg-[#383b3d] border border-[#3c3c3c] rounded text-xs text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-pointer"
+                title="Load built-in IFC4 architectural sample building"
+              >
+                <span>Sample BIM</span>
               </button>
             </div>
           </>
@@ -282,6 +366,15 @@ export const Ribbon: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Hidden Native File Input for Opening Local IFC Files */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".ifc,.stp,.step"
+        className="hidden"
+        onChange={handleFileChange}
+      />
     </div>
   );
 };

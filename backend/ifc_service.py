@@ -1,5 +1,5 @@
 """
-OpenRevitLT (ORLT) - Native IFC4 BIM Engine Sidecar
+BIMWorks - Native IFC4 BIM Engine Sidecar
 Powered by IfcOpenShell, IfcGeom, and PyMuPDF.
 Strict buildingSMART IFC4 Schema compliance.
 """
@@ -8,6 +8,10 @@ import os
 import math
 import uuid
 import tempfile
+import zipfile
+import io
+import json
+import time
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
@@ -35,7 +39,7 @@ class BimModelManager:
     3D mesh generation via IfcGeom, 2D vector slicing, and vector PDF compilation.
     """
 
-    def __init__(self, project_name: str = "OpenRevitLT BIM Project"):
+    def __init__(self, project_name: str = "BIMWorks Project"):
         self.project_name = project_name
         self.reset_model()
 
@@ -98,6 +102,9 @@ class BimModelManager:
 
         # 1D/2D Parametric Constraints Manager
         self.constraints: Dict[str, Dict[str, Any]] = {}
+
+        # Wall Join Policies (Butt / Miter / Square-off and per-endpoint allowJoin)
+        self.join_policies: Dict[str, Dict[str, Any]] = {}
 
         # Default Georeferencing (EPSG:2285 - NAD83 / Washington North)
         self.georeference_data = {
@@ -249,6 +256,10 @@ class BimModelManager:
             },
         }
         self.element_meta[guid] = meta
+        self.join_policies[guid] = {
+            "end0": {"allow_join": True, "mode": "butt"},
+            "end1": {"allow_join": True, "mode": "butt"},
+        }
         return meta
 
     def add_door(
@@ -925,6 +936,35 @@ class BimModelManager:
             return True
         return False
 
+    def set_wall_join(
+        self,
+        wall_guid: str,
+        end_index: int,
+        allow_join: bool = True,
+        mode: str = "butt",
+    ) -> Dict[str, Any]:
+        """
+        Configures wall join behavior for a specific wall endpoint:
+        - allow_join: True/False (Revit: WallUtils.IsWallJoinAllowedAtEnd)
+        - mode: "butt" (default), "miter", or "square_off"
+        """
+        if wall_guid not in self.element_meta:
+            raise ValueError(f"Wall {wall_guid} not found")
+        end_key = f"end{end_index}"
+        if wall_guid not in self.join_policies:
+            self.join_policies[wall_guid] = {
+                "end0": {"allow_join": True, "mode": "butt"},
+                "end1": {"allow_join": True, "mode": "butt"},
+            }
+        self.join_policies[wall_guid][end_key] = {
+            "allow_join": allow_join,
+            "mode": mode if mode in ("butt", "miter", "square_off") else "butt",
+        }
+        return self.join_policies[wall_guid]
+
+    def get_wall_joins(self) -> Dict[str, Dict[str, Any]]:
+        return self.join_policies
+
     def save_constraints_to_ifc(self):
         """
         Persists active constraint relationships into standard IFC4
@@ -990,6 +1030,16 @@ class BimModelManager:
             "IfcWindow": {"color": "#38bdf8", "opacity": 0.55, "cut_color": "#0284c7"},
             "IfcSlab": {"color": "#cbd5e1", "opacity": 1.0, "cut_color": "#64748b"},
             "IfcRoof": {"color": "#94a3b8", "opacity": 1.0, "cut_color": "#475569"},
+            "IfcColumn": {"color": "#cbd5e1", "opacity": 1.0, "cut_color": "#334155"},
+            "IfcBeam": {"color": "#94a3b8", "opacity": 1.0, "cut_color": "#334155"},
+            "IfcStair": {"color": "#d1d5db", "opacity": 1.0, "cut_color": "#4b5563"},
+            "IfcRailing": {"color": "#9ca3af", "opacity": 0.9, "cut_color": "#374151"},
+            "IfcCovering": {"color": "#e5e7eb", "opacity": 1.0, "cut_color": "#6b7280"},
+            "IfcCurtainWall": {"color": "#bae6fd", "opacity": 0.6, "cut_color": "#0284c7"},
+            "IfcPlate": {"color": "#93c5fd", "opacity": 0.7, "cut_color": "#1d4ed8"},
+            "IfcMember": {"color": "#cbd5e1", "opacity": 1.0, "cut_color": "#475569"},
+            "IfcFurnishingElement": {"color": "#fbbf24", "opacity": 1.0, "cut_color": "#d97706"},
+            "IfcBuildingElementProxy": {"color": "#a8a29e", "opacity": 1.0, "cut_color": "#57534e"},
         }
 
         for guid, meta in self.element_meta.items():
@@ -999,24 +1049,36 @@ class BimModelManager:
             ifc_class = meta.get("ifc_class", "IfcProduct")
 
             try:
-                shape = ifcopenshell.geom.create_shape(settings, entity)
-                geom = shape.geometry
-                raw_verts = list(geom.verts)  # flat [x, y, z, ...]
-                raw_faces = list(geom.faces)  # flat [i1, i2, i3, ...]
+                cached_v = meta.get("cached_verts")
+                cached_f = meta.get("cached_faces")
+                if cached_v and cached_f:
+                    raw_verts = cached_v
+                    raw_faces = cached_f
+                else:
+                    shape = ifcopenshell.geom.create_shape(settings, entity)
+                    geom = shape.geometry
+                    raw_verts = list(geom.verts)  # flat [x, y, z, ...]
+                    raw_faces = list(geom.faces)  # flat [i1, i2, i3, ...]
+                    meta["cached_verts"] = raw_verts
+                    meta["cached_faces"] = raw_faces
 
                 # In IFC: Z is up, Three.js: Y is up or Z is up.
                 # We keep coordinates in Z-up (standard architectural convention)
                 # and orient Three.js camera with Object3D.DEFAULT_UP = (0, 0, 1).
                 style = category_colors.get(ifc_class, {"color": "#94a3b8", "opacity": 1.0, "cut_color": "#334155"})
 
-                # Compute element bounding box
-                xs = raw_verts[0::3]
-                ys = raw_verts[1::3]
-                zs = raw_verts[2::3]
-                bbox = {
-                    "min": [min(xs), min(ys), min(zs)],
-                    "max": [max(xs), max(ys), max(zs)],
-                }
+                # Compute or retrieve element bounding box
+                if "bbox" in meta:
+                    bbox = meta["bbox"]
+                else:
+                    xs = raw_verts[0::3]
+                    ys = raw_verts[1::3]
+                    zs = raw_verts[2::3]
+                    bbox = {
+                        "min": [min(xs), min(ys), min(zs)],
+                        "max": [max(xs), max(ys), max(zs)],
+                    }
+                    meta["bbox"] = bbox
 
                 meshes.append({
                     "guid": guid,
@@ -1077,6 +1139,15 @@ class BimModelManager:
                 th = meta["thickness"]
                 length = meta["length"]
                 ang = meta["angle"]
+                wall_h = meta.get("height", 3.0)
+
+                # Revit View Range Rule (Spec §1.6 & §4.1):
+                # Walls shorter than 6 ft (1.8288 m) are NOT cut, even if intersecting cut plane;
+                # they render in projection style without hatch poché.
+                is_wall_cut = wall_h >= 1.8288
+                wall_class = "IfcWall cut" if is_wall_cut else "IfcWall projection"
+                wall_fill = "url(#hatch-concrete)" if is_wall_cut else "none"
+                target_paths = svg_cut_paths if is_wall_cut else svg_projection_paths
 
                 # 2D offset normal vector
                 nx = -math.sin(ang) * (th / 2.0)
@@ -1092,11 +1163,11 @@ class BimModelManager:
                 openings = meta.get("hosted_openings", [])
                 if not openings:
                     d = f"M {c1[0]:.3f} {c1[1]:.3f} L {c2[0]:.3f} {c2[1]:.3f} L {c3[0]:.3f} {c3[1]:.3f} L {c4[0]:.3f} {c4[1]:.3f} Z"
-                    svg_cut_paths.append({
+                    target_paths.append({
                         "guid": guid,
-                        "class": "IfcWall cut",
+                        "class": wall_class,
                         "d": d,
-                        "fill": "url(#hatch-concrete)",
+                        "fill": wall_fill,
                     })
                 else:
                     # Segment wall around door openings
@@ -1123,11 +1194,11 @@ class BimModelManager:
                             sc3 = (p_end[0] - nx, p_end[1] - ny)
                             sc4 = (p_start[0] - nx, p_start[1] - ny)
                             d = f"M {sc1[0]:.3f} {sc1[1]:.3f} L {sc2[0]:.3f} {sc2[1]:.3f} L {sc3[0]:.3f} {sc3[1]:.3f} L {sc4[0]:.3f} {sc4[1]:.3f} Z"
-                            svg_cut_paths.append({
+                            target_paths.append({
                                 "guid": guid,
-                                "class": "IfcWall cut",
+                                "class": wall_class,
                                 "d": d,
-                                "fill": "url(#hatch-concrete)",
+                                "fill": wall_fill,
                             })
 
                         # Door / Window representation in plan
@@ -1198,11 +1269,11 @@ class BimModelManager:
                         sc3 = (p_end[0] - nx, p_end[1] - ny)
                         sc4 = (p_start[0] - nx, p_start[1] - ny)
                         d = f"M {sc1[0]:.3f} {sc1[1]:.3f} L {sc2[0]:.3f} {sc2[1]:.3f} L {sc3[0]:.3f} {sc3[1]:.3f} L {sc4[0]:.3f} {sc4[1]:.3f} Z"
-                        svg_cut_paths.append({
+                        target_paths.append({
                             "guid": guid,
-                            "class": "IfcWall cut",
+                            "class": wall_class,
                             "d": d,
-                            "fill": "url(#hatch-concrete)",
+                            "fill": wall_fill,
                         })
 
                 # Aligned dimensions along wall
@@ -1276,6 +1347,369 @@ class BimModelManager:
         self.model.write(filepath)
         return filepath
 
+    def save_orlt_project(self, filepath: Optional[str] = None) -> str:
+        """
+        Exports the project as a BIMWorks hybrid container (.orlt zip).
+        Per GLM Master Spec v2 §3.1:
+        myproject.orlt (zip container)
+        ├── model.ifc          # IFC4 ADD2 STEP file — model of record
+        ├── parametric.json    # overlay: constraints, join policies, parameters in decimal feet
+        ├── views/default.json # view range, detail level, filters, templates
+        └── meta.json          # schema version (2.1), license (GPL-3.0), units (decimal_feet)
+        """
+        if not filepath:
+            temp_dir = tempfile.gettempdir()
+            safe_name = "".join(c for c in self.project_name if c.isalnum() or c in ("-", "_")).strip() or "Project"
+            filepath = os.path.join(temp_dir, f"{safe_name}.orlt")
+
+        # 1. Generate IFC4 STEP model of record
+        ifc_temp = tempfile.NamedTemporaryFile(suffix=".ifc", delete=False)
+        ifc_temp.close()
+        self.model.write(ifc_temp.name)
+
+        # 2. Parametric overlay (all values in decimal feet / internal units)
+        parametric_overlay = {
+            "schema_version": "2.1",
+            "internal_units": "decimal_feet",
+            "constraints": self.constraints,
+            "join_policies": self.join_policies,
+            "elements": {
+                guid: {
+                    "ifc_class": m.get("ifc_class"),
+                    "name": m.get("name"),
+                    "type_properties": m.get("type_properties", {}),
+                    "join_policy": self.join_policies.get(guid, {}),
+                }
+                for guid, m in self.element_meta.items()
+            },
+        }
+
+        # 3. View templates and settings
+        views_data = {
+            "views": [
+                {
+                    "id": "floor_plan_level_1",
+                    "name": "Level 1 Floor Plan",
+                    "view_type": "floor_plan",
+                    "cut_elevation": 1.2,
+                    "top_clip": 2.3,
+                    "bottom_clip": 0.0,
+                    "view_depth": -1.2,
+                    "detail_level": "medium",
+                    "visual_style": "consistent_colors",
+                }
+            ]
+        }
+
+        # 4. Meta manifest
+        meta_data = {
+            "app": "BIMWorks",
+            "version": "2.1",
+            "spec": "GLM Master Spec v2.1",
+            "license": "GPL-3.0",
+            "internal_units": "decimal_feet",
+            "project_name": self.project_name,
+            "element_count": len(self.element_meta),
+            "timestamp": time.time(),
+        }
+
+        with zipfile.ZipFile(filepath, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            z.write(ifc_temp.name, arcname="model.ifc")
+            z.writestr("parametric.json", json.dumps(parametric_overlay, indent=2))
+            z.writestr("views/default.json", json.dumps(views_data, indent=2))
+            z.writestr("meta.json", json.dumps(meta_data, indent=2))
+
+        try:
+            os.remove(ifc_temp.name)
+        except Exception:
+            pass
+
+        return filepath
+
+    def load_orlt_project(self, file_bytes_or_path: Any, filename: str = "Project.orlt") -> Dict[str, Any]:
+        """
+        Loads an .orlt hybrid container:
+        1. Reads and loads model.ifc as the geometric and spatial model of record.
+        2. Parses parametric.json and binds constraints, join policies, and type properties to GUIDs.
+        3. Stale overlay records (elements edited or removed externally) are gracefully ignored.
+        """
+        if isinstance(file_bytes_or_path, (bytes, bytearray)):
+            z_file = zipfile.ZipFile(io.BytesIO(file_bytes_or_path))
+        elif isinstance(file_bytes_or_path, str):
+            z_file = zipfile.ZipFile(file_bytes_or_path, "r")
+        else:
+            raise ValueError("Invalid file input for .orlt project container")
+
+        with z_file as z:
+            names = z.namelist()
+            if "model.ifc" not in names:
+                raise ValueError(".orlt container missing required 'model.ifc'")
+
+            ifc_content = z.read("model.ifc").decode("utf-8", errors="replace")
+            load_res = self.load_ifc_content(ifc_content, filename.replace(".orlt", ".ifc"))
+
+            if "parametric.json" in names:
+                try:
+                    param_data = json.loads(z.read("parametric.json").decode("utf-8"))
+                    self.constraints = param_data.get("constraints", {})
+                    self.join_policies = param_data.get("join_policies", {})
+                    elements_overlay = param_data.get("elements", {})
+                    for g, o_meta in elements_overlay.items():
+                        if g in self.element_meta:
+                            if "type_properties" in o_meta:
+                                self.element_meta[g].setdefault("type_properties", {}).update(o_meta["type_properties"])
+                except Exception as pe:
+                    print(f"Notice loading parametric.json overlay: {pe}")
+
+            if "meta.json" in names:
+                try:
+                    meta = json.loads(z.read("meta.json").decode("utf-8"))
+                    if "project_name" in meta:
+                        self.project_name = meta["project_name"]
+                except Exception:
+                    pass
+
+        return {
+            "status": "loaded",
+            "container_format": "orlt_hybrid_v2",
+            "project_name": self.project_name,
+            "elements_count": len(self.element_meta),
+            "constraints_count": len(self.constraints),
+            "join_policies_count": len(self.join_policies),
+        }
+
+    def load_ifc_content(self, ifc_content: str, filename: str = "Imported.ifc") -> Dict[str, Any]:
+        """
+        Loads an arbitrary standard IFC4 / IFC2X3 file from string content into the BIM engine.
+        Extracts Project, Storeys (Levels), Grids, and Products (Walls, Doors, Windows, Slabs, Roofs, etc.).
+        Tessellates geometric meshes and populates element_meta.
+        """
+        temp_dir = tempfile.gettempdir()
+        temp_path = os.path.join(temp_dir, f"imported_{uuid.uuid4().hex[:8]}.ifc")
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(ifc_content)
+        return self.load_ifc_file(temp_path, filename)
+
+    def load_ifc_file(self, file_path: str, filename: str = "Imported.ifc") -> Dict[str, Any]:
+        """Loads IFC model directly from a file path and sets up the active scene."""
+        self.model = ifcopenshell.open(file_path)
+
+        # 1. Project metadata
+        projects = self.model.by_type("IfcProject")
+        if projects:
+            self.project = projects[0]
+            self.project_name = self.project.Name or os.path.splitext(os.path.basename(filename))[0]
+        else:
+            self.project = None
+            self.project_name = os.path.splitext(os.path.basename(filename))[0]
+
+        sites = self.model.by_type("IfcSite")
+        self.site = sites[0] if sites else None
+        buildings = self.model.by_type("IfcBuilding")
+        self.building = buildings[0] if buildings else None
+
+        # 2. Reset containers
+        self.element_meta = {}
+        self.levels = {}
+        self.constraints = {}
+        self.undo_stack = []
+        self.redo_stack = []
+
+        # 3. Storeys (Levels)
+        storeys = self.model.by_type("IfcBuildingStorey")
+        for storey in storeys:
+            elevation = 0.0
+            if hasattr(storey, "Elevation") and storey.Elevation is not None:
+                try:
+                    elevation = float(storey.Elevation)
+                except Exception:
+                    elevation = 0.0
+            self.levels[storey.GlobalId] = {
+                "id": storey.GlobalId,
+                "name": storey.Name or f"Level {len(self.levels) + 1}",
+                "elevation": elevation,
+                "entity": storey,
+            }
+
+        if not self.levels:
+            self.levels["level_1"] = {
+                "id": "level_1",
+                "name": "Level 1",
+                "elevation": 0.0,
+            }
+            self.levels["level_2"] = {
+                "id": "level_2",
+                "name": "Level 2",
+                "elevation": 3.0,
+            }
+            self.levels["roof"] = {
+                "id": "roof",
+                "name": "Roof",
+                "elevation": 6.0,
+            }
+
+        # 4. Grids
+        for grid in self.model.by_type("IfcGrid"):
+            guid = grid.GlobalId
+            name = grid.Name or "Grid"
+            tag = name.replace("Grid ", "").strip()
+            self.element_meta[guid] = {
+                "entity": grid,
+                "guid": guid,
+                "ifc_class": "IfcGrid",
+                "name": name,
+                "tag": tag,
+                "start": [-5.0, 0.0],
+                "end": [15.0, 0.0],
+            }
+
+        # 5. Map Voids and Fills for door/window hosting
+        wall_to_openings: Dict[str, List[str]] = {}
+        for rel in self.model.by_type("IfcRelVoidsElement"):
+            if hasattr(rel, "RelatingBuildingElement") and hasattr(rel, "RelatedOpeningElement"):
+                w_guid = rel.RelatingBuildingElement.GlobalId
+                op_guid = rel.RelatedOpeningElement.GlobalId
+                wall_to_openings.setdefault(w_guid, []).append(op_guid)
+
+        opening_to_filling: Dict[str, str] = {}
+        for rel in self.model.by_type("IfcRelFillsElement"):
+            if hasattr(rel, "RelatingOpeningElement") and hasattr(rel, "RelatedBuildingElement"):
+                op_guid = rel.RelatingOpeningElement.GlobalId
+                fill_guid = rel.RelatedBuildingElement.GlobalId
+                opening_to_filling[op_guid] = fill_guid
+
+        filling_to_wall: Dict[str, str] = {}
+        for w_guid, op_guids in wall_to_openings.items():
+            for op_guid in op_guids:
+                fill_guid = opening_to_filling.get(op_guid)
+                if fill_guid:
+                    filling_to_wall[fill_guid] = w_guid
+
+        # 6. Extract Products with IfcGeom
+        settings = ifcopenshell.geom.settings()
+        settings.set(settings.USE_WORLD_COORDS, True)
+
+        for p in self.model.by_type("IfcProduct"):
+            if p.is_a("IfcOpeningElement") or p.is_a("IfcSpatialStructureElement") or p.is_a("IfcGrid"):
+                continue
+
+            guid = p.GlobalId
+            name = p.Name or p.is_a()
+            ifc_class = p.is_a()
+
+            raw_verts, raw_faces = [], []
+            min_x, max_x, min_y, max_y, min_z, max_z = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            try:
+                shape = ifcopenshell.geom.create_shape(settings, p)
+                geom = shape.geometry
+                raw_verts = list(geom.verts)
+                raw_faces = list(geom.faces)
+                if raw_verts:
+                    xs = raw_verts[0::3]
+                    ys = raw_verts[1::3]
+                    zs = raw_verts[2::3]
+                    min_x, max_x = min(xs), max(xs)
+                    min_y, max_y = min(ys), max(ys)
+                    min_z, max_z = min(zs), max(zs)
+            except Exception:
+                pass
+
+            dx = max_x - min_x
+            dy = max_y - min_y
+            dz = max_z - min_z
+
+            meta: Dict[str, Any] = {
+                "entity": p,
+                "guid": guid,
+                "ifc_class": ifc_class,
+                "name": name,
+                "cached_verts": raw_verts,
+                "cached_faces": raw_faces,
+                "bbox": {"min": [min_x, min_y, min_z], "max": [max_x, max_y, max_z]},
+            }
+
+            if ifc_class in ("IfcWall", "IfcWallStandardCase"):
+                if dx >= dy:
+                    start = [min_x, (min_y + max_y) / 2.0, min_z]
+                    end = [max_x, (min_y + max_y) / 2.0, min_z]
+                    thickness = max(dy, 0.15)
+                    length = dx
+                    angle = 0.0
+                else:
+                    start = [(min_x + max_x) / 2.0, min_y, min_z]
+                    end = [(min_x + max_x) / 2.0, max_y, min_z]
+                    thickness = max(dx, 0.15)
+                    length = dy
+                    angle = math.pi / 2.0
+
+                meta.update({
+                    "start": start,
+                    "end": end,
+                    "thickness": thickness,
+                    "height": max(dz, 2.5),
+                    "length": length,
+                    "angle": angle,
+                    "hosted_openings": wall_to_openings.get(guid, []),
+                })
+
+            elif ifc_class in ("IfcDoor", "IfcWindow"):
+                host_w_guid = filling_to_wall.get(guid)
+                width = max(dx, dy)
+                meta.update({
+                    "host_wall_guid": host_w_guid,
+                    "width": max(width, 0.8),
+                    "height": max(dz, 1.0),
+                    "offset_along_wall": 0.0,
+                    "swing_flipped": False,
+                })
+
+            elif ifc_class == "IfcSlab":
+                meta.update({
+                    "thickness": max(dz, 0.1),
+                    "elevation": min_z,
+                    "polygon": [
+                        [min_x, min_y],
+                        [max_x, min_y],
+                        [max_x, max_y],
+                        [min_x, max_y],
+                    ],
+                })
+
+            elif ifc_class == "IfcRoof":
+                meta.update({
+                    "thickness": max(dz, 0.2),
+                    "elevation": min_z,
+                })
+
+            self.element_meta[guid] = meta
+
+        # Second pass: calculate offset_along_wall for doors and windows
+        for guid, meta in self.element_meta.items():
+            if meta.get("ifc_class") in ("IfcDoor", "IfcWindow"):
+                host_guid = meta.get("host_wall_guid")
+                if host_guid and host_guid in self.element_meta:
+                    h_meta = self.element_meta[host_guid]
+                    h_start = h_meta.get("start", [0, 0, 0])
+                    b_min = meta.get("bbox", {}).get("min", [0, 0, 0])
+                    b_max = meta.get("bbox", {}).get("max", [0, 0, 0])
+                    center_x = (b_min[0] + b_max[0]) / 2.0
+                    center_y = (b_min[1] + b_max[1]) / 2.0
+                    dist = math.sqrt((center_x - h_start[0]) ** 2 + (center_y - h_start[1]) ** 2)
+                    meta["offset_along_wall"] = dist
+                    if guid not in h_meta.get("hosted_openings", []):
+                        h_meta.setdefault("hosted_openings", []).append(guid)
+
+        # Load constraints if present in IFC
+        self.load_constraints_from_ifc()
+
+        return {
+            "status": "loaded",
+            "project_name": self.project_name,
+            "elements_count": len(self.element_meta),
+            "levels_count": len(self.levels),
+        }
+
 
 # Singleton instance for sidecar
 bim_manager = BimModelManager()
+

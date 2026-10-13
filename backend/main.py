@@ -1,16 +1,17 @@
 """
-OpenRevitLT (ORLT) - FastAPI Sidecar Server
+BIMWorks - FastAPI Sidecar Server
 Provides high-speed local loopback JSON-RPC & REST endpoints for the React/Three.js frontend.
 """
 
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from ifc_service import bim_manager
+from command_bus import command_bus, CommandRequest, TransactionRequest
 
-app = FastAPI(title="OpenRevitLT BIM Sidecar", version="1.0.0")
+app = FastAPI(title="BIMWorks BIM Sidecar", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -123,6 +124,18 @@ class ToggleLockRequest(BaseModel):
     is_locked: bool
 
 
+class LoadFileRequest(BaseModel):
+    content: str
+    filename: Optional[str] = "Imported.ifc"
+
+
+class WallJoinRequest(BaseModel):
+    wall_guid: str
+    end_index: int
+    allow_join: bool = True
+    mode: str = "butt"
+
+
 # Endpoints
 @app.get("/health")
 def health():
@@ -139,8 +152,30 @@ def get_project_state():
     }
 
 
+@app.post("/api/load-file")
+def load_file(req: LoadFileRequest):
+    """Loads an arbitrary IFC STEP file from text content into the active workspace."""
+    try:
+        res = bim_manager.load_ifc_content(req.content, req.filename or "Imported.ifc")
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to load IFC file: {str(e)}")
+
+
+@app.post("/api/upload/ifc")
+async def upload_ifc(file: UploadFile = File(...)):
+    """Accepts multipart IFC upload and loads it directly into the BIM model."""
+    try:
+        raw_bytes = await file.read()
+        text_content = raw_bytes.decode("utf-8", errors="replace")
+        res = bim_manager.load_ifc_content(text_content, file.filename or "Uploaded.ifc")
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to upload IFC file: {str(e)}")
+
+
 @app.post("/api/reset")
-def reset_project(project_name: Optional[str] = "OpenRevitLT BIM Project"):
+def reset_project(project_name: Optional[str] = "BIMWorks Project"):
     bim_manager.project_name = project_name
     bim_manager.reset_model()
     return {"status": "reset", "levels": list(bim_manager.levels.values())}
@@ -360,7 +395,7 @@ def export_ifc():
     return Response(
         content=content,
         media_type="application/x-step",
-        headers={"Content-Disposition": 'attachment; filename="OpenRevitLT_Model.ifc"'},
+        headers={"Content-Disposition": 'attachment; filename="BIMWorks_Model.ifc"'},
     )
 
 
@@ -414,6 +449,98 @@ def delete_constraint(constraint_id: str):
     if not success:
         raise HTTPException(status_code=404, detail="Constraint not found")
     return {"status": "deleted", "id": constraint_id}
+
+
+# ============================================================================
+# GLM SPEC v2.1 ENDPOINTS: HYBRID .ORLT CONTAINER, WALL JOINS, COMMAND BUS
+# ============================================================================
+
+@app.get("/api/project/export-orlt")
+def export_orlt_project():
+    """Exports full .orlt hybrid zip container per GLM Master Spec v2 §3.1."""
+    try:
+        filepath = bim_manager.save_orlt_project()
+        with open(filepath, "rb") as f:
+            data = f.read()
+        return Response(
+            content=data,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{bim_manager.project_name}.orlt"'},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/project/load-orlt")
+async def load_orlt_project(file: UploadFile = File(...)):
+    """Loads .orlt hybrid container (model.ifc + parametric.json overlay)."""
+    try:
+        raw_bytes = await file.read()
+        res = bim_manager.load_orlt_project(raw_bytes, file.filename or "Project.orlt")
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to load .orlt container: {str(e)}")
+
+
+@app.get("/api/wall/joins")
+def get_wall_joins():
+    """Returns active wall join policies."""
+    return bim_manager.get_wall_joins()
+
+
+@app.post("/api/wall/join")
+def set_wall_join(req: WallJoinRequest):
+    """Sets wall join policy for a specific endpoint (Revit: IsWallJoinAllowedAtEnd)."""
+    try:
+        res = bim_manager.set_wall_join(req.wall_guid, req.end_index, req.allow_join, req.mode)
+        return {"status": "updated", "join_policy": res}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# Tier 0 & Tier 1 CommandBus Endpoints
+@app.get("/api/commands/schema")
+def get_commands_schema():
+    """Returns JSON Schema 2020-12 specifications for AI drivers and programmatic clients."""
+    return command_bus.get_schemas()
+
+
+@app.post("/api/command")
+def execute_command(req: CommandRequest):
+    """Executes a single typed command against the CommandBus."""
+    try:
+        res = command_bus.execute_single_command(req.command, req.params)
+        return {"status": "executed", "command": req.command, "result": res}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/transaction")
+def execute_transaction(req: TransactionRequest):
+    """Executes a batched atomic transaction (used by UI & AI drivers)."""
+    try:
+        res = command_bus.execute_transaction(req.commands, origin=req.origin, description=req.description)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/transaction/undo")
+def undo_transaction():
+    """Rolls back the latest transaction."""
+    return command_bus.undo()
+
+
+@app.post("/api/transaction/redo")
+def redo_transaction():
+    """Re-applies the latest undone transaction."""
+    return command_bus.redo()
+
+
+@app.get("/api/transaction/journal")
+def get_transaction_journal(limit: int = 50):
+    """Returns the append-only transaction journal."""
+    return command_bus.get_journal(limit=limit)
 
 
 if __name__ == "__main__":

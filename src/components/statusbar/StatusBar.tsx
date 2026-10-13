@@ -28,6 +28,10 @@ export const StatusBar: React.FC = () => {
     activeTool,
     keyBuffer,
     setViewRangeModalOpen,
+    statusMessage,
+    isLoadingFile,
+    displayUnit,
+    setDisplayUnit,
   } = useBimStore();
 
   const isTempActive = hiddenGuids.length > 0 || isolatedGuids.length > 0;
@@ -36,6 +40,19 @@ export const StatusBar: React.FC = () => {
     <div className="flex items-center justify-between px-3 py-1 bg-[#1e1e1e] border-t border-[#333333] select-none text-[11px] text-[#969696] z-20">
       {/* Left: View Control Bar (Revit View Control Strip) */}
       <div className="flex items-center space-x-2">
+        {/* Unit System Selector (Spec §11: Decimal-Feet Internals) */}
+        <select
+          value={displayUnit}
+          onChange={(e) => setDisplayUnit(e.target.value as any)}
+          className="bg-[#2d2d2d] border border-[#3c3c3c] text-[#38bdf8] font-medium rounded px-1.5 py-0.5 text-[10px] cursor-pointer focus:outline-none focus:border-[#007acc]"
+          title="Display Units (Engine Representation: Decimal Feet)"
+        >
+          <option value="imperial_fractional">Fract (Ft-In)</option>
+          <option value="imperial_decimal">Dec Feet</option>
+          <option value="metric_mm">Metric (mm)</option>
+          <option value="metric_m">Metric (m)</option>
+        </select>
+
         {/* Scale Selector */}
         <select
           value={activeScale}
@@ -122,16 +139,21 @@ export const StatusBar: React.FC = () => {
         </div>
       </div>
 
-      {/* Middle: Active Command Guidance */}
+      {/* Middle: Active Command Guidance & Status Message */}
       <div className="text-[#a1a1aa] font-medium hidden lg:flex items-center space-x-2">
-        {activeTool !== 'select' ? (
+        {isLoadingFile ? (
+          <span className="text-[#38bdf8] font-semibold flex items-center space-x-1.5 animate-pulse">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8]" />
+            <span>{statusMessage}</span>
+          </span>
+        ) : activeTool !== 'select' ? (
           <span className="text-[#38bdf8] font-semibold animate-pulse">
             Active Command: {activeTool} — Click in viewport to place. Press Esc to exit.
           </span>
         ) : selectedGuid ? (
           <span>Selected element: {selectedGuid}. Spacebar to flip orientation, Delete to remove.</span>
         ) : (
-          <span>Ready. Click to select, Shift+MMB to Orbit, MMB to Pan.</span>
+          <span className="text-[#94a3b8]">{statusMessage}</span>
         )}
       </div>
 
