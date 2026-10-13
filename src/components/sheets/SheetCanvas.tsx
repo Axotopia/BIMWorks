@@ -187,6 +187,49 @@ export const SheetCanvas: React.FC = () => {
               </text>
             </g>
 
+            {/* Architectural Legal Notice & Professional Disclaimer */}
+            <g transform="translate(15, 305)">
+              <line x1="0" y1="0" x2="226" y2="0" stroke="#0f172a" strokeWidth="1.5" />
+              <text x="0" y="16" fill="#0f172a" fontSize="8" fontWeight="bold" letterSpacing="0.5">
+                NOTICE &amp; LEGAL DISCLAIMER
+              </text>
+              <text x="0" y="30" fill="#b91c1c" fontSize="6.5" fontWeight="bold">
+                DO NOT SCALE DRAWINGS
+              </text>
+              <text x="0" y="42" fill="#64748b" fontSize="5.5">
+                All dimensions and conditions must be verified on site
+              </text>
+              <text x="0" y="52" fill="#64748b" fontSize="5.5">
+                prior to ordering materials or commencing fabrication/work.
+              </text>
+              <text x="0" y="64" fill="#64748b" fontSize="5.5">
+                Drawings and digital models are instruments of service
+              </text>
+              <text x="0" y="74" fill="#64748b" fontSize="5.5">
+                and uncertified drafts. They do not constitute stamped
+              </text>
+              <text x="0" y="84" fill="#64748b" fontSize="5.5">
+                architectural or engineering contract documents unless
+              </text>
+              <text x="0" y="94" fill="#64748b" fontSize="5.5">
+                signed &amp; sealed by a registered design professional.
+              </text>
+              <line x1="0" y1="106" x2="226" y2="106" stroke="#e2e8f0" strokeWidth="1" />
+
+              {/* Revisions Table */}
+              <text x="0" y="122" fill="#0f172a" fontSize="8" fontWeight="bold" letterSpacing="0.5">
+                REVISIONS
+              </text>
+              <rect x="0" y="128" width="226" height="16" fill="#f1f5f9" stroke="#cbd5e1" strokeWidth="0.5" />
+              <text x="6" y="139" fill="#475569" fontSize="6.5" fontWeight="bold">NO.</text>
+              <text x="35" y="139" fill="#475569" fontSize="6.5" fontWeight="bold">DESCRIPTION</text>
+              <text x="180" y="139" fill="#475569" fontSize="6.5" fontWeight="bold">DATE</text>
+              <rect x="0" y="144" width="226" height="16" fill="#ffffff" stroke="#cbd5e1" strokeWidth="0.5" />
+              <text x="10" y="155" fill="#0f172a" fontSize="6.5">1</text>
+              <text x="35" y="155" fill="#0f172a" fontSize="6.5">INITIAL BIM ISSUE</text>
+              <text x="175" y="155" fill="#0f172a" fontSize="6.5">2026-10-13</text>
+            </g>
+
             {/* Sheet Number Huge Callout Box at Bottom */}
             <g transform={`translate(0, ${sheetHeight - 148})`}>
               <rect x="0" y="0" width="256" height="100" fill="#0f172a" />
