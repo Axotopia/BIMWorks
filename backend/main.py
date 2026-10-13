@@ -3,6 +3,7 @@ BIMWorks - FastAPI Sidecar Server
 Provides high-speed local loopback JSON-RPC & REST endpoints for the React/Three.js frontend.
 """
 
+import os
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -129,6 +130,10 @@ class LoadFileRequest(BaseModel):
     filename: Optional[str] = "Imported.ifc"
 
 
+class LoadPathRequest(BaseModel):
+    path: str
+
+
 class WallJoinRequest(BaseModel):
     wall_guid: str
     end_index: int
@@ -150,6 +155,18 @@ def get_project_state():
         "elements_count": len(bim_manager.element_meta),
         "georeference": bim_manager.georeference_data,
     }
+
+
+@app.post("/api/load-path")
+def load_path(req: LoadPathRequest):
+    """Loads an IFC STEP file directly from a local filesystem path into the active workspace."""
+    if not os.path.exists(req.path):
+        raise HTTPException(status_code=404, detail=f"File not found: {req.path}")
+    try:
+        res = bim_manager.load_ifc_file(req.path, os.path.basename(req.path))
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to load IFC file from path: {str(e)}")
 
 
 @app.post("/api/load-file")

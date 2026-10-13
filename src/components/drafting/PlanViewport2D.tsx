@@ -391,8 +391,8 @@ export const PlanViewport2D: React.FC = () => {
           {constraints
             .filter((c) => c.type === 'align')
             .map((c) => {
-              const elemA = elements[c.guid_a];
-              const elemB = elements[c.guid_b];
+              const elemA = c.guid_a ? elements[c.guid_a] : undefined;
+              const elemB = c.guid_b ? elements[c.guid_b] : undefined;
               if (!elemA && !elemB) return null;
               const posA = elemA?.start || [0, 0];
               const posB = elemB?.start || posA;
