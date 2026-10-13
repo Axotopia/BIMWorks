@@ -166,3 +166,42 @@ export type ActiveTool =
   | 'BX' // Section Box
   | 'AL' // Align & Lock
   | 'EQ'; // Equalize
+
+export interface WallJoinPolicy {
+  allow_join: boolean;
+  mode: 'butt' | 'miter' | 'square_off';
+}
+
+export interface WallJoinState {
+  end0: WallJoinPolicy;
+  end1: WallJoinPolicy;
+}
+
+export interface CommandPayload {
+  command: string;
+  params: Record<string, any>;
+  origin?: 'ui' | 'ai' | 'script' | 'cli';
+}
+
+export interface TransactionPayload {
+  commands: CommandPayload[];
+  origin?: 'ui' | 'ai' | 'script' | 'cli';
+  description?: string;
+}
+
+export interface AiPlan {
+  intentSummary: string;
+  commands: CommandPayload[];
+  explanation?: string;
+  affectedGuids?: string[];
+}
+
+export interface TransactionJournalEntry {
+  transaction_id: string;
+  origin: 'ui' | 'ai' | 'script' | 'cli';
+  description: string;
+  timestamp: number;
+  commands: CommandPayload[];
+  results?: any[];
+}
+

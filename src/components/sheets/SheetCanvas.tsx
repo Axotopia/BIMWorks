@@ -143,8 +143,8 @@ export const SheetCanvas: React.FC = () => {
 
             {/* Logo & Firm Name */}
             <rect x="0" y="0" width="256" height="85" fill="#0f172a" />
-            <text x="128" y="38" textAnchor="middle" fill="#ffffff" fontSize="18" fontWeight="bold">
-              OPEN REVIT LT
+            <text x="128" y="38" textAnchor="middle" fill="#ffffff" fontSize="20" fontWeight="bold" letterSpacing="1">
+              BIMWORKS
             </text>
             <text x="128" y="58" textAnchor="middle" fill="#38bdf8" fontSize="10" letterSpacing="2">
               NATIVE IFC4 BIM STUDIO

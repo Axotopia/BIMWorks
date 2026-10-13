@@ -1,7 +1,7 @@
 {
   "name": "bimworks",
   "version": "1.0.0",
-  "description": "",
+  "description": "Native-IFC Architectural BIM Authoring Application — AI-First by Design",
   "main": "index.js",
   "type": "module",
   "scripts": {

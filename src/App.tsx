@@ -5,6 +5,7 @@ import { StatusBar } from './components/statusbar/StatusBar';
 import { GeoreferenceModal } from './components/modals/GeoreferenceModal';
 import { EditTypeModal } from './components/modals/EditTypeModal';
 import { ViewRangeModal } from './components/modals/ViewRangeModal';
+import { PromptBar } from './components/ai/PromptBar';
 import { useBimStore } from './store/useBimStore';
 
 export const App: React.FC = () => {
@@ -71,7 +72,10 @@ export const App: React.FC = () => {
       {/* 2. Dockview MDI Workspace (Browser, Palettes, 3D/2D Viewports, Sheets) */}
       <Workspace />
 
-      {/* 3. View Control & Status Bar */}
+      {/* 3. Tier-1 In-App Prompt Bar ("Ask/Do" Bar) */}
+      <PromptBar />
+
+      {/* 4. View Control & Status Bar */}
       <StatusBar />
 
       {/* 4. Modals */}

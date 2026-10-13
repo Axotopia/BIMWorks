@@ -1,6 +1,7 @@
 import React from 'react';
 import { Settings, Trash2, Box, Info } from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
+import { formatLength, metersToFeet } from '../../utils/units';
 
 export const PropertiesPalette: React.FC = () => {
   const {
@@ -8,6 +9,7 @@ export const PropertiesPalette: React.FC = () => {
     meshes,
     deleteElement,
     setEditTypeModalOpen,
+    displayUnit,
   } = useBimStore();
 
   const selectedMesh = meshes.find((m) => m.guid === selectedGuid);
@@ -86,13 +88,15 @@ export const PropertiesPalette: React.FC = () => {
                     <td className="py-1 text-[#858585]">Length</td>
                     <td className="py-1 text-right text-[#38bdf8] font-mono">
                       {selectedMesh?.bbox
-                        ? `${(
-                            Math.hypot(
+                        ? (() => {
+                            const lenM = Math.hypot(
                               selectedMesh.bbox.max[0] - selectedMesh.bbox.min[0],
                               selectedMesh.bbox.max[1] - selectedMesh.bbox.min[1]
-                            )
-                          ).toFixed(2)} m`
-                        : '4.50 m'}
+                            );
+                            const lenFt = metersToFeet(lenM);
+                            return `${formatLength(lenFt, displayUnit)} (${lenM.toFixed(2)}m)`;
+                          })()
+                        : '10\'-0"'}
                     </td>
                   </tr>
                   <tr className="border-b border-[#2d2d2d]">
