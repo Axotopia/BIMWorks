@@ -274,6 +274,10 @@ interface BimStoreState {
   clearKeyBuffer: () => void;
 
   setActiveViewId: (id: string) => void;
+  /** Assigns the storey a 2D view draws, then refetches it. */
+  setViewLevel: (viewId: string, levelId: string | undefined) => void;
+  /** Sets the cut plane as a height ABOVE the view's level, then refetches. */
+  setViewCut: (viewId: string, cutAboveLevel: number) => void;
   setActiveSheetId: (id: string) => void;
   setSelectedGuid: (guid: string | null) => void;
   setHoveredGuid: (guid: string | null) => void;
@@ -798,6 +802,25 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   setGeoreferenceModalOpen: (open) => set({ isGeoreferenceModalOpen: open }),
   setEditTypeModalOpen: (open) => set({ isEditTypeModalOpen: open }),
   setViewRangeModalOpen: (open) => set({ isViewRangeModalOpen: open }),
+
+  setViewLevel: (viewId, levelId) => {
+    set((state) => ({
+      views: state.views.map((v) => (v.id === viewId ? { ...v, levelId } : v)),
+    }));
+    // Refetch so the drawing follows the selection immediately.
+    const active = get().activeViewId;
+    if (active === viewId) get().fetch2DSlice();
+  },
+
+  setViewCut: (viewId, cutAboveLevel) => {
+    set((state) => ({
+      views: state.views.map((v) =>
+        v.id === viewId ? { ...v, viewRange: { ...v.viewRange, cut: cutAboveLevel } } : v
+      ),
+    }));
+    const active = get().activeViewId;
+    if (active === viewId) get().fetch2DSlice(cutAboveLevel);
+  },
   setLegalModalOpen: (open) => set({ isLegalModalOpen: open }),
 
   // 1D/2D Parametric Constraints Implementation
@@ -1011,7 +1034,14 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         });
         url = `${API_BASE}/view/2d?${params.toString()}`;
       } else {
-        url = `${API_BASE}/slice/2d?cut_elevation=${cut}`;
+        // Plans are LEVEL-RELATIVE: `cut` is a height above the storey, not an absolute
+        // elevation, which is the Revit convention and the only thing that works on a
+        // real model (a storey at 1824 ft cut at an absolute 4 ft sections empty space).
+        // The active view's level is the storey it draws.
+        const levelId = active?.levelId;
+        const q = new URLSearchParams({ cut_elevation: String(cut) });
+        if (levelId) q.set('level_id', levelId);
+        url = `${API_BASE}/slice/2d?${q.toString()}`;
       }
 
       const res = await fetch(url);

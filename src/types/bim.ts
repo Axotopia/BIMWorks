@@ -101,6 +101,14 @@ export interface Sliced2DData {
   window_paths?: Array<{ guid: string; class: string; d: string }>;
   // Which renderer produced this view ("mesh-hlr" | "hlr" | "analytic").
   renderer?: string;
+  // Which storey this plan draws, and where its cut plane landed. A plan is level-relative,
+  // so `cut_elevation` is an offset above `level_elevation` and `cut_absolute` is the
+  // resulting model elevation.
+  level_id?: string | null;
+  level_name?: string | null;
+  level_elevation?: number;
+  cut_absolute?: number;
+  plan_rotation?: number;
   partitions?: { cut: number; projection: number; hidden: number; below?: number };
   view_range?: Record<string, number>;
   lineweights?: Record<string, { weight_mm: number; pattern: string; colour: string }>;
