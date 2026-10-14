@@ -29,11 +29,22 @@ East and West resolve to their real GUIDs; South resolves for its main run.
 
 REMAINING GAPS before this can be the default
 ---------------------------------------------
-1. Fragments at an element's extent boundary (e.g. the piece of wall beside a door
-   opening) still mis-attribute, and calibration is approximate sub-foot
-   (~20.5 units/ft on one axis vs ~20.18 on the other), visible as a ~0.3 ft offset
-   on the far wall. Both are consequences of using a bbox similarity transform
-   instead of the serializer's exact plane matrix.
+1. Attribution has an UNRESOLVED case. Calibration is now exact (measured: 0.000 ft
+   error on a single wall and on a three-wall L-plan, because the transform is solved
+   from the content box to the model bounds). Hosted openings and storey frames are
+   correctly excluded as correlation candidates, and East/West/South resolve to their
+   real GUIDs in the tests.
+
+   However, in a plan containing a wall plus a door, 10 of the wall's paths are
+   attributed to a GUID that is NOT the wall's and NOT any model element's — printed
+   as `unknown 01A5CnSDv30RaobYEC1QYf` against a wall GUID of
+   `2U8H5oG6j22QQrgF$sgnh2`. The source of that identifier has not been traced. It
+   cannot come from the wall's element group (whose extents capture correctly under
+   the model GUID), so something else in the pipeline is synthesising it. Until that
+   is understood, attribution is NOT trustworthy and this is the concrete blocker.
+
+   The earlier "~0.3 ft sub-foot drift" note is obsolete: it was measured before the
+   plane-selection fix and no longer reproduces.
 2. No `hidden` partition is emitted in any configuration (occluded edges are removed
    rather than separated), so `hidden_paths` is always empty and the M3 wording
    "hidden lines separated" is not satisfied.
@@ -809,11 +820,25 @@ class HlrRenderer:
         """
         if not element_extents:
             return 0
+        # A hosted opening (door/window) is nested inside its host wall, so its
+        # extent is contained by the wall's and it would "win" the tightest-match
+        # contest for wall fragments beside the opening. Openings are excluded as
+        # candidates; they are identified from the model rather than from geometry.
+        hosted = {
+            guid for guid, meta in self.manager.element_meta.items()
+            if meta.get("host_wall_guid")
+        }
         attributed = 0
+        storey_guids = {
+            guid for guid, meta in self.manager.element_meta.items()
+            if meta.get("ifc_class") == "IfcBuildingStorey"
+        }
         for partition in ("cut", "section", "projection", "below"):
             for entry in partitions.get(partition, []):
                 if entry.get("guid") and entry.get("ifc_class") not in (None, "IfcBuildingStorey"):
                     continue
+                if entry.get("guid") in storey_guids:
+                    entry.pop("guid", None)
                 nums = [float(v) for v in re.findall(_NUM, entry["d"])]
                 if not nums:
                     continue
@@ -825,6 +850,8 @@ class HlrRenderer:
                 best = None
                 best_area = None
                 for (guid, name), ext in element_extents.items():
+                    if guid in hosted:
+                        continue
                     ex0, ex1, ey0, ey1 = ext
                     span_x = max(ex1 - ex0, 1e-6)
                     span_y = max(ey1 - ey0, 1e-6)
