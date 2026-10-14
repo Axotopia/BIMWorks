@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check:bus": "node scripts/check-bus-parity.mjs",
+    "check": "npm run check:bus && tsc --noEmit"
   },
   "bugs": {
     "url": "https://github.com/Axotopia/BIMWorks/issues"

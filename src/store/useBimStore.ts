@@ -23,6 +23,35 @@ import { UnitSystem } from '../utils/units';
 
 const API_BASE = '/api';
 
+/**
+ * P1 — every editing action the UI can perform maps to a typed CommandBus
+ * command. This table is the contract the parity audit checks against: a new UI
+ * action is not "done" until it appears here and is dispatched via
+ * `dispatchTransaction`, which is the store's only mutation entry point.
+ *
+ * The store is not allowed to call a raw mutation endpoint. Routes such as
+ * `/api/wall` still exist for external clients, but they are bus-backed
+ * compatibility shims, and the UI does not use them.
+ */
+export const UI_ACTION_COMMANDS = {
+  createWall: 'WallCreate',
+  createDoor: 'DoorInsert',
+  createWindow: 'WindowInsert',
+  createSlab: 'SlabCreate',
+  createRoof: 'RoofCreate',
+  updateElement: 'ElementUpdate',
+  deleteElement: 'DeleteElement',
+  translateElement: 'WallMove',
+  setWallJoin: 'SetWallJoin',
+  createAlignConstraint: 'ConstraintAlign',
+  lockDimension: 'ConstraintLockDim',
+  equalizeSpan: 'ConstraintEqualize',
+  toggleConstraintLock: 'ConstraintLockToggle',
+  deleteConstraint: 'ConstraintDelete',
+} as const;
+
+export type UiAction = keyof typeof UI_ACTION_COMMANDS;
+
 /** Feet -> metres; the engine's internals are metric (spec §11.3 fixes this in P2). */
 const FEET_TO_M = 0.3048;
 
@@ -289,6 +318,12 @@ interface BimStoreState {
   setWallJoin: (wallGuid: string, endIdx: number, allowJoin: boolean, mode: 'butt' | 'miter' | 'square_off') => Promise<void>;
 
   executeTransaction: (commands: CommandPayload[], origin?: 'ui' | 'ai' | 'script' | 'cli', description?: string) => Promise<any>;
+  /**
+   * P1: the single mutation entry point for UI actions. Wraps one typed command
+   * in an atomic, journaled transaction and refreshes view state from the
+   * engine. Any mutation that does not go through here is a bug.
+   */
+  dispatchTransaction: (action: UiAction, params: Record<string, unknown>, description?: string) => Promise<any>;
   undoTransaction: () => Promise<void>;
   redoTransaction: () => Promise<void>;
   transactionJournal: TransactionJournalEntry[];
@@ -744,17 +779,12 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   createAlignConstraint: async (refGuid: string, targetGuid: string, axis = 'x', lock = true) => {
     try {
-      const res = await fetch(`${API_BASE}/constraints/align`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ref_guid: refGuid, target_guid: targetGuid, axis, lock }),
-      });
-      if (res.ok) {
-        await get().fetchConstraints();
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-        set({ alignPickState: { step: null, refGuid: null }, activeTool: 'select' });
-      }
+      await get().dispatchTransaction(
+        'createAlignConstraint',
+        { ref_guid: refGuid, target_guid: targetGuid, axis, lock },
+        'Align & lock elements'
+      );
+      set({ alignPickState: { step: null, refGuid: null }, activeTool: 'select' });
     } catch (e) {
       console.error('Failed to create align constraint', e);
     }
@@ -762,14 +792,11 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   toggleConstraintLock: async (constraintId: string, isLocked: boolean) => {
     try {
-      const res = await fetch(`${API_BASE}/constraints/${constraintId}/toggle_lock`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_locked: isLocked }),
-      });
-      if (res.ok) {
-        await get().fetchConstraints();
-      }
+      await get().dispatchTransaction(
+        'toggleConstraintLock',
+        { constraint_id: constraintId, is_locked: isLocked },
+        isLocked ? 'Lock constraint' : 'Unlock constraint'
+      );
     } catch (e) {
       console.error('Failed to toggle constraint lock', e);
     }
@@ -777,20 +804,17 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   lockDimension: async (guidA: string, guidB: string, distance?: number, axis = 'x') => {
     try {
-      const res = await fetch(`${API_BASE}/constraints/lock_dimension`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await get().dispatchTransaction(
+        'lockDimension',
+        {
           guid_a: guidA,
           guid_b: guidB,
           locked_distance: distance,
           lock: true,
           axis,
-        }),
-      });
-      if (res.ok) {
-        await get().fetchConstraints();
-      }
+        },
+        'Lock dimension'
+      );
     } catch (e) {
       console.error('Failed to lock dimension', e);
     }
@@ -803,21 +827,16 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     axis = 'x'
   ) => {
     try {
-      const res = await fetch(`${API_BASE}/constraints/equalize`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await get().dispatchTransaction(
+        'equalizeSpan',
+        {
           span_start_guid: spanStartGuid,
           span_end_guid: spanEndGuid,
           interior_guids: interiorGuids,
           axis,
-        }),
-      });
-      if (res.ok) {
-        await get().fetchConstraints();
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-      }
+        },
+        'Equalize spacing (EQ)'
+      );
     } catch (e) {
       console.error('Failed to equalize span', e);
     }
@@ -825,10 +844,11 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   deleteConstraint: async (constraintId: string) => {
     try {
-      const res = await fetch(`${API_BASE}/constraints/${constraintId}`, { method: 'DELETE' });
-      if (res.ok) {
-        await get().fetchConstraints();
-      }
+      await get().dispatchTransaction(
+        'deleteConstraint',
+        { constraint_id: constraintId },
+        'Delete constraint'
+      );
     } catch (e) {
       console.error('Failed to delete constraint', e);
     }
@@ -1026,16 +1046,12 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   createWall: async (start, end, name = 'Basic Wall : Exterior - 10" CMU') => {
     try {
-      const res = await fetch(`${API_BASE}/wall`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ start, end, height: 3.0, thickness: 0.25, name }),
-      });
-      if (res.ok) {
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-        set({ activeTool: 'select' });
-      }
+      await get().dispatchTransaction(
+        'createWall',
+        { start, end, height: 3.0, thickness: 0.25, name },
+        `Create wall "${name}"`
+      );
+      set({ activeTool: 'select' });
     } catch (e) {
       console.error('Failed to create wall', e);
     }
@@ -1043,16 +1059,12 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   createDoor: async (hostWallGuid, offset, name = 'Single Flush : 36" x 84"') => {
     try {
-      const res = await fetch(`${API_BASE}/door`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host_wall_guid: hostWallGuid, offset_along_wall: offset, name }),
-      });
-      if (res.ok) {
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-        set({ activeTool: 'select' });
-      }
+      await get().dispatchTransaction(
+        'createDoor',
+        { host_wall_guid: hostWallGuid, offset_along_wall: offset, name },
+        'Insert door'
+      );
+      set({ activeTool: 'select' });
     } catch (e) {
       console.error('Failed to insert door', e);
     }
@@ -1060,23 +1072,19 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   createWindow: async (hostWallGuid, offset, name = 'Fixed Window : 48" x 48"') => {
     try {
-      const res = await fetch(`${API_BASE}/window`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await get().dispatchTransaction(
+        'createWindow',
+        {
           host_wall_guid: hostWallGuid,
           offset_along_wall: offset,
           width: 1.4,
           height: 1.5,
           sill_height: 0.9,
           name,
-        }),
-      });
-      if (res.ok) {
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-        set({ activeTool: 'select' });
-      }
+        },
+        'Insert window'
+      );
+      set({ activeTool: 'select' });
     } catch (e) {
       console.error('Failed to insert window', e);
     }
@@ -1084,16 +1092,12 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   createRoof: async (polygon, thickness = 0.3, elevation = 6.0, pitch_degrees = 15.0, name = 'Roof : Pitched Metal Deck') => {
     try {
-      const res = await fetch(`${API_BASE}/roof`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ polygon, thickness, elevation, pitch_degrees, name }),
-      });
-      if (res.ok) {
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-        set({ activeTool: 'select' });
-      }
+      await get().dispatchTransaction(
+        'createRoof',
+        { polygon, thickness, elevation, pitch_degrees, name },
+        'Create roof'
+      );
+      set({ activeTool: 'select' });
     } catch (e) {
       console.error('Failed to create roof', e);
     }
@@ -1101,16 +1105,12 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   createSlab: async (polygon, thickness = 0.25, elevation = 0.0, name = 'Floor : 10" Concrete Slab') => {
     try {
-      const res = await fetch(`${API_BASE}/slab`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ polygon, thickness, elevation, name }),
-      });
-      if (res.ok) {
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-        set({ activeTool: 'select' });
-      }
+      await get().dispatchTransaction(
+        'createSlab',
+        { polygon, thickness, elevation, name },
+        'Create slab'
+      );
+      set({ activeTool: 'select' });
     } catch (e) {
       console.error('Failed to create slab', e);
     }
@@ -1118,15 +1118,11 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   updateElement: async (guid: string, updates: Partial<BimElement>) => {
     try {
-      const res = await fetch(`${API_BASE}/element/${guid}/update`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      });
-      if (res.ok) {
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-      }
+      await get().dispatchTransaction(
+        'updateElement',
+        { guid, updates },
+        'Edit element geometry'
+      );
     } catch (e) {
       console.error('Failed to update element', e);
     }
@@ -1134,12 +1130,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   deleteElement: async (guid) => {
     try {
-      const res = await fetch(`${API_BASE}/element/${guid}`, { method: 'DELETE' });
-      if (res.ok) {
-        set({ selectedGuid: null, tempDimension: null });
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-      }
+      await get().dispatchTransaction('deleteElement', { guid }, 'Delete element');
+      set({ selectedGuid: null, tempDimension: null });
     } catch (e) {
       console.error('Failed to delete element', e);
     }
@@ -1147,15 +1139,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   translateElement: async (guid, dx, dy, dz = 0.0) => {
     try {
-      const res = await fetch(`${API_BASE}/element/${guid}/translate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dx, dy, dz }),
-      });
-      if (res.ok) {
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-      }
+      await get().dispatchTransaction('translateElement', { guid, dx, dy, dz }, 'Move element');
     } catch (e) {
       console.error('Failed to translate element', e);
     }
@@ -1327,20 +1311,16 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   setWallJoin: async (wallGuid, endIdx, allowJoin, mode) => {
     try {
-      const res = await fetch(`${API_BASE}/wall/join`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await get().dispatchTransaction(
+        'setWallJoin',
+        {
           wall_guid: wallGuid,
           end_index: endIdx,
           allow_join: allowJoin,
           mode: mode,
-        }),
-      });
-      if (res.ok) {
-        await get().fetchWallJoins();
-        await get().fetch2DSlice();
-      }
+        },
+        'Change wall join'
+      );
     } catch (e) {
       console.error('Failed to set wall join', e);
     }
@@ -1364,10 +1344,13 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       }
 
       const data = await res.json();
+      // View state is refreshed from the engine after every commit; the store
+      // holds no independent model state.
       await get().fetchProjectState();
       await get().fetchGeometry();
       await get().fetch2DSlice();
       await get().fetchConstraints();
+      await get().fetchWallJoins();
       await get().fetchTransactionJournal();
 
       return data;
@@ -1375,6 +1358,15 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       console.error('executeTransaction error:', e);
       throw e;
     }
+  },
+
+  dispatchTransaction: async (action, params, description = 'Edit') => {
+    const command = UI_ACTION_COMMANDS[action];
+    return get().executeTransaction(
+      [{ command, params, origin: 'ui' }],
+      'ui',
+      description || command
+    );
   },
 
   undoTransaction: async () => {

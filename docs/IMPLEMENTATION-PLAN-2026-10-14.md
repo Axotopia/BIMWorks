@@ -54,8 +54,8 @@
 | N2 | **Changed — import fixed, export still broken (asymmetric).** Upstream added a real `IfcGrid` *reader* (axes via `IfcPolyline` + grid placement matrix, deduped by tag/geometry) | Read side: `ifc_service.py` `for grid in self.model.by_type("IfcGrid")`. Write side still meta-dict only: `add_grid` mints `str(uuid.uuid4())` instead of an IFC `GlobalId`. **Verified by execution:** export and saved container both contain **0** `IFCGRID` entities |
 | N3 | **Still open, and now with a sharper edge.** The new import path *does* handle hosts/fills properly, so element `host_wall_guid` is now trustworthy — but constraints and join policies are still restored wholesale with no GUID gating (only `type_properties` is gated) | `load_orlt_project`: `self.constraints = …`, `self.join_policies = …` unconditionally |
 | N4 | **Still open — unchanged.** `Pset_ORLT_Constraints` still written and still the round-trip dependency | `save_constraints_to_ifc` / `load_constraints_from_ifc` |
-| N5 | **Still open and LARGER than the review measured.** Upstream added `ElementUpdate` to the CommandBus, but the UI does not use it: it posts to the raw `/api/element/{guid}/update`, which calls `bim_manager.update_element` directly and is never journaled. So the new geometry editor's edits are unundoable | `useBimStore.ts` `updateElement` → `/element/${guid}/update`; endpoint calls the manager directly. Raw-path list now also covers roof/slab/create/translate/delete/joins |
-| N6 | **Half fixed by P0, half open.** Door/window slide is now angle-correct. **EQ still has no propagation branch** | Propagation loop handles `align` and `dimension_lock` only; no `equalize` case |
+| N5 | **FIXED by P1.** The UI dispatches every editing action as a typed command through one atomic transaction; the raw routes are bus-backed shims and `/api/command` can no longer mutate unjournaled. Note how it was found: upstream added the `ElementUpdate` command but left the UI on raw REST, so the feature shipped unundoable | `UI_ACTION_COMMANDS` + `dispatchTransaction`; `scratch/test_bus_parity_audit.py`; `scripts/check-bus-parity.mjs` |
+| N6 | **Half fixed.** Door/window slide is angle-correct (P0). **EQ still open, now scoped to P3** with measured evidence: `equalize_span` appends a duplicate constraint per call and no propagation branch exists | Propagation loop handles `align` and `dimension_lock` only; see the P1 re-scope bullet |
 | N7 | **Fixed by P0** | `fetchGeometry` builds the `elements` record from each mesh's `params` |
 | N8 | **Fixed by P0** | `accept=".bimworks,.orlt,.ifc,.stp,.step"` |
 | N9 | **Fixed by P0** (dependency declared + installed + HTTP-level test). **New lint surfaced:** the merge duplicated the `python-multipart` line in `requirements.txt` | `requirements.txt` |
@@ -126,9 +126,25 @@ Converge every UI action onto the CommandBus before any new feature lands.
 - Retire or wrap the raw REST endpoints (`/api/wall`, `/api/element/{guid}/update`, etc.) as thin bus aliases; keep response shapes the frontend already consumes.
 - Every Ribbon tool then becomes: emit command(s) → receive delta → update view state. The Zustand store stops being a second model.
 - Add an automated **parity audit** (acceptance criterion #6, enforced early): script that performs the M2 test model through the bus with the UI disabled, and a test asserting every UI action maps to a bus command.
-- Fix the EQ propagation gap (N6) here rather than in P3 *if* it is cheap: `translate_element`'s propagation loop is the only thing that needs the branch, and leaving EQ silently non-functional while the UI draws EQ padlocks is the same trust hazard P0-5 just removed.
+- ~~Fix the EQ propagation gap (N6) here if it is cheap.~~ **Re-scoped to P3 (verified 2026-10-14, not cheap).** Measured against the current engine: (a) `equalize_span` *appends a new `equalize` constraint on every call* — two identical calls leave two constraints — so wiring it into `translate_element` would accumulate a duplicate constraint per drag; (b) redistributing the interior elements is only half of it, because hosted openings are repositioned with a raw world delta inside `equalize_span` and are then re-projected by the P0-corrected drag path, so the two disagree off-axis; (c) EQ has no solver, so "the constraint holds" is not expressible. Fixing it properly means in-place constraint updates plus hosted-offset math, which is exactly the planegcs work in P3. Until then the UI's EQ affordance over-promises, and P3's exit criteria already require "EQ holds through arbitrary later moves".
 
 **Exit criteria:** Undo/redo works for every Ribbon action; journal contains every mutation; parity-audit test in CI (even a local `pytest` gate for now).
+
+**Status: COMPLETE (2026-10-14).** Verified by execution on the merged tree.
+
+| Item | What landed | Evidence |
+|---|---|---|
+| Route UI edits through the bus | Store mutations are now `dispatchTransaction(action, params)` → one typed command → one atomic transaction. `UI_ACTION_COMMANDS` maps all 14 editing actions to commands; `executeTransaction` is the single HTTP entry point; the store holds no model state | `src/store/useBimStore.ts` |
+| Missing commands | `ConstraintLockToggle` and `ConstraintDelete` added (bus had no way to lock or remove a constraint, so those two UI actions had no command at all). Registry is now 16 commands, all with executor branches | `backend/command_bus.py` |
+| Raw endpoints become shims | All 15 mutating REST routes now run through `run_mutation(...)` — same response shapes (plus `transaction_id`), but journaled and undoable. Documented as compatibility shims for external clients; the UI no longer calls them | `backend/main.py` |
+| Close the `/api/command` hole | `POST /api/command` wrapped mutating commands in a one-command transaction; previously it executed them **unjournaled**, a second bypass alongside the routes | `backend/main.py` |
+| Parity audit | `scratch/test_bus_parity_audit.py` — route closure, per-endpoint journal deltas (all 15), atomic rollback, clean 400 on invalid params, undo/redo per creation action, read paths not journaling, and a negative control proving the audit can fail | 9 sections, all pass |
+| Frontend gate | `scripts/check-bus-parity.mjs` (wired as `npm run check:bus`) fails the build if the store calls a raw mutation endpoint, if a declared UI action is never dispatched, or if a second mutation path appears. Mutation-tested: reintroducing the old `translate` fetch fails the gate | gate passes; fails on injected regression |
+
+**Deliberately excluded from P1 (documented, not forgotten):**
+- **Document lifecycle stays non-journaled:** `/api/sample`, `/api/load-file`, `/api/upload/ifc`, `/api/reset`, project-container load. These replace the document rather than edit it, so making them undoable would surprise the user; "revert to saved" is a different feature.
+- **`/api/georeference`** is project metadata, not part of the model snapshot, so journaling it would create undo entries that restore nothing.
+- **EQ propagation (N6)** deferred to P3 with measured justification — see the bullet above.
 
 ### P2 — Overlay-as-truth refactor (target: 2–3 weeks) ← *the decisive milestone*
 This merges the session's open items #3 (units) and #4 (pset) and reframes #5 (import). Nothing else ships features until this lands.

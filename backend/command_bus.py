@@ -117,6 +117,15 @@ class ElementUpdateParams(BaseModel):
     updates: Dict[str, Any] = Field(..., description="Element property updates (polygon, thickness, elevation, pitch, etc.)")
 
 
+class ConstraintLockToggleParams(BaseModel):
+    constraint_id: str = Field(..., description="Constraint identifier to lock/unlock")
+    is_locked: bool = Field(..., description="New padlock state")
+
+
+class ConstraintDeleteParams(BaseModel):
+    constraint_id: str = Field(..., description="Constraint identifier to remove")
+
+
 # Registry of command names to parameter classes
 COMMAND_REGISTRY = {
     "WallCreate": WallCreateParams,
@@ -132,6 +141,8 @@ COMMAND_REGISTRY = {
     "ConstraintAlign": ConstraintAlignParams,
     "ConstraintLockDim": ConstraintLockDimParams,
     "ConstraintEqualize": ConstraintEqualizeParams,
+    "ConstraintLockToggle": ConstraintLockToggleParams,
+    "ConstraintDelete": ConstraintDeleteParams,
     "ElementUpdate": ElementUpdateParams,
 }
 
@@ -297,6 +308,20 @@ class CommandBusEngine:
             p: ConstraintEqualizeParams = validated
             c = self.manager.equalize_span(p.span_start_guid, p.span_end_guid, p.interior_guids, p.axis)
             return {"status": "equalized", "constraint": c}
+
+        elif cmd_name == "ConstraintLockToggle":
+            p: ConstraintLockToggleParams = validated
+            ok = self.manager.toggle_constraint_lock(p.constraint_id, p.is_locked)
+            if not ok:
+                raise ValueError(f"Constraint {p.constraint_id} not found")
+            return {"status": "updated", "constraint_id": p.constraint_id, "is_locked": p.is_locked}
+
+        elif cmd_name == "ConstraintDelete":
+            p: ConstraintDeleteParams = validated
+            ok = self.manager.delete_constraint(p.constraint_id)
+            if not ok:
+                raise ValueError(f"Constraint {p.constraint_id} not found")
+            return {"status": "deleted", "constraint_id": p.constraint_id}
 
         elif cmd_name == "ElementUpdate":
             p: ElementUpdateParams = validated

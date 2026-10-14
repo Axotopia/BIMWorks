@@ -15,9 +15,68 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from ifc_service import bim_manager, CONTAINER_EXTENSION, CONTAINER_EXTENSIONS
-from command_bus import command_bus, CommandRequest, TransactionRequest
+from command_bus import command_bus, CommandRequest, TransactionRequest, COMMAND_REGISTRY
 
 app = FastAPI(title="BIMWorks BIM Sidecar", version="2.1.0")
+
+# ============================================================================
+# BUS-ONLY MUTATION ADAPTER (P1)
+# ============================================================================
+# Every mutating REST route below is a *compatibility shim*: it executes the
+# equivalent typed command through the CommandBus as a one-command transaction,
+# so the mutation is journaled, undoable and identical to a UI/AI/script edit.
+#
+# Historically these routes called `bim_manager` directly, which is why Ribbon
+# actions were unjournaled and Undo silently no-opped. Do not add a route that
+# touches `bim_manager` mutably without going through this helper — the
+# parity audit (scratch/test_bus_parity_audit.py) fails if you do.
+#
+# Deliberately NOT routed here (they replace the document rather than edit it,
+# so making them undoable would be a surprise, not a feature): /api/load-path,
+# /api/load-file, /api/upload/ifc, /api/reset, /api/sample, and the project
+# container load. File-open is a document lifecycle action, not an edit.
+# ----------------------------------------------------------------------------
+
+# Command names that mutate model state. Read-only/query commands must not be
+# journaled; today every registered command mutates.
+MUTATING_COMMANDS = frozenset(COMMAND_REGISTRY.keys())
+
+
+def run_mutation(
+    commands: List[CommandRequest],
+    description: str,
+    origin: str = "ui",
+    include_transaction: bool = False,
+) -> Dict[str, Any]:
+    """
+    Executes mutation command(s) as ONE atomic, journaled transaction.
+
+    Returns the single command's result dict when exactly one command is given
+    (so compatibility routes can keep their historical response shape), plus
+    `transaction_id` so callers can correlate with the undo stack/journal.
+
+    A rejected transaction is a client-side failure (bad parameter, missing
+    element), so it surfaces as a 400 with the original validation message —
+    `execute_transaction` wraps the cause in a RuntimeError to report the
+    rollback, and unwrapping it keeps API error messages actionable instead of
+    turning every validation error into a 500.
+    """
+    for c in commands:
+        if c.command not in COMMAND_REGISTRY:
+            raise HTTPException(status_code=400, detail=f"Unknown command '{c.command}'")
+
+    try:
+        tx = command_bus.execute_transaction(commands, origin=origin, description=description)
+    except Exception as e:
+        cause = e.__cause__ or e
+        raise HTTPException(status_code=400, detail=f"{type(cause).__name__}: {cause}")
+
+    result = dict(tx["results"][0]["result"]) if len(tx["results"]) == 1 else {"results": tx["results"]}
+    result["transaction_id"] = tx["transaction_id"]
+    if include_transaction:
+        result["transaction"] = tx
+    return result
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -267,124 +326,96 @@ load_sample_building()
 
 @app.post("/api/wall")
 def create_wall(req: WallRequest):
-    try:
-        meta = bim_manager.add_wall(
-            start_pt=tuple(req.start),
-            end_pt=tuple(req.end),
-            height=req.height,
-            thickness=req.thickness,
-            level_id=req.level_id,
-            name=req.name,
-        )
-        return {
-            "status": "created",
-            "guid": meta["guid"],
-            "ifc_class": meta["ifc_class"],
-            "name": meta["name"],
-            "length": meta["length"],
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Compatibility shim for WallCreate (bus-backed, journaled)."""
+    return run_mutation(
+        [CommandRequest(command="WallCreate", params=req.model_dump())],
+        description=f'Create wall "{req.name}"',
+    )
 
 
 @app.post("/api/door")
 def create_door(req: DoorRequest):
-    try:
-        meta = bim_manager.add_door(
-            host_wall_guid=req.host_wall_guid,
-            offset_along_wall=req.offset_along_wall,
-            width=req.width,
-            height=req.height,
-            name=req.name,
-            swing_flipped=req.swing_flipped,
-        )
-        return {"status": "created", "guid": meta["guid"], "opening_guid": meta["opening_guid"]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Compatibility shim for DoorInsert (bus-backed, journaled)."""
+    res = run_mutation(
+        [CommandRequest(command="DoorInsert", params=req.model_dump())],
+        description=f'Insert door "{req.name}"',
+    )
+    return {"status": "created", "guid": res.get("guid"), "opening_guid": res.get("opening_guid"),
+            "transaction_id": res.get("transaction_id")}
 
 
 @app.post("/api/window")
 def create_window(req: WindowRequest):
-    try:
-        meta = bim_manager.add_window(
-            host_wall_guid=req.host_wall_guid,
-            offset_along_wall=req.offset_along_wall,
-            width=req.width,
-            height=req.height,
-            sill_height=req.sill_height,
-            name=req.name,
-        )
-        return {"status": "created", "guid": meta["guid"], "opening_guid": meta["opening_guid"]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Compatibility shim for WindowInsert (bus-backed, journaled)."""
+    res = run_mutation(
+        [CommandRequest(command="WindowInsert", params=req.model_dump())],
+        description=f'Insert window "{req.name}"',
+    )
+    return {"status": "created", "guid": res.get("guid"), "opening_guid": res.get("opening_guid"),
+            "transaction_id": res.get("transaction_id")}
 
 
 @app.post("/api/slab")
 def create_slab(req: SlabRequest):
-    try:
-        pts = [tuple(p) for p in req.polygon]
-        meta = bim_manager.add_slab(
-            polygon_pts=pts,
-            thickness=req.thickness,
-            elevation=req.elevation,
-            level_id=req.level_id,
-            name=req.name,
-        )
-        return {"status": "created", "guid": meta["guid"]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Compatibility shim for SlabCreate (bus-backed, journaled)."""
+    res = run_mutation(
+        [CommandRequest(command="SlabCreate", params=req.model_dump())],
+        description=f'Create slab "{req.name}"',
+    )
+    return {"status": "created", "guid": res.get("guid"), "transaction_id": res.get("transaction_id")}
 
 
 @app.post("/api/roof")
 def create_roof(req: RoofRequest):
-    try:
-        pts = [tuple(p) for p in req.polygon]
-        meta = bim_manager.add_roof(
-            polygon_pts=pts,
-            thickness=req.thickness,
-            elevation=req.elevation,
-            pitch_degrees=req.pitch_degrees,
-            level_id=req.level_id,
-            name=req.name,
-        )
-        return {"status": "created", "guid": meta["guid"]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Compatibility shim for RoofCreate (bus-backed, journaled)."""
+    res = run_mutation(
+        [CommandRequest(command="RoofCreate", params=req.model_dump())],
+        description=f'Create roof "{req.name}"',
+    )
+    return {"status": "created", "guid": res.get("guid"), "transaction_id": res.get("transaction_id")}
 
 
 @app.post("/api/grid")
 def create_grid(req: GridRequest):
-    try:
-        meta = bim_manager.add_grid(
-            axis_name=req.axis_name,
-            start_pt=tuple(req.start),
-            end_pt=tuple(req.end),
-        )
-        return {"status": "created", "guid": meta["guid"]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Compatibility shim for GridCreate (bus-backed, journaled)."""
+    res = run_mutation(
+        [CommandRequest(command="GridCreate", params=req.model_dump())],
+        description=f'Create grid axis "{req.axis_name}"',
+    )
+    return {"status": "created", "guid": res.get("guid"), "transaction_id": res.get("transaction_id")}
 
 
 @app.post("/api/level")
 def create_level(req: LevelRequest):
-    level_id = bim_manager.add_level(name=req.name, elevation=req.elevation)
-    return {"status": "created", "id": level_id, "name": req.name, "elevation": req.elevation}
+    """Compatibility shim for LevelCreate (bus-backed, journaled)."""
+    res = run_mutation(
+        [CommandRequest(command="LevelCreate", params=req.model_dump())],
+        description=f'Create level "{req.name}"',
+    )
+    return {"status": "created", "id": res.get("level_id"), "name": req.name,
+            "elevation": req.elevation, "transaction_id": res.get("transaction_id")}
 
 
 @app.delete("/api/element/{guid}")
 def delete_element(guid: str):
-    success = bim_manager.delete_element(guid)
-    if not success:
+    """Compatibility shim for DeleteElement (bus-backed, journaled)."""
+    if guid not in bim_manager.element_meta:
         raise HTTPException(status_code=404, detail="Element not found")
-    return {"status": "deleted", "guid": guid}
+    return run_mutation(
+        [CommandRequest(command="DeleteElement", params={"guid": guid})],
+        description="Delete element",
+    )
 
 
 @app.post("/api/element/{guid}/translate")
 def translate_element(guid: str, req: TranslateRequest):
-    success = bim_manager.translate_element(guid, req.dx, req.dy, req.dz)
-    if not success:
-        raise HTTPException(status_code=404, detail="Element not found or not translatable")
-    return {"status": "translated", "guid": guid}
+    """Compatibility shim for WallMove (bus-backed, journaled)."""
+    if guid not in bim_manager.element_meta:
+        raise HTTPException(status_code=404, detail="Element not found")
+    return run_mutation(
+        [CommandRequest(command="WallMove", params={"guid": guid, "dx": req.dx, "dy": req.dy, "dz": req.dz})],
+        description="Move element",
+    )
 
 
 @app.get("/api/element/{guid}")
@@ -415,13 +446,14 @@ def get_element(guid: str):
 
 @app.post("/api/element/{guid}/update")
 def update_element_endpoint(guid: str, req: UpdateElementRequest):
-    try:
-        updated = bim_manager.update_element(guid, req.dict(exclude_unset=True))
-        return {"status": "updated", "guid": guid, "element": updated}
-    except KeyError:
+    """Compatibility shim for ElementUpdate (bus-backed, journaled)."""
+    if guid not in bim_manager.element_meta:
         raise HTTPException(status_code=404, detail="Element not found")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return run_mutation(
+        [CommandRequest(command="ElementUpdate",
+                        params={"guid": guid, "updates": req.model_dump(exclude_unset=True)})],
+        description="Edit element geometry",
+    )
 
 
 @app.get("/api/geometry")
@@ -484,49 +516,53 @@ def get_constraints():
 
 @app.post("/api/constraints/align")
 def create_align_constraint(req: AlignRequest):
-    try:
-        c = bim_manager.add_align_constraint(req.ref_guid, req.target_guid, req.axis, req.lock)
-        return {"status": "aligned", "constraint": c}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Compatibility shim for ConstraintAlign (bus-backed, journaled)."""
+    return run_mutation(
+        [CommandRequest(command="ConstraintAlign", params=req.model_dump())],
+        description="Align & lock elements",
+    )
 
 
 @app.post("/api/constraints/lock_dimension")
 def lock_dimension(req: DimensionLockRequest):
-    try:
-        c = bim_manager.add_dimension_lock(
-            req.guid_a, req.guid_b, req.locked_distance, req.lock, req.axis
-        )
-        return {"status": "locked", "constraint": c}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Compatibility shim for ConstraintLockDim (bus-backed, journaled)."""
+    return run_mutation(
+        [CommandRequest(command="ConstraintLockDim", params=req.model_dump())],
+        description="Lock dimension",
+    )
 
 
 @app.post("/api/constraints/equalize")
 def equalize_span(req: EqualizeRequest):
-    try:
-        c = bim_manager.equalize_span(
-            req.span_start_guid, req.span_end_guid, req.interior_guids, req.axis
-        )
-        return {"status": "equalized", "constraint": c}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Compatibility shim for ConstraintEqualize (bus-backed, journaled)."""
+    return run_mutation(
+        [CommandRequest(command="ConstraintEqualize", params=req.model_dump())],
+        description="Equalize spacing (EQ)",
+    )
 
 
 @app.post("/api/constraints/{constraint_id}/toggle_lock")
 def toggle_constraint_lock(constraint_id: str, req: ToggleLockRequest):
-    success = bim_manager.toggle_constraint_lock(constraint_id, req.is_locked)
-    if not success:
+    """Compatibility shim for ConstraintLockToggle (bus-backed, journaled)."""
+    if constraint_id not in bim_manager.constraints:
         raise HTTPException(status_code=404, detail="Constraint not found")
-    return {"status": "updated", "is_locked": req.is_locked}
+    return run_mutation(
+        [CommandRequest(command="ConstraintLockToggle",
+                        params={"constraint_id": constraint_id, "is_locked": req.is_locked})],
+        description=f"{'Lock' if req.is_locked else 'Unlock'} constraint",
+    )
 
 
 @app.delete("/api/constraints/{constraint_id}")
 def delete_constraint(constraint_id: str):
-    success = bim_manager.delete_constraint(constraint_id)
-    if not success:
+    """Compatibility shim for ConstraintDelete (bus-backed, journaled)."""
+    if constraint_id not in bim_manager.constraints:
         raise HTTPException(status_code=404, detail="Constraint not found")
-    return {"status": "deleted", "id": constraint_id}
+    res = run_mutation(
+        [CommandRequest(command="ConstraintDelete", params={"constraint_id": constraint_id})],
+        description="Delete constraint",
+    )
+    return {"status": "deleted", "id": res.get("constraint_id"), "transaction_id": res.get("transaction_id")}
 
 
 # ============================================================================
@@ -582,12 +618,16 @@ def get_wall_joins():
 
 @app.post("/api/wall/join")
 def set_wall_join(req: WallJoinRequest):
-    """Sets wall join policy for a specific endpoint (Revit: IsWallJoinAllowedAtEnd)."""
-    try:
-        res = bim_manager.set_wall_join(req.wall_guid, req.end_index, req.allow_join, req.mode)
-        return {"status": "updated", "join_policy": res}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Compatibility shim for SetWallJoin (bus-backed, journaled).
+
+    Revit: IsWallJoinAllowedAtEnd.
+    """
+    if req.wall_guid not in bim_manager.element_meta:
+        raise HTTPException(status_code=404, detail="Wall not found")
+    return run_mutation(
+        [CommandRequest(command="SetWallJoin", params=req.model_dump())],
+        description="Change wall join",
+    )
 
 
 # Tier 0 & Tier 1 CommandBus Endpoints
@@ -599,10 +639,20 @@ def get_commands_schema():
 
 @app.post("/api/command")
 def execute_command(req: CommandRequest):
-    """Executes a single typed command against the CommandBus."""
+    """
+    Executes a single typed command against the CommandBus.
+
+    P1: mutating commands are wrapped in a one-command transaction so this route
+    cannot be used to mutate the model without a journal/undo entry.
+    """
     try:
+        if req.command in MUTATING_COMMANDS:
+            result = run_mutation([req], description=f"Command {req.command}", origin=req.origin)
+            return {"status": "executed", "command": req.command, "result": result}
         res = command_bus.execute_single_command(req.command, req.params)
         return {"status": "executed", "command": req.command, "result": res}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
