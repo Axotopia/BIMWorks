@@ -281,7 +281,16 @@ Both are now asserted in `test_mesh_hlr.py` §5 (a 30 ft wall spans 0–9.144 m;
 
 **A process note worth keeping.** Twice in this milestone, scripted edits reported success without applying, and once an edit inserted a module-level helper *inside* the class body and silently truncated the class from 89 methods to 6. Both were caught only by running the code and checking structure with `ast`, not by reading the diff. Verify by executing.
 
-**Remaining work:** the reviewer-facing visual comparison, and `mesh_hlr` currently writes geometry only (no view templates saved as presets, no temp hide/isolate).
+**Remaining work:** the reviewer-facing visual comparison, and `mesh_hlr` writes geometry only (no view templates saved as presets, no temp hide/isolate).
+
+**Two further defects found and fixed while testing P5 against foreign data** (both P2 units-boundary bugs, same class as the placement bugs found earlier):
+
+1. A `view_depth` of 0 was treated as "no limit" — it drew everything, while 0.01 drew almost nothing. Zero is how the store seeds an unset depth, so the literal reading was backwards. The client guarded against sending it, but the server was relying on the client for correctness. Zero and negative now mean unset, guarded and tested in the backend.
+2. Imported openings were sized in metres but read as feet, so every imported opening was 3.28x too small — a "48 inch" window imported as width 1.4013. The wall path converted correctly, which is what made the inconsistency easy to miss. Fixed with `unit_scale`; a 48" window now measures 4.6 ft across its frame.
+
+Also established: `mesh_hlr` handles foreign IFC geometry (the external `sample_building.ifc` renders 130 cut and 63 hidden paths in plan) and all six of its openings import host-bound, so the symbols are legitimate rather than fabricated.
+
+**Known limitation, documented rather than papered over:** `view_depth` drops whole elements rather than clipping geometry, which is coarser than Revit's view range.
 
 ### P6 — Sheets, PDF, validation (README M4); P7 — AI driver layer (README M5)
 Unchanged in content from the spec; entry criterion for P7 is now strictly gated on the P1 parity audit having been green since P1 (the AI plans against the same bus the UI uses — any residual raw-REST path would poison it). The regex prompt-planner is explicitly a placeholder until then.
