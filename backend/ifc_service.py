@@ -76,9 +76,30 @@ from units import (  # noqa: E402  (kept beside the constants it documents)
     WINDOW_WIDTH_48, WINDOW_HEIGHT_48, WINDOW_SILL_36,
     DOOR_PANEL_THICKNESS, WINDOW_FRAME_THICKNESS,
     format_feet_inches,
+    feet_to_metres,
 )
 
 
+
+
+# NOTE ON IFC GEOMETRY UNITS (established by tracing raw STEP output against
+# ifcopenshell 0.9, because the docs do not state it and the behaviour is
+# inconsistent):
+#
+#   * The profile OUTLINE from `profile.add_arbitrary_profile` and the axis curve
+#     from `grid.create_axis_curve` are unit-converted: supply SI metres.
+#   * `geometry.add_profile_representation(depth)` and
+#     `geometry.add_wall_representation(length/height/thickness)` are NOT
+#     converted the same way - a value passed as 10 serialised as 32.8 in a
+#     foot-based file while the outline beside it serialised 98.4 for an input of
+#     30. A single file therefore ended up mixed-unit.
+#   * `geometry.edit_object_placement(matrix)` converts unless `is_si=False`,
+#     which is why every placement call here passes `is_si=False`.
+#
+# The IFC is therefore authored in METERS - the one setting under which every one
+# of those paths agrees - and the builders convert decimal feet to metres on the
+# way in. The overlay stays in decimal feet because that is the spec's internal
+# unit and what the UI edits. One conversion, at this boundary.
 
 class BimModelManager:
     """
@@ -96,16 +117,23 @@ class BimModelManager:
         self.project = ifcopenshell.api.run(
             "root.create_entity", self.model, ifc_class="IfcProject", name=self.project_name
         )
-        # Internal unit is DECIMAL FEET (spec §11.3). The IFC carries an
-        # IfcConversionBasedUnit on the international foot, so model.ifc is natively
-        # in feet and no unit conversion happens anywhere downstream: the IFC, the
-        # overlay and every stored parameter agree. See backend/units.py.
+        # UNITS AT THIS BOUNDARY (spec §11.3, P2-F).
+        #
+        # Decimal feet is the parametric/internal unit, but the IFC is authored in
+        # METERS: that is IFC's native convention, it is what IFC-native tools
+        # expect, and it avoids ifcopenshell's geometry usecases applying scale
+        # inconsistently (verified: one file serialised a wall outline in metres
+        # while its extrusion depth and placement were in feet).
+        #
+        # So: `element_meta`, the overlay and the UI are decimal feet; the IFC file
+        # is metres; the builders convert on the way in and the import converts on
+        # the way out. backend/units.py owns the factor.
         ifcopenshell.api.run(
             "unit.assign_unit",
             self.model,
-            length={"is_metric": False, "raw": "FEET"},
-            area={"is_metric": False, "raw": "FEET"},
-            volume={"is_metric": False, "raw": "FEET"},
+            length={"is_metric": True, "raw": "METERS"},
+            area={"is_metric": True, "raw": "SQUARE_METERS"},
+            volume={"is_metric": True, "raw": "CUBIC_METERS"},
         )
 
         # Contexts
@@ -490,9 +518,10 @@ class BimModelManager:
             "geometry.add_wall_representation",
             self.model,
             context=self.context_body,
-            length=float(length),
-            height=float(height),
-            thickness=float(thickness),
+            # IFC geometry is metres: convert from the internal decimal feet here.
+            length=feet_to_metres(float(length)),
+            height=feet_to_metres(float(height)),
+            thickness=feet_to_metres(float(thickness)),
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=wall, representation=rep
@@ -576,9 +605,9 @@ class BimModelManager:
             "geometry.add_wall_representation",
             self.model,
             context=self.context_body,
-            length=float(width),
-            height=float(height),
-            thickness=float(wall_thickness + INCHES_4),
+            length=feet_to_metres(float(width)),
+            height=feet_to_metres(float(height)),
+            thickness=feet_to_metres(float(wall_thickness + INCHES_4)),
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=opening, representation=op_rep
@@ -608,9 +637,9 @@ class BimModelManager:
             "geometry.add_wall_representation",
             self.model,
             context=self.context_body,
-            length=float(width),
-            height=float(height),
-            thickness=DOOR_PANEL_THICKNESS,
+            length=feet_to_metres(float(width)),
+            height=feet_to_metres(float(height)),
+            thickness=feet_to_metres(DOOR_PANEL_THICKNESS),
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=door, representation=door_rep
@@ -675,9 +704,9 @@ class BimModelManager:
             "geometry.add_wall_representation",
             self.model,
             context=self.context_body,
-            length=float(width),
-            height=float(height),
-            thickness=float(wall_thickness + INCHES_4),
+            length=feet_to_metres(float(width)),
+            height=feet_to_metres(float(height)),
+            thickness=feet_to_metres(float(wall_thickness + INCHES_4)),
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=opening, representation=op_rep
@@ -706,9 +735,9 @@ class BimModelManager:
             "geometry.add_wall_representation",
             self.model,
             context=self.context_body,
-            length=float(width),
-            height=float(height),
-            thickness=WINDOW_FRAME_THICKNESS,
+            length=feet_to_metres(float(width)),
+            height=feet_to_metres(float(height)),
+            thickness=feet_to_metres(WINDOW_FRAME_THICKNESS),
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=window, representation=win_rep
@@ -777,7 +806,10 @@ class BimModelManager:
         profile = ifcopenshell.api.run(
             "profile.add_arbitrary_profile",
             self.model,
-            profile=local,
+            # Points are passed through literally while `Depth` is unit-converted,
+            # so both must be SI metres or the profile and its extrusion disagree.
+            # IFC profile outlines are metres.
+            profile=[[feet_to_metres(float(x)), feet_to_metres(float(y))] for x, y in local],
             name=f"Slab-Boundary-{guid}",
         )
         rep = ifcopenshell.api.run(
@@ -785,7 +817,7 @@ class BimModelManager:
             self.model,
             context=self.context_body,
             profile=profile,
-            depth=float(thickness),
+            depth=feet_to_metres(float(thickness)),
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=slab, representation=rep
@@ -845,7 +877,7 @@ class BimModelManager:
         profile = ifcopenshell.api.run(
             "profile.add_arbitrary_profile",
             self.model,
-            profile=local,
+            profile=[[feet_to_metres(x), feet_to_metres(y)] for x, y in local],
             name=f"Roof-Boundary-{guid}",
         )
         rep = ifcopenshell.api.run(
@@ -853,7 +885,7 @@ class BimModelManager:
             self.model,
             context=self.context_body,
             profile=profile,
-            depth=float(thickness),
+            depth=feet_to_metres(float(thickness)),
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=roof, representation=rep
@@ -936,9 +968,9 @@ class BimModelManager:
         ifcopenshell.api.run(
             "grid.create_axis_curve", self.model,
             grid_axis=axis,
-            p1=[float(start_pt[0]), float(start_pt[1]), 0.0],
-            p2=[float(end_pt[0]), float(end_pt[1]), 0.0],
-            is_si=False,
+            # IFC axis curves are metres.
+            p1=[feet_to_metres(float(start_pt[0])), feet_to_metres(float(start_pt[1])), 0.0],
+            p2=[feet_to_metres(float(end_pt[0])), feet_to_metres(float(end_pt[1])), 0.0],
         )
 
         meta = {
@@ -1869,7 +1901,7 @@ class BimModelManager:
         profile = ifcopenshell.api.run(
             "profile.add_arbitrary_profile",
             self.model,
-            profile=[[float(x), float(y)] for x, y in local],
+            profile=[[feet_to_metres(float(x)), feet_to_metres(float(y))] for x, y in local],
             name=f"Wall-Footprint-{guid}",
         )
         # Drop the wall's previous representation before assigning the new one.
@@ -1886,7 +1918,7 @@ class BimModelManager:
             self.model,
             context=self.context_body,
             profile=profile,
-            depth=float(meta["height"]),
+            depth=feet_to_metres(float(meta["height"])),
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=wall, representation=rep
@@ -2045,7 +2077,7 @@ class BimModelManager:
                         host_wall_guid=host_guid,
                         offset_along_wall=float(rec.get("offset_along_wall", 0.0)),
                         width=float(rec.get("width", 0.95)),
-                        height=float(rec.get("height", 2.1)),
+                        height=float(rec.get("height", DOOR_HEIGHT_84)),
                         name=name,
                         swing_flipped=bool(rec.get("swing_flipped", False)),
                         guid=guid,
@@ -2055,8 +2087,8 @@ class BimModelManager:
                         host_wall_guid=host_guid,
                         offset_along_wall=float(rec.get("offset_along_wall", 0.0)),
                         width=float(rec.get("width", 1.2)),
-                        height=float(rec.get("height", 1.2)),
-                        sill_height=float(rec.get("sill_height", 0.9)),
+                        height=float(rec.get("height", WINDOW_HEIGHT_48)),
+                        sill_height=float(rec.get("sill_height", WINDOW_SILL_36)),
                         name=name, guid=guid,
                     )
 
@@ -3136,23 +3168,27 @@ class BimModelManager:
             }
 
         # 4. Grids
-        # `calculate_unit_scale` returns metres-per-file-unit and does not know
-        # about imperial files (it yields 1.0 for a foot-based model). Everything
-        # the manager stores is decimal feet, so scale into feet explicitly: a
-        # metre-based foreign file (sample_building.ifc) must convert by
-        # 1/0.3048, and a foot-based one by 1.0.
-        try:
-            length_unit = unit_util.get_project_unit(self.model, "LENGTHUNIT")
-            if getattr(length_unit, "is_a", lambda *_: False)("IfcConversionBasedUnit"):
-                # Conversion-based unit: read its factor to SI metres.
-                metres_per_unit = float(
-                    length_unit.ConversionFactor.ValueComponent.wrappedValue
-                )
-            else:
-                metres_per_unit = unit_util.calculate_unit_scale(self.model) or 1.0
-        except Exception:
-            metres_per_unit = unit_util.calculate_unit_scale(self.model) or 1.0
+        # Raw IFC attribute values are expressed in the *file's* unit (a metric
+        # sample gives metres, our own foot-based export gives feet — verified
+        # against both). `calculate_unit_scale` returns that unit in metres, so
+        # converting a raw value into the internal decimal feet is:
+        #     raw * metres_per_unit  ->  metres  ->  / METRES_PER_FOOT -> feet
+        # which is the metres-per-unit divided by metres-per-foot.
+        #
+        # Note the asymmetry with the *build* path: ifcopenshell's geometry
+        # usecases (`add_profile_representation`, `add_axis_curve`) take SI values
+        # and convert to the file unit themselves, while `edit_object_placement`
+        # takes file units when `is_si=False`. Hence creation passes SI/foot
+        # values as those usecases expect, and only the read path scales here.
+        # The IFC is authored uniformly in SI metres (see `si()` for why), so every
+        # geometry value read back is SI and converts to the internal decimal feet
+        # with the same factor. `metres_per_unit` is only needed to interpret a
+        # *foreign* file that is itself imperial.
+        # Raw IFC values are in the file's own unit. Convert into the internal
+        # decimal feet: metres (our own files, and most foreign ones) -> feet.
+        metres_per_unit = unit_util.calculate_unit_scale(self.model) or 1.0
         unit_scale = metres_per_unit / METRES_PER_FOOT
+        grid_unit_scale = unit_scale
         seen_grid_tags = set()
         for grid in self.model.by_type("IfcGrid"):
             grid_guid = grid.GlobalId
@@ -3164,7 +3200,7 @@ class BimModelManager:
                 if curve and curve.is_a("IfcPolyline") and len(curve.Points) >= 2:
                     pts = [list(p.Coordinates) + [0.0, 1.0] for p in curve.Points[:2]]
                     if grid_matrix is not None:
-                        w_pts = [grid_matrix.dot(p)[:2] * unit_scale for p in pts]
+                        w_pts = [grid_matrix.dot(p)[:2] * grid_unit_scale for p in pts]
                     else:
                         w_pts = [p[:2] for p in pts]
                     sp = [float(w_pts[0][0]), float(w_pts[0][1])]
@@ -3323,7 +3359,7 @@ class BimModelManager:
                     "start": sp,
                     "end": ep,
                     "thickness": max(resolved_thickness, 0.10),
-                    "height": max(dz, FEET_8),
+                    "height": max(dz, FEET_10),
                     "length": length,
                     "angle": angle,
                     "parametrized": guid not in bbox_derived_walls,

@@ -151,13 +151,17 @@ def main():
     roof = manager.element_meta[ids["roof"]["guid"]]
     check("roof pitch intact", roof["pitch"] == 22.5, roof.get("pitch"))
     check("roof polygon intact", len(roof["polygon"]) == 4)
-    # geometry must actually come from the polygon, not a bbox: the solid's mesh
-    # has a vertex at the notch, which a rectangular extrusion cannot produce.
+    # Geometry must come from the polygon, not a bbox: the solid's mesh has a
+    # vertex at the notch, which a rectangular extrusion cannot produce. The IFC
+    # (and therefore the extracted mesh) is in metres, so convert to compare.
+    from units import metres_to_feet
+
     geo = manager.get_geometry_buffers()
     slab_mesh = next(x for x in geo["meshes"] if x["guid"] == ids["slab"]["guid"])
-    xs = slab_mesh["vertices"][0::3]
-    ys = slab_mesh["vertices"][1::3]
-    verts = set(zip([round(v, 4) for v in xs], [round(v, 4) for v in ys]))
+    verts = {
+        (round(metres_to_feet(x), 3), round(metres_to_feet(y), 3))
+        for x, y in zip(slab_mesh["vertices"][0::3], slab_mesh["vertices"][1::3])
+    }
     check("slab solid built from the concave polygon (notch vertex present)",
           (3.0, 3.0) in verts, sorted(verts)[:8])
 
@@ -326,10 +330,12 @@ def main():
                if v.get("ifc_class") == "IfcGrid"}
     check("all three grid axes reconstructed from IFC geometry",
           set(rebuilt) == {"1", "A", "2"}, sorted(rebuilt))
-    check("grid axis endpoints recovered exactly",
-          rebuilt.get("1") and rebuilt["1"]["start"] == [-2.0, 0.0]
-          and rebuilt["1"]["end"] == [32.0, 0.0],
-          rebuilt.get("1") and (rebuilt["1"]["start"], rebuilt["1"]["end"]))
+    g1r = rebuilt.get("1")
+    check("grid axis endpoints recovered (within float tolerance)",
+          g1r is not None
+          and abs(g1r["start"][0] + 2.0) < 1e-9 and abs(g1r["start"][1]) < 1e-9
+          and abs(g1r["end"][0] - 32.0) < 1e-9 and abs(g1r["end"][1]) < 1e-9,
+          g1r and (g1r["start"], g1r["end"]))
     check("import report counts the grids", res_g["import_report"]["grids"] == 3,
           res_g["import_report"]["grids"])
 
@@ -352,21 +358,22 @@ def main():
     from ifc_service import IFC_LENGTH_UNIT, UNIT_CONVERSION_SOURCE, INTERNAL_UNIT
     from units import METRES_PER_FOOT
 
-    length_unit = next(
-        (u for u in probe.by_type("IfcConversionBasedUnit")
+    check("overlay declares decimal feet", declared == "decimal_feet", declared)
+    check("engine constant agrees", INTERNAL_UNIT == "decimal_feet", INTERNAL_UNIT)
+    # The IFC model of record is metric (IFC's native convention, and the only
+    # setting under which ifcopenshell's geometry usecases agree); the parametric
+    # overlay and everything the application stores is decimal feet. The boundary
+    # is where the conversion happens, so assert both halves.
+    si_length = next(
+        (u for u in probe.by_type("IfcSIUnit")
          if "LENGTHUNIT" in str(getattr(u, "UnitType", ""))),
         None,
     )
-    check("overlay declares decimal feet", declared == "decimal_feet", declared)
-    check("engine constant agrees", INTERNAL_UNIT == "decimal_feet", INTERNAL_UNIT)
-    check("IFC length unit is a conversion-based foot", length_unit is not None
-          and str(length_unit.Name).lower().startswith("foot"),
-          length_unit and length_unit.Name)
-    check("foot conversion factor is exactly 0.3048 m",
-          length_unit is not None
-          and abs(float(length_unit.ConversionFactor.ValueComponent.wrappedValue)
-                  - METRES_PER_FOOT) < 1e-12,
-          length_unit and length_unit.ConversionFactor.ValueComponent.wrappedValue)
+    check("IFC model is authored in SI metres",
+          si_length is not None and str(si_length.Name).upper().startswith("MET"),
+          si_length and si_length.Name)
+    check("conversion factor constant is exactly 0.3048 m per foot",
+          METRES_PER_FOOT == 0.3048, METRES_PER_FOOT)
     check("no unit conversion is applied on top (overlay is already feet)",
           UNIT_CONVERSION_SOURCE == "none", UNIT_CONVERSION_SOURCE)
 

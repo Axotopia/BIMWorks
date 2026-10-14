@@ -21,10 +21,12 @@ the declaration true.
 #: Exact by definition: 1 international foot = 0.3048 m.
 METRES_PER_FOOT = 0.3048
 
-#: IFC4 `IfcSIUnit` has no foot; feet are expressed as an `IfcConversionBasedUnit`
-#: on the international foot, which is what `IFC_LENGTH_UNIT` names below.
-IFC_LENGTH_UNIT = "FOOT"
-IFC_LENGTH_UNIT_IS_METRIC = False
+#: Unit the IFC model of record is authored in. IFC is natively metric and this
+#: is also the only setting under which ifcopenshell's geometry usecases agree
+#: with each other (see the note in ifc_service.py), so the file is metres while
+#: the overlay and the rest of the application are decimal feet.
+IFC_LENGTH_UNIT = "METERS"
+IFC_LENGTH_UNIT_IS_METRIC = True
 
 #: What every stored length is in.
 INTERNAL_UNIT = "decimal_feet"
