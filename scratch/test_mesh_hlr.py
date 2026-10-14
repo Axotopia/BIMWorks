@@ -259,6 +259,42 @@ def main():
               got["partitions"]["cut"] == unlimited["partitions"]["cut"],
               (got["partitions"], unlimited["partitions"]))
 
+    print("8c. Foreign IFC: openings import in the right unit ...")
+    # The foreign importer measured opening extents from a world-coordinate shape, which
+    # is METRIC, and then treated those numbers as feet — so every imported opening came
+    # back 3.28x too small and its symbol was drawn at the wrong size. The wall path
+    # converted correctly, which is what made the inconsistency easy to miss.
+    import os as _os
+
+    sample = _os.path.join(_os.path.dirname(__file__), "..", "sample_building.ifc")
+    if _os.path.exists(sample):
+        mf = fresh()
+        mf.load_ifc_file(sample, "sample_building.ifc")
+        wins = [x for x in mf.element_meta.values() if x.get("ifc_class") == "IfcWindow"]
+        doors = [x for x in mf.element_meta.values() if x.get("ifc_class") == "IfcDoor"]
+        check("the sample building imported its openings", wins and doors,
+              (len(wins), len(doors)))
+        if wins:
+            # A 48" window type must measure a few feet, not ~15 ft (which is what a
+            # metric value read as feet produces).
+            check("an imported window measures in feet, not metres",
+                  2.5 <= min(w["width"] for w in wins) <= 7.0,
+                  sorted(round(w["width"], 3) for w in wins))
+        if doors:
+            check("an imported door measures in feet, not metres",
+                  2.0 <= min(d["width"] for d in doors) <= 4.0,
+                  sorted(round(d["width"], 3) for d in doors))
+        # And HLR must cope with foreign geometry at all.
+        cvf = mf.render_2d_view(view_type="floor_plan", cut_elevation=4.0)
+        check("the HLR renderer handles a foreign IFC",
+              cvf["partitions"]["cut"] > 0 and cvf["partitions"]["hidden"] > 0,
+              cvf.get("partitions"))
+        check("its window symbols are drawn",
+              len(cvf.get("window_paths") or []) > 0,
+              len(cvf.get("window_paths") or []))
+    else:
+        print("   [note] sample_building.ifc not present; skipping the foreign-unit check")
+
     print("9. Drafting symbols and dimensions are produced ...")
     # A window drawn as a bare wall gap is not how a plan shows a window; the glazing
     # symbol is annotation, like the door swing, so it cannot come from HLR.

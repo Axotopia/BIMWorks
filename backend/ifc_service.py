@@ -4497,9 +4497,15 @@ class BimModelManager:
             except Exception:
                 pass
 
-            dx = max_x - min_x
-            dy = max_y - min_y
-            dz = max_z - min_z
+            # `raw_verts` come from a world-coordinate shape, which is METRIC (see the
+            # units boundary: the IFC is metres, internals are decimal feet). Every use
+            # of dx/dy/dz below is in feet — thresholds like `width < 0.4` and the
+            # `max(dz, FEET_10)` default — so they must be converted here. Left raw, an
+            # imported 48" window came back as 1.40 (metres read as feet), i.e. every
+            # imported opening was drawn 3.28x too small.
+            dx = (max_x - min_x) * unit_scale
+            dy = (max_y - min_y) * unit_scale
+            dz = (max_z - min_z) * unit_scale
 
             meta: Dict[str, Any] = {
                 "entity": p,
