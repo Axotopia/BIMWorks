@@ -495,7 +495,7 @@ def get_2d_view(
 
 
 @app.get("/api/slice/2d")
-def get_2d_slice(cut_elevation: float = 1.2):
+def get_2d_slice(cut_elevation: float = 4.0, level_id: Optional[str] = None):
     """
     Returns 2D vector linework for a plan view.
 
@@ -504,7 +504,9 @@ def get_2d_slice(cut_elevation: float = 1.2):
     plus annotation drives (`grids`, `swing_paths`, `window_paths`, `dimensions`),
     the `lineweights` table used to draw them, and the `renderer` that produced it.
     """
-    return bim_manager.slice_2d_vector_plan(cut_elevation=cut_elevation)
+    return bim_manager.slice_2d_vector_plan(
+        cut_elevation=cut_elevation, level_id=level_id
+    )
 
 
 @app.post("/api/georeference")

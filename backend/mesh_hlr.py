@@ -43,7 +43,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from shapely.geometry import LineString, Polygon
+from shapely.geometry import LineString, MultiPolygon, Polygon
 from shapely.ops import unary_union
 
 Point2 = Tuple[float, float]
@@ -132,9 +132,16 @@ class MeshHlrProjector:
                     poly = Polygon(pts)
                 except Exception:
                     continue
+                # Real Revit exports contain self-intersecting or degenerate profiles
+                # ("Ring edge missing" from GEOS, on a 277-element house). Repair what
+                # can be repaired and drop the rest, so one bad wall cannot fail the
+                # whole drawing.
                 if not poly.is_valid:
-                    poly = poly.buffer(0)
-                if poly.is_empty:
+                    try:
+                        poly = poly.buffer(0)
+                    except Exception:
+                        continue
+                if poly.is_empty or poly.area <= 0:
                     continue
                 d = min(depths)
                 min_depth = d if min_depth is None else min(min_depth, d)
@@ -259,6 +266,38 @@ class MeshHlrProjector:
         return [m for m, _b in kept]
 
     # -- edge extraction ----------------------------------------------------
+    @staticmethod
+    def _safe_union(polys):
+        """
+        Unions polygons, degrading gracefully.
+
+        One invalid ring makes GEOS raise for the whole collection, which would lose the
+        entire element. Retrying piece by piece keeps the sound geometry, and a final
+        fallback returns the polygons un-unioned — they still draw.
+        """
+        polys = [p for p in polys if p is not None and not p.is_empty]
+        if not polys:
+            return None
+        try:
+            return unary_union(polys)
+        except Exception:
+            pass
+        good = []
+        for poly in polys:
+            try:
+                if not poly.is_valid:
+                    poly = poly.buffer(0)
+                if not poly.is_empty:
+                    good.append(poly)
+            except Exception:
+                continue
+        if not good:
+            return None
+        try:
+            return unary_union(good)
+        except Exception:
+            return MultiPolygon(good) if len(good) > 1 else good[0]
+
     def _silhouette_edges(self, mesh: Dict[str, Any]) -> List[LineString]:
         """
         Boundary edges of a mesh's projected outline.
@@ -270,7 +309,9 @@ class MeshHlrProjector:
         polys = [p for p, _ in mesh["polys"]]
         if not polys:
             return []
-        merged = unary_union(polys)
+        merged = self._safe_union(polys)
+        if merged is None or merged.is_empty:
+            return []
         rings = []
         geoms = merged.geoms if hasattr(merged, "geoms") else [merged]
         for g in geoms:
@@ -320,7 +361,20 @@ class MeshHlrProjector:
                 continue
             # Merge the individual crossing segments into the outline of the cut.
             lines = [LineString([camera.project(s[0]), camera.project(s[1])]) for s in segments]
-            merged = unary_union(lines)
+            try:
+                merged = unary_union(lines)
+            except Exception:
+                # Invalid input: keep every crossing segment rather than losing the cut.
+                merged = None
+            if merged is None:
+                for line in lines:
+                    out.append({
+                        "guid": mesh.get("guid"),
+                        "ifc_class": mesh.get("ifc_class"),
+                        "name": mesh.get("name"),
+                        "coords": [(round(x, 6), round(y, 6)) for x, y in line.coords],
+                    })
+                continue
             for g in (merged.geoms if hasattr(merged, "geoms") else [merged]):
                 if g.is_empty or g.geom_type != "LineString":
                     continue
@@ -335,7 +389,8 @@ class MeshHlrProjector:
     # -- render -------------------------------------------------------------
     def render(self, camera: Optional[ViewCamera] = None,
                cut_z: Optional[float] = None,
-               view_range: Optional[Dict[str, float]] = None) -> ProjectedView:
+               view_range: Optional[Dict[str, float]] = None,
+               include_guids: Optional[Iterable[str]] = None) -> ProjectedView:
         """
         Computes the three partitions.
 
@@ -355,14 +410,21 @@ class MeshHlrProjector:
         camera = camera or ViewCamera()
         self._prepared = None
         prepared = self._prepare(camera)
+        # A VIEW is a selection of the model, not just a camera position: a floor plan
+        # shows one storey. Filtering here means the cut, the projection and the hidden
+        # linework all agree on what is in the view, rather than each being filtered
+        # afterwards (a cut is usually parallel to the view direction, so filtering cut
+        # geometry by depth cannot work).
+        if include_guids is not None:
+            allowed = set(include_guids)
+            prepared = [m for m in prepared if m.get("guid") in allowed]
         if view_range:
             prepared = self._apply_view_range(prepared, view_range)
         view = ProjectedView(camera=camera)
 
         if cut_z is not None:
-            # Only meshes inside the view range are sectioned.
-            allowed = None
-            if view_range:
+            # Section only the meshes in this view (storey selection and/or view range).
+            if include_guids is not None or view_range:
                 allowed = {m["guid"] for m in prepared}
                 view.cut = self.cut_at(
                     cut_z, camera,
@@ -404,8 +466,8 @@ class MeshHlrProjector:
                         "name": mesh.get("name"),
                         "coords": [(round(x, 6), round(y, 6)) for x, y in line.coords],
                     })
-            mesh_union = unary_union([p for p, _ in mesh["polys"]])
-            occluder = mesh_union if occluder is None else unary_union([occluder, mesh_union])
+            mesh_union = self._safe_union([p for p, _ in mesh["polys"]])
+            occluder = mesh_union if occluder is None else self._safe_union([occluder, mesh_union])
 
         view.stats = {
             **view.partition_counts(),

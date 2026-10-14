@@ -3138,7 +3138,8 @@ class BimModelManager:
     # =========================================================================
 
     def slice_2d_vector_plan(
-        self, cut_elevation: float = FEET_4, renderer: str = "mesh-hlr"
+        self, cut_elevation: float = FEET_4, renderer: str = "mesh-hlr",
+        level_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Produces the 2D plan as vector paths in the frontend's existing contract.
@@ -3161,7 +3162,7 @@ class BimModelManager:
         """
         if renderer == "mesh-hlr":
             try:
-                contract = self._mesh_hlr_plan_contract(cut_elevation)
+                contract = self._mesh_hlr_plan_contract(cut_elevation, level_id=level_id)
                 if contract is not None:
                     return self._finish_plan_contract(contract, cut_elevation)
             except Exception as e:
@@ -3552,9 +3553,56 @@ class BimModelManager:
         # Annotation for every view type, not just plans.
         return self._annotate_view(contract, cut_elevation, view_type)
 
-    def _mesh_hlr_plan_contract(self, cut_elevation: float) -> Optional[Dict[str, Any]]:
+    def _resolve_plan_level(self, level_id: Optional[str],
+                            cut_elevation: Optional[float]) -> Optional[str]:
+        """
+        Chooses the storey a plan belongs to.
+
+        An explicit `level_id` wins. Otherwise the storey whose elevation is at or just
+        below the requested cut is used, which is what a user means by "cut at 4 ft"
+        when they have a level at 0. On a model with no levels, None (whole model).
+        """
+        if level_id and level_id in self.levels:
+            return level_id
+        if not self.levels:
+            return None
+        if cut_elevation is None:
+            return None
+        eligible = [
+            (lid, float(lv.get("elevation", 0.0)))
+            for lid, lv in self.levels.items()
+            if float(lv.get("elevation", 0.0)) <= float(cut_elevation) + 1e-6
+        ]
+        if not eligible:
+            # Below every level: fall back to the lowest so the view is not empty.
+            return min(self.levels, key=lambda k: float(self.levels[k].get("elevation", 0.0)))
+        return max(eligible, key=lambda pair: pair[1])[0]
+
+    def _level_plan_guids(self, level_id: Optional[str]) -> Optional[set]:
+        """
+        The elements a plan of `level_id` draws, or None for "everything".
+
+        Elements with no storey are included: a door or a grid that belongs to no level
+        in the file would otherwise silently vanish, and omitting real geometry is worse
+        than showing it in the storey it was cut at.
+        """
+        if level_id is None:
+            return None
+        return {
+            guid for guid, meta in self.element_meta.items()
+            if meta.get("level_id") in (None, level_id)
+        }
+
+    def _mesh_hlr_plan_contract(self, cut_elevation: float,
+                                level_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Renders the plan through the in-process geometric hidden-line projector.
+
+        `level_id` scopes the view to one storey and makes `cut_elevation` a height
+        ABOVE THAT STOREY rather than an absolute elevation, which is the Revit view
+        range convention and the only thing that works on a real model: a storey at
+        -55 ft with an absolute 4 ft cut plane would section empty space. When
+        `level_id` is None the storey is inferred from the cut elevation.
 
         Meshes are metric (the IFC's unit) while the 2D contract is decimal feet, so
         this converts at the boundary. Returns None when there is no geometry, so the
@@ -3567,6 +3615,13 @@ class BimModelManager:
         if not meshes:
             return None
 
+        # Resolve the storey and make the cut relative to it, so "cut 4 ft" means 4 ft
+        # above the level rather than 4 ft above the project origin.
+        resolved_level = self._resolve_plan_level(level_id, cut_elevation)
+        level_meta = self.levels.get(resolved_level) if resolved_level else None
+        base = float(level_meta.get("elevation", 0.0)) if level_meta else 0.0
+        absolute_cut = base + float(cut_elevation)
+
         projector = MeshHlrProjector(meshes)
         # The lineweight table is applied here too, so the plan entry point and
         # `render_2d_view` produce identically styled output. Applying it on only one
@@ -3574,7 +3629,10 @@ class BimModelManager:
         # look different depending on how it was requested.
         from hlr_renderer import LineweightTable
 
-        view = projector.render(cut_z=feet_to_metres(float(cut_elevation)))
+        view = projector.render(
+            cut_z=feet_to_metres(absolute_cut),
+            include_guids=self._level_plan_guids(resolved_level),
+        )
         contract = projector.to_contract(view, lineweights=LineweightTable())
         for key in ("cut_paths", "projection_paths", "hidden_paths"):
             for entry in contract.get(key, []):
@@ -3598,7 +3656,14 @@ class BimModelManager:
             contract["projection_paths"] = contract.get("projection_paths", []) + moved
 
         contract["renderer"] = "mesh-hlr"
+        # `cut_elevation` is the offset above the level (what the user set);
+        # `cut_absolute` is where that lands in the model. A view needs both to render
+        # its own title and to draw the cut line correctly.
         contract["cut_elevation"] = float(cut_elevation)
+        contract["cut_absolute"] = float(absolute_cut)
+        contract["level_id"] = resolved_level
+        contract["level_name"] = (level_meta or {}).get("name")
+        contract["level_elevation"] = base
         # Overall dimensions come from the drawing's own extents (see the method).
         contract["dimensions"] = self._overall_dimensions(contract)
         return contract
@@ -4400,12 +4465,19 @@ class BimModelManager:
         self.redo_stack = []
 
         # 3. Storeys (Levels)
+        #
+        # `IfcBuildingStorey.Elevation` is a length in the FILE's unit (metres for a
+        # metric IFC) while levels are decimal feet internally, so it must be
+        # converted. Read raw, a -55.67 m storey became -55.67 ft — wrong by 3.28x.
+        metres_per_unit = unit_util.calculate_unit_scale(self.model) or 1.0
+        unit_scale = metres_per_unit / METRES_PER_FOOT
+
         storeys = self.model.by_type("IfcBuildingStorey")
         for storey in storeys:
             elevation = 0.0
             if hasattr(storey, "Elevation") and storey.Elevation is not None:
                 try:
-                    elevation = float(storey.Elevation)
+                    elevation = float(storey.Elevation) * unit_scale
                 except Exception:
                     elevation = 0.0
             self.levels[storey.GlobalId] = {
@@ -4414,6 +4486,27 @@ class BimModelManager:
                 "elevation": elevation,
                 "entity": storey,
             }
+
+        # Which storey each element belongs to, from the file's own spatial
+        # containment. Without this every element has `level_id = None`, so a floor
+        # plan cannot be built for any level: the view has no way to know what belongs
+        # to it. Assigning from `IfcRelContainedInSpatialStructure` is exact, unlike
+        # guessing from z, which fails outright on a georeferenced model where the
+        # storey elevations and the element coordinates are in different spaces.
+        element_level: Dict[str, str] = {}
+        storey_members: Dict[str, List[str]] = {}
+        for rel in self.model.by_type("IfcRelContainedInSpatialStructure"):
+            structure = getattr(rel, "RelatingStructure", None)
+            if structure is None or not structure.is_a("IfcBuildingStorey"):
+                continue
+            level_id = structure.GlobalId
+            if level_id not in self.levels:
+                continue
+            for product in (getattr(rel, "RelatedElements", None) or []):
+                guid = getattr(product, "GlobalId", None)
+                if guid:
+                    element_level[guid] = level_id
+                    storey_members.setdefault(level_id, []).append(guid)
 
         if not self.levels:
             self.levels["level_1"] = {
@@ -4494,6 +4587,58 @@ class BimModelManager:
                         "end": ep,
                     }
 
+        # 4b. Reconcile storey elevations with where the geometry actually is.
+        #
+        # A georeferenced file (a real Revit export) places geometry in WORLD coordinates
+        # — this house sits at z ~= 553 m — while `IfcBuildingStorey.Elevation` is
+        # relative to the project datum (-19.5 m for the same floor). Reading one against
+        # the other puts the cut plane ~560 m above the building, so a level cut sections
+        # empty space and the plan comes back with no cut linework at all.
+        #
+        # Rather than shifting the model (which would move the user's building), each
+        # storey is re-anchored on the lowest z of its own contained elements, and the
+        # RELATIVE spacing between storeys — which the file does state correctly — is
+        # applied on top. That keeps plans correct without touching geometry.
+        if storey_members and unit_scale:
+            import ifcopenshell.util.placement as _plc
+
+            bottoms: Dict[str, float] = {}
+            for level_id, guids in storey_members.items():
+                zs: List[float] = []
+                for guid in guids:
+                    product = self.model.by_guid(guid)
+                    if product is None or not getattr(product, "ObjectPlacement", None):
+                        continue
+                    try:
+                        matrix = _plc.get_local_placement(product.ObjectPlacement)
+                        z = matrix[2][3]
+                    except Exception:
+                        continue
+                    if z == z == float(z):  # not NaN
+                        zs.append(float(z))
+                if zs:
+                    bottoms[level_id] = min(zs) * unit_scale
+
+            if bottoms:
+                ordered = sorted(
+                    ((lid, self.levels[lid].get("elevation", 0.0)) for lid in bottoms),
+                    key=lambda pair: pair[1],
+                )
+                # Anchor the lowest storey on the lowest real geometry; keep the file's
+                # relative spacing for the rest.
+                base_level, base_relative = ordered[0]
+                offset = bottoms[base_level] - float(base_relative)
+                for level_id, _relative in ordered:
+                    if level_id in self.levels:
+                        self.levels[level_id]["elevation"] = float(
+                            self.levels[level_id].get("elevation", 0.0)
+                        ) + offset
+                self.level_datums = {
+                    "reconciled": True,
+                    "offset": offset,
+                    "reason": "georeferenced geometry vs relative storey elevations",
+                }
+
         # 5. Map Voids and Fills for door/window hosting
         wall_to_voids: Dict[str, List[str]] = {}
         for rel in self.model.by_type("IfcRelVoidsElement"):
@@ -4562,6 +4707,9 @@ class BimModelManager:
                 "guid": guid,
                 "ifc_class": ifc_class,
                 "name": name,
+                # Its storey, from the file's own containment. A floor plan view and
+                # the per-level cut plane both depend on this.
+                "level_id": element_level.get(guid),
                 "cached_verts": raw_verts,
                 "cached_faces": raw_faces,
                 "bbox": {"min": [min_x, min_y, min_z], "max": [max_x, max_y, max_z]},
