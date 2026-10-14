@@ -44,6 +44,37 @@
 
 ---
 
+## 0.1 Re-verification after the upstream merge (2026-10-14, post-`1183617`)
+
+**Why this section exists:** the review and this plan were written against commit `d1761bd`. Seven upstream commits (`abc2b5b` and ancestors: plan-view graphics, sketch mode, geometry editor) then landed **in parallel with P0**, touching the same nine files. Everything below was re-checked against the merged tree by reading and *executing* the current code — not carried over from the review. Two findings were fixed by that upstream work, one changed shape, and the sketch/editor work adds new constraints on P1–P4.
+
+| # | Status now | Evidence (current code) |
+|---|---|---|
+| N1 | **Still open — unchanged.** Bbox reconstruction remains the only load path | `load_ifc_file`; `test_hosted_openings.py` case 6 demonstrates a diagonal wall returning axis-aligned |
+| N2 | **Changed — import fixed, export still broken (asymmetric).** Upstream added a real `IfcGrid` *reader* (axes via `IfcPolyline` + grid placement matrix, deduped by tag/geometry) | Read side: `ifc_service.py` `for grid in self.model.by_type("IfcGrid")`. Write side still meta-dict only: `add_grid` mints `str(uuid.uuid4())` instead of an IFC `GlobalId`. **Verified by execution:** export and saved container both contain **0** `IFCGRID` entities |
+| N3 | **Still open, and now with a sharper edge.** The new import path *does* handle hosts/fills properly, so element `host_wall_guid` is now trustworthy — but constraints and join policies are still restored wholesale with no GUID gating (only `type_properties` is gated) | `load_orlt_project`: `self.constraints = …`, `self.join_policies = …` unconditionally |
+| N4 | **Still open — unchanged.** `Pset_ORLT_Constraints` still written and still the round-trip dependency | `save_constraints_to_ifc` / `load_constraints_from_ifc` |
+| N5 | **Still open and LARGER than the review measured.** Upstream added `ElementUpdate` to the CommandBus, but the UI does not use it: it posts to the raw `/api/element/{guid}/update`, which calls `bim_manager.update_element` directly and is never journaled. So the new geometry editor's edits are unundoable | `useBimStore.ts` `updateElement` → `/element/${guid}/update`; endpoint calls the manager directly. Raw-path list now also covers roof/slab/create/translate/delete/joins |
+| N6 | **Half fixed by P0, half open.** Door/window slide is now angle-correct. **EQ still has no propagation branch** | Propagation loop handles `align` and `dimension_lock` only; no `equalize` case |
+| N7 | **Fixed by P0** | `fetchGeometry` builds the `elements` record from each mesh's `params` |
+| N8 | **Fixed by P0** | `accept=".bimworks,.orlt,.ifc,.stp,.step"` |
+| N9 | **Fixed by P0** (dependency declared + installed + HTTP-level test). **New lint surfaced:** the merge duplicated the `python-multipart` line in `requirements.txt` | `requirements.txt` |
+| N10 | **Still open — unchanged.** Snapshot still deep-copies full meshes; joins still a global O(N²) pass; the store still refetches all geometry after every mutation | `snapshot_state`, `recompute_wall_joins` ("Global pass"), `fetchGeometry` after each action |
+| N11 | **Fixed by P0**, except the sheet list, which remains static seed data by design until P6 | `PropertiesPalette`, `PlanViewport2D`, `ProjectBrowser`, `SheetCanvas` |
+| N12 | **Fixed by P0** (`.bimworks` canonical, `.orlt` load alias). The legacy pset *name* stays until N4 lands in P2 — deliberate, to avoid a second round-trip break | `CONTAINER_EXTENSION`; `Pset_ORLT_Constraints` |
+
+**New findings introduced by the upstream work** (these did not exist when the review was written):
+
+| # | Finding | Severity |
+|---|---|---|
+| N13 | **Sketch state is client-only.** `sketchSession` lives in the Zustand store and never reaches `parametric.json` or the backend, so a sketch — and any "Edit Footprint" session — is lost on reload. Footprints therefore still cannot survive a round trip | High — sets the real P4 entry condition |
+| N14 | **`shapely` is an undeclared runtime dependency.** `_triangulate_polygon_2d` imports it inside a `try/except` with an ear-fan fallback. Behavior therefore *silently differs by environment*: real triangulation of concave polygons when present, malformed fans when absent. Declared now in `requirements.txt` | Medium |
+| N15 | **Vendored `IfcGrid` axes are keyed by a synthesized GUID** (`f"{guid}_{tag}_{n}"`), not an IFC `GlobalId`. Any overlay keyed by GUID cannot address them, which will bite the P2 staleness gating | Medium |
+| N16 | **`scratch/test_update_roof.py` is not runnable outside one machine** — hardcodes `Z:/PROJECTS/463-Glory/BIM/REVIT.2027/…` and a fixed roof GUID. It fails on a clean checkout, so it cannot be a regression test as written | Low |
+
+
+---
+
 ## 1. Architecture principles for everything below
 
 These three principles resolve the review's top risks and unlock the workflow goals from the 2026-10-14 discussion:
@@ -66,14 +97,14 @@ Small, independent, each with a regression test where applicable.
 |---|---|---|
 | P0-1 | Fix Open-dialog `accept` to include `.orlt`/`.bimworks` | N8; one line in `Ribbon.tsx:374` |
 | P0-2 | Add `python-multipart` to `requirements.txt`; add an HTTP-level round-trip test that exercises `/api/project/load-orlt` for real | N9; prevents "tests pass, app broken" recurrence |
-| P0-3 | Unify container name to `.bimworks` everywhere (keep `.orlt` as a load-recognized alias for the few files already saved) | N12 |
+| P0-3 | Unify container name to `.bimworks` everywhere (keep `.orlt` as a load-recognized alias for the few files already saved) | N12. Note: the legacy pset is deliberately **not** renamed here — its name is part of the serialized round-trip and changes in P2 item 5 |
 | P0-4 | Populate the dead `elements` store record (or remove the AI planner's dependence on it) so prompt-driven door/window placement stops throwing | N7 |
 | P0-5 | Label or remove the hardcoded UI fakes (Properties Area/Volume, sheets list, temp-dim default, align overlay) — show real values or an explicit "—" placeholder; never invented numbers | N11 |
-| P0-6 | Fix door-slide propagation to rotate the world delta into the wall's local axis | N6 (angle bug only; EQ fix lands in P3) |
+| P0-6 | Fix door-slide propagation to rotate the world delta into the wall's local axis | N6, angle half only — **done**. The EQ half is still open and moved to P1 (see §0.1) |
 
 **Exit criteria:** all suites green + one new HTTP round-trip test green; opening a saved project through the UI works; no hardcoded numbers rendered as data.
 
-**Status: COMPLETE (2026-10-14).** Verified by execution, not by reading:
+**Status: COMPLETE (2026-10-14), re-verified after the upstream merge (`1183617`).** Every task below still holds on the merged tree; the merge added no regression in these six areas. `requirements.txt` needed one repair after the merge (duplicate `python-multipart` line removed; `shapely` declared — see N14).
 
 | # | What landed | Evidence |
 |---|---|---|
@@ -89,10 +120,13 @@ Small, independent, each with a regression test where applicable.
 ### P1 — Bus-only mutations (target: ~1 week)
 Converge every UI action onto the CommandBus before any new feature lands.
 
-- Route `createWall/Door/Window/Slab/Roof/delete/translate` and selection-driven edits through `POST /api/bus` (typed commands, transactions, journal).
-- Retire or wrap the raw REST endpoints (`/api/wall` etc.) as thin bus aliases; keep response shapes the frontend already consumes.
+**Scope grew in the merge — P1 is now more urgent, not less.** The upstream geometry editor added `ElementUpdate` to the CommandBus *and* left the UI calling the raw `/api/element/{guid}/update` instead, so there are now two update routes and the one the UI uses is unjournaled. Net effect: the newest feature (roof pitch / slab elevation / polygon editing) is unundoable the day it ships. P1 is therefore the correct next milestone.
+
+- Route `createWall/Door/Window/Slab/Roof/delete/translate` **and `updateElement`** through the CommandBus (`ElementUpdate` and `ConstraintEqualize` already exist as typed commands — the commands are there, the call sites are not).
+- Retire or wrap the raw REST endpoints (`/api/wall`, `/api/element/{guid}/update`, etc.) as thin bus aliases; keep response shapes the frontend already consumes.
 - Every Ribbon tool then becomes: emit command(s) → receive delta → update view state. The Zustand store stops being a second model.
 - Add an automated **parity audit** (acceptance criterion #6, enforced early): script that performs the M2 test model through the bus with the UI disabled, and a test asserting every UI action maps to a bus command.
+- Fix the EQ propagation gap (N6) here rather than in P3 *if* it is cheap: `translate_element`'s propagation loop is the only thing that needs the branch, and leaving EQ silently non-functional while the UI draws EQ padlocks is the same trust hazard P0-5 just removed.
 
 **Exit criteria:** Undo/redo works for every Ribbon action; journal contains every mutation; parity-audit test in CI (even a local `pytest` gate for now).
 
@@ -107,6 +141,7 @@ This merges the session's open items #3 (units) and #4 (pset) and reframes #5 (i
 6. **Write grids to IFC** as real `IfcGrid`/`IfcGridAxis` on save.
 7. **Foreign IFC import (old #5), scoped honestly:** reconstruct walls (from `IfcWallStandardCase` parameters/profiles, not bboxes), levels, grids, openings; anything not reconstructable loads as geometry-only with a per-element report. Perfect fidelity for arbitrary files is explicitly out of scope until P3's type system exists.
 8. **Multi-version container test matrix:** save → load → save byte-comparison of overlay (normalizing timestamps), plus save → foreign round-trip through Bonsai/IfcTester validation.
+9. **Absorb the merged-upstream element parameters** (added after this plan was written): `update_element` already accepts `polygon`, `thickness`, `elevation`, `pitch`, and rebuilds slab/roof meshes through `_build_flat_slab_mesh` / `_build_pitched_roof_mesh` / `_build_wall_mesh`. Those inputs are exactly the overlay v3 sketch fields, so the refactor must define them in one place rather than duplicate the semantics between the importer and overlay v3. Same for the now-real `IfcGrid` reader: it keys vendored axes by a synthesized GUID (`{grid_guid}_{tag}_{n}`), which overlay v3 staleness gating cannot address — give axes real IDs as part of item 6 (see N15).
 
 **Exit criteria (all test-verified):** diagonal wall survives 10 save/load cycles angle-exact; slab polygon survives; grids survive; constraints/joins re-attach with stale-flagging; no pset in the file; units labels match internals; external sample_building.ifc imports with walls + levels + grids reconstructed.
 
@@ -125,8 +160,10 @@ The README's M2 core, now unblocked and correctly scoped.
 ### P4 — Sketch-based elements & direct profile editing (target: 2–3 weeks)
 The workflow answer from principle 3.
 
-- Sketch data model in the overlay: floor/roof footprints, slope-defining lines (Revit `Defines Slope` semantics), wall-profile edits (vertical outline reshape).
-- **2D sketch editor** (precision: numeric entry, snapping, lock/EQ icons) — the familiar Revit-style flow.
+> **Scope note after the merge:** a working Revit-style sketch loop already exists (sketch palette, line/rectangle/pick-walls tools, `Defines Slope`, snap tolerance, `startSketchMode`/`finishSketchMode` over the bus). It is a *UI* loop, not the overlay data model this milestone specifies: `sketchSession` is client-only and is lost on reload (N13), footprints never reach `parametric.json`, and there is no direct-manipulation skin. Treat the existing loop as the prototype of the sketch **skin**; P4's work is the data model underneath it plus the second skin. Do not rebuild the editor.
+
+- Sketch data model in the overlay: floor/roof footprints, slope-defining lines (Revit `Defines Slope` semantics), wall-profile edits (vertical outline reshape). **This is the gating piece** — P2's overlay v3 must land first, and N13 is the concrete evidence of why.
+- **2D sketch editor** (precision: numeric entry, snapping, lock/EQ icons) — the familiar Revit-style flow. Partially present; reconcile it with overlay v3 rather than extending `sketchSession` further.
 - **Direct manipulation** of the same footprints/profiles in plan and 3D viewports — drag an edge, drag a vertex; both skins emit identical `SketchCurve*` commands. No modal gate for either.
 - Sketch-driven recompute: footprint edit → slab/roof solid regenerates → hosted/wall-connected dependents update through the P3 graph (Revit's "move the wall, the floor follows" behavior, README §1.4).
 - Openings already handled (`IfcOpeningElement`/voids) get host-aware updates when profiles change.
@@ -156,7 +193,11 @@ Unchanged in content from the spec; entry criterion for P7 is now strictly gated
 | O(model) costs discovered late in P3 | Performance budgets (p95 drag, 2k-element recompute) are measured in P3's exit criteria, not deferred |
 | Scope pull toward families/Family Editor | Remains deferred (spec §3.6, M6) — the type-parameter schema in overlay v3 is the planned extension seam |
 | Revit-behavior disputes ("what does Revit actually do?") | `docs/probes/` evidence-graded protocol; `revit-ifc` source for import questions; no binary reversing (decided above) |
+| **Parallel branches invalidate the plan's premises** | *Demonstrated 2026-10-14:* upstream shipped sketch mode and a geometry editor on raw REST while P0 was in flight, silently changing 5 of 12 findings and adding 4 more (N13–N16). Mitigation: treat "current behaviour" claims as expiring, re-verify by execution before starting a milestone (§0.1 is the template), and land the P1 parity audit early so bus bypass is caught by a test rather than by a later review |
+| **Unplanned feature work outruns its data model** | The sketch editor shipped before overlay v3, so its data is client-only and dies on reload (N13), and its edits are unjournaled (N5). Mitigation: P1 then P2 hold their gates; new UI features must state which overlay v3 field persists them before merge |
 
 ---
 
 *Plan authored 2026-10-14 from: full code review (`review/REVIEW_file-format-architecture_2026-10-14.md`), master spec v2.3 (`README.md`), and session BIMWorks.20261013 (decision record + handoff state). Every "current behavior" claim above is line-cited in the review document.*
+*Revised 2026-10-14 after merge `1183617`: §0.1 re-verifies all findings against the merged tree and adds N13–N16; P0 status, P1 scope, P2 item 9, P4 scope note and the risk register were updated accordingly. Later readers: re-run §0.1's checks before trusting any finding above.*
+
