@@ -48,6 +48,12 @@ export const UI_ACTION_COMMANDS = {
   equalizeSpan: 'ConstraintEqualize',
   toggleConstraintLock: 'ConstraintLockToggle',
   deleteConstraint: 'ConstraintDelete',
+  // P4 sketch commands — the precision editor and direct manipulation both emit
+  // these, which is what makes the two skins agree.
+  sketchAddCurve: 'SketchCurveAdd',
+  sketchMoveVertex: 'SketchCurveMoveVertex',
+  sketchMoveEdge: 'SketchCurveMoveEdge',
+  sketchSetSlope: 'SketchCurveSetSlope',
   // P3 modify tools
   copyElement: 'ElementCopy',
   rotateElement: 'ElementRotate',
@@ -328,6 +334,16 @@ interface BimStoreState {
   wallJoins: Record<string, WallJoinState>;
   fetchWallJoins: () => Promise<void>;
   setWallJoin: (wallGuid: string, endIdx: number, allowJoin: boolean, mode: 'butt' | 'miter' | 'square_off') => Promise<void>;
+
+  // P4 sketch commands (all bus commands, so journaled and undoable). Both the
+  // 2D sketch editor and direct manipulation call these; neither owns geometry.
+  sketchAddCurve: (guid: string, curveId: string, start: [number, number],
+                   end: [number, number], definesSlope?: boolean, slopeAngle?: number) => Promise<void>;
+  sketchMoveVertex: (guid: string, curveId: string, endIndex: 0 | 1,
+                     to: [number, number]) => Promise<void>;
+  sketchMoveEdge: (guid: string, curveId: string, dx: number, dy: number) => Promise<void>;
+  sketchSetSlope: (guid: string, curveId: string, definesSlope: boolean,
+                   slopeAngle?: number) => Promise<void>;
 
   // P3 modify tools (all bus commands, so journaled and undoable)
   copyElement: (guid: string, dx: number, dy: number, dz?: number) => Promise<void>;
@@ -1326,6 +1342,66 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       }
     } catch (e) {
       console.error('Failed to fetch wall joins', e);
+    }
+  },
+
+  sketchAddCurve: async (guid, curveId, start, end, definesSlope = false, slopeAngle) => {
+    try {
+      await get().dispatchTransaction(
+        'sketchAddCurve',
+        {
+          guid,
+          curve_id: curveId,
+          start,
+          end,
+          defines_slope: definesSlope,
+          slope_angle: slopeAngle ?? null,
+        },
+        'Sketch: add curve'
+      );
+    } catch (e) {
+      console.error('Failed to add sketch curve', e);
+    }
+  },
+
+  sketchMoveVertex: async (guid, curveId, endIndex, to) => {
+    try {
+      await get().dispatchTransaction(
+        'sketchMoveVertex',
+        { guid, curve_id: curveId, end_index: endIndex, to },
+        'Sketch: drag vertex'
+      );
+    } catch (e) {
+      console.error('Failed to move sketch vertex', e);
+    }
+  },
+
+  sketchMoveEdge: async (guid, curveId, dx, dy) => {
+    try {
+      await get().dispatchTransaction(
+        'sketchMoveEdge',
+        { guid, curve_id: curveId, dx, dy },
+        'Sketch: drag edge'
+      );
+    } catch (e) {
+      console.error('Failed to move sketch edge', e);
+    }
+  },
+
+  sketchSetSlope: async (guid, curveId, definesSlope, slopeAngle) => {
+    try {
+      await get().dispatchTransaction(
+        'sketchSetSlope',
+        {
+          guid,
+          curve_id: curveId,
+          defines_slope: definesSlope,
+          slope_angle: slopeAngle ?? null,
+        },
+        'Sketch: define slope'
+      );
+    } catch (e) {
+      console.error('Failed to set sketch slope', e);
     }
   },
 

@@ -117,6 +117,36 @@ class ElementUpdateParams(BaseModel):
     updates: Dict[str, Any] = Field(..., description="Element property updates (polygon, thickness, elevation, pitch, etc.)")
 
 
+class SketchCurveAddParams(BaseModel):
+    guid: str = Field(..., description="Element that owns the sketch")
+    curve_id: str = Field(..., description="Stable curve identifier")
+    start: List[float] = Field(..., description="Start [u, v] in the sketch plane")
+    end: List[float] = Field(..., description="End [u, v] in the sketch plane")
+    defines_slope: bool = Field(default=False, description="Revit Defines Slope flag")
+    slope_angle: Optional[float] = Field(default=None, description="Per-curve slope in degrees")
+
+
+class SketchCurveMoveVertexParams(BaseModel):
+    guid: str = Field(..., description="Element that owns the sketch")
+    curve_id: str = Field(..., description="Curve whose endpoint moves")
+    end_index: int = Field(..., description="0 for start, 1 for end")
+    to: List[float] = Field(..., description="New [u, v] position")
+
+
+class SketchCurveMoveEdgeParams(BaseModel):
+    guid: str = Field(..., description="Element that owns the sketch")
+    curve_id: str = Field(..., description="Curve to translate")
+    dx: float = Field(..., description="Delta along the sketch u axis")
+    dy: float = Field(..., description="Delta along the sketch v axis")
+
+
+class SketchCurveSlopeParams(BaseModel):
+    guid: str = Field(..., description="Element that owns the sketch")
+    curve_id: str = Field(..., description="Curve to toggle")
+    defines_slope: bool = Field(..., description="New Defines Slope state")
+    slope_angle: Optional[float] = Field(default=None, description="Optional new slope in degrees")
+
+
 class ElementCopyParams(BaseModel):
     guid: str = Field(..., description="Element to copy")
     dx: float = Field(default=0.0, description="Offset X in internal feet")
@@ -176,6 +206,10 @@ COMMAND_REGISTRY = {
     "ConstraintAlign": ConstraintAlignParams,
     "ConstraintLockDim": ConstraintLockDimParams,
     "ConstraintEqualize": ConstraintEqualizeParams,
+    "SketchCurveAdd": SketchCurveAddParams,
+    "SketchCurveMoveVertex": SketchCurveMoveVertexParams,
+    "SketchCurveMoveEdge": SketchCurveMoveEdgeParams,
+    "SketchCurveSetSlope": SketchCurveSlopeParams,
     "ElementCopy": ElementCopyParams,
     "ElementRotate": ElementRotateParams,
     "ElementOffset": ElementOffsetParams,
@@ -349,6 +383,29 @@ class CommandBusEngine:
             p: ConstraintEqualizeParams = validated
             c = self.manager.equalize_span(p.span_start_guid, p.span_end_guid, p.interior_guids, p.axis)
             return {"status": "equalized", "constraint": c}
+
+        elif cmd_name == "SketchCurveAdd":
+            p: SketchCurveAddParams = validated
+            return self.manager.add_sketch_curve(
+                p.guid, p.curve_id, (p.start[0], p.start[1]), (p.end[0], p.end[1]),
+                p.defines_slope, p.slope_angle,
+            )
+
+        elif cmd_name == "SketchCurveMoveVertex":
+            p: SketchCurveMoveVertexParams = validated
+            return self.manager.move_sketch_vertex(
+                p.guid, p.curve_id, p.end_index, (p.to[0], p.to[1])
+            )
+
+        elif cmd_name == "SketchCurveMoveEdge":
+            p: SketchCurveMoveEdgeParams = validated
+            return self.manager.move_sketch_curve(p.guid, p.curve_id, p.dx, p.dy)
+
+        elif cmd_name == "SketchCurveSetSlope":
+            p: SketchCurveSlopeParams = validated
+            return self.manager.set_sketch_slope(
+                p.guid, p.curve_id, p.defines_slope, p.slope_angle
+            )
 
         elif cmd_name == "ElementCopy":
             p: ElementCopyParams = validated

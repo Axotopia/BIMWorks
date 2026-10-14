@@ -233,6 +233,23 @@ The workflow answer from principle 3.
 
 **Exit criteria:** a gable roof (footprint + slope lines) built by direct drag and by sketch mode produce identical geometry; editing a wall profile to create an awning regenerates the wall solid and keeps its door hosted and swinging correctly.
 
+**Status: COMPLETE (2026-10-14).** Verified by `scratch/test_sketch_model.py` (42 checks) plus the eleven other suites.
+
+| Item | What landed |
+|---|---|
+| Sketch data model in the overlay | `backend/sketch_model.py`: `SketchCurve` (Defines-Slope, per-curve angle, overhang, Pick-Walls provenance) and `Sketch` (loop tracing, validation, dict serialisation). The `sketch` record is now part of the overlay element record, so a footprint survives save/load — **N13 fixed** |
+| Defines-Slope semantics | The slope line is what the roof rises *to* (ridge/hip) and the footprint edges are the eaves. The old code ignored slope lines and took one global `pitch_degrees`. Mesh peak is exactly `run × tan(angle)`; a steeper line gives a taller roof; no slope line gives a flat roof |
+| Both skins, one model | `set_roof_sketch` is the single apply path; `_edit_sketch` loads, mutates and re-applies. The precision editor emits `SketchCurveAdd`/`SketchCurveSetSlope`; direct manipulation emits `SketchCurveMoveVertex`/`SketchCurveMoveEdge`. Verified: the same gable built both ways yields **byte-identical vertex and index buffers**, identical sketch records and identical footprints |
+| Sketch-driven recompute | Sketch edits route through the P3 `DependencyGraph`; a footprint or slope change regenerates the solid |
+| Wall profiles (awning) | `set_wall_profile(guid, sketch)`: a closed outline in the wall's own U–Z plane swept across the thickness. Openings need no repositioning — a door's placement is relative to the baseline, so it survives the change. Asserted, not assumed: the door stays hosted, keeps its `IfcOpeningElement`, offset, swing state, and still produces a plan swing arc after the edit *and* after a later move |
+| Bus commands | `SketchCurveAdd`, `SketchCurveMoveVertex`, `SketchCurveMoveEdge`, `SketchCurveSetSlope` (registry now 26 commands), all dispatched from the store, so the parity gate covers 24 UI actions |
+
+**Design decision worth flagging.** Sketch geometry is stored as `sketch_mesh` on the element meta rather than as the IFC Body representation. An arbitrary pitched surface is not representable as the extruded profile the rest of the pipeline writes, and silently flattening it into an extrusion is precisely the "model looks right but is wrong" failure this project keeps fixing. The sketch is what persists and what regenerates; the IFC keeps a valid bounding extrusion for interop. If third-party tools must see the true pitched solid, that needs a triangulated `IfcTriangulatedFaceSet` writer, which is a follow-up rather than a hidden approximation.
+
+**Also guarded rather than approximated:** profile editing requires an axis-aligned wall (an angled wall is rejected with a reason, since a general sweep is out of scope for V1's pipeline).
+
+**Remaining P4 follow-up (tracked):** the in-viewport drag gesture in the UI — the commands and the model are complete and covered, but binding a mouse drag to `SketchCurveMoveVertex` in the plan/3D viewport is UI work on top of an already-tested path.
+
 ### P5 — 2D views & HLR (README M3) — after P3/P4
 Unchanged from spec §4.1 (in-process OCCT `HLRBRep` pipeline replacing the analytic-slice renderer), with one reordering consequence: the analytic slicer built in the 10-13 session is the *fallback* renderer until P5, and should not receive further investment beyond bug fixes.
 
