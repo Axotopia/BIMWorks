@@ -161,9 +161,10 @@ export const PlanViewport2D: React.FC = () => {
               d={slab.d}
               className={slab.class}
               stroke="#cbd5e1"
-              strokeWidth="1"
+              strokeWidth="0.8"
               vectorEffect="non-scaling-stroke"
               fill="#f8fafc"
+              fillOpacity={0.4}
             />
           ))}
 
@@ -181,10 +182,10 @@ export const PlanViewport2D: React.FC = () => {
               <circle
                 cx={grid.circle_center[0]}
                 cy={grid.circle_center[1]}
-                r="0.5"
+                r="0.26"
                 fill="#ffffff"
                 stroke="#0f172a"
-                strokeWidth="1.5"
+                strokeWidth="1.2"
                 vectorEffect="non-scaling-stroke"
               />
               {/* Inverted text scale to render right-side up */}
@@ -194,7 +195,7 @@ export const PlanViewport2D: React.FC = () => {
                 transform="scale(1, -1)"
                 textAnchor="middle"
                 dominantBaseline="central"
-                fontSize="0.45"
+                fontSize="0.24"
                 fontFamily="Inter, sans-serif"
                 fontWeight="bold"
                 fill="#0f172a"
@@ -216,7 +217,7 @@ export const PlanViewport2D: React.FC = () => {
                 vectorEffect="non-scaling-stroke"
                 strokeLinejoin="round"
                 strokeLinecap="round"
-                fill={isSelected ? '#bae6fd' : '#e2e8f0'}
+                fill={isSelected ? '#bae6fd' : '#f1f5f9'}
                 onClick={(e) => {
                   e.stopPropagation();
                   handleElementClick(p.guid);
@@ -232,10 +233,11 @@ export const PlanViewport2D: React.FC = () => {
               key={`proj-${idx}`}
               d={p.d}
               className={p.class}
-              stroke="#334155"
-              strokeWidth="1.2"
+              stroke="#64748b"
+              strokeWidth="1.0"
               vectorEffect="non-scaling-stroke"
               fill="none"
+              style={{ fill: 'none' }}
             />
           ))}
 
@@ -245,10 +247,11 @@ export const PlanViewport2D: React.FC = () => {
               key={`swing-${idx}`}
               d={p.d}
               className={p.class}
-              stroke="#2563eb"
-              strokeWidth="1.2"
+              stroke="#475569"
+              strokeWidth="1.0"
               vectorEffect="non-scaling-stroke"
               fill="none"
+              style={{ fill: 'none' }}
             />
           ))}
 
@@ -285,7 +288,7 @@ export const PlanViewport2D: React.FC = () => {
                   x2={dim.start[0] + dx * 1.15}
                   y2={dim.start[1] + dy * 1.15}
                   stroke="#94a3b8"
-                  strokeWidth="1"
+                  strokeWidth="0.8"
                   vectorEffect="non-scaling-stroke"
                 />
                 <line
@@ -294,7 +297,7 @@ export const PlanViewport2D: React.FC = () => {
                   x2={dim.end[0] + dx * 1.15}
                   y2={dim.end[1] + dy * 1.15}
                   stroke="#94a3b8"
-                  strokeWidth="1"
+                  strokeWidth="0.8"
                   vectorEffect="non-scaling-stroke"
                 />
 
@@ -305,20 +308,24 @@ export const PlanViewport2D: React.FC = () => {
                   x2={dim.end[0] + dx}
                   y2={dim.end[1] + dy}
                   stroke={isSelected ? '#0284c7' : '#64748b'}
-                  strokeWidth="1.2"
+                  strokeWidth="1.0"
                   vectorEffect="non-scaling-stroke"
                 />
 
-                {/* Dimension Text */}
+                {/* Dimension Text with readability halo */}
                 <text
                   x={mx}
                   y={-my - 0.10}
                   transform="scale(1, -1)"
                   textAnchor="middle"
-                  fontSize="0.22"
+                  fontSize="0.18"
                   fontFamily="JetBrains Mono, monospace"
                   fill={isSelected ? '#0284c7' : '#334155'}
                   fontWeight="600"
+                  paintOrder="stroke"
+                  stroke="#ffffff"
+                  strokeWidth="0.08"
+                  strokeLinejoin="round"
                 >
                   {isEq ? 'EQ' : dim.text}
                 </text>

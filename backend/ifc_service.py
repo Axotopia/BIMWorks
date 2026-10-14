@@ -1095,6 +1095,26 @@ class BimModelManager:
     _MITER_MIN_ANGLE = 15.0   # degrees; outside [15, 165] miter falls back to butt
 
     @staticmethod
+    def _get_2d_hull(points_2d):
+        """Computes 2D convex hull of points using Monotone Chain."""
+        pts = sorted(set((round(float(p[0]), 4), round(float(p[1]), 4)) for p in points_2d))
+        if len(pts) <= 2:
+            return pts
+        def cross(o, a, b):
+            return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+        lower = []
+        for p in pts:
+            while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+                lower.pop()
+            lower.append(p)
+        upper = []
+        for p in reversed(pts):
+            while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+                upper.pop()
+            upper.append(p)
+        return lower[:-1] + upper[:-1]
+
+    @staticmethod
     def _clip_poly_s(poly, sp, u, s_min=None, s_max=None):
         """Clips a polygon to the slab s_min <= dot(p - sp, u) <= s_max.
         Band lines are perpendicular to the baseline direction u."""
@@ -1734,26 +1754,76 @@ class BimModelManager:
                         "offset_norm": [nx, ny],
                     })
 
-        # Process grids
+        # Deduplicate overlapping parallel dimensions (Revit clean-drawing rule)
+        deduped_dims = []
+        for d in dimensions_list:
+            dsp = d["start"]
+            dep = d["end"]
+            ddx = dep[0] - dsp[0]
+            ddy = dep[1] - dsp[1]
+            dlen = math.hypot(ddx, ddy)
+            if dlen < 0.8:
+                continue
+            dang = math.atan2(ddy, ddx) % math.pi
+            dmx = (dsp[0] + dep[0]) / 2.0
+            dmy = (dsp[1] + dep[1]) / 2.0
+            d_perp = dmx * math.sin(dang) - dmy * math.cos(dang)
+
+            duplicate = False
+            for i, existing in enumerate(deduped_dims):
+                e_ang = existing["_ang"]
+                e_d_perp = existing["_d_perp"]
+                ang_diff = abs(dang - e_ang)
+                if ang_diff > math.pi / 2:
+                    ang_diff = abs(ang_diff - math.pi)
+                if ang_diff < 0.08 and abs(d_perp - e_d_perp) < 0.40:
+                    duplicate = True
+                    if dlen > existing["length"]:
+                        deduped_dims[i] = {**d, "_ang": dang, "_d_perp": d_perp}
+                    break
+
+            if not duplicate:
+                deduped_dims.append({**d, "_ang": dang, "_d_perp": d_perp})
+
+        for d in deduped_dims:
+            d.pop("_ang", None)
+            d.pop("_d_perp", None)
+
+        # Process grids (extend outward past building envelope so bubbles never land on walls)
         grids_svg = []
         for meta in self.element_meta.values():
             if meta.get("ifc_class") == "IfcGrid":
-                sp = meta["start"]
-                ep = meta["end"]
+                sp = list(meta["start"])
+                ep = list(meta["end"])
                 tag = meta.get("tag", "1")
+                gdx = ep[0] - sp[0]
+                gdy = ep[1] - sp[1]
+                glen = math.hypot(gdx, gdy)
+                if glen > 0.001:
+                    ux = gdx / glen
+                    uy = gdy / glen
+                    # Extend grid line by 1.2m at bubble end and 0.6m at tail
+                    bubble_center = [ep[0] + ux * 1.2, ep[1] + uy * 1.2]
+                    tail = [sp[0] - ux * 0.6, sp[1] - uy * 0.6]
+                else:
+                    bubble_center = ep
+                    tail = sp
                 grids_svg.append({
                     "guid": meta["guid"],
                     "tag": tag,
-                    "d": f"M {sp[0]:.3f} {sp[1]:.3f} L {ep[0]:.3f} {ep[1]:.3f}",
-                    "circle_center": ep,
+                    "d": f"M {tail[0]:.3f} {tail[1]:.3f} L {bubble_center[0]:.3f} {bubble_center[1]:.3f}",
+                    "circle_center": bubble_center,
                 })
 
-        # Process Slabs
+        # Process Slabs (only true floor slabs at ground/storey level; skip roofs, awnings, footings)
         slabs_svg = []
         for meta in self.element_meta.values():
             if meta.get("ifc_class") == "IfcSlab":
+                name = (meta.get("name") or "").lower()
+                if "roof" in name or "awning" in name or "footing" in name:
+                    continue
                 pts = meta.get("polygon", [])
-                if pts:
+                if pts and len(pts) >= 3:
                     path_str = f"M {pts[0][0]:.3f} {pts[0][1]:.3f} " + " ".join(
                         f"L {p[0]:.3f} {p[1]:.3f}" for p in pts[1:]
                     ) + " Z"
@@ -1765,7 +1835,7 @@ class BimModelManager:
             "swing_paths": svg_swing_paths,
             "slabs": slabs_svg,
             "grids": grids_svg,
-            "dimensions": dimensions_list,
+            "dimensions": deduped_dims,
         }
 
     # =========================================================================
@@ -2161,7 +2231,8 @@ class BimModelManager:
                 })
 
             elif ifc_class == "IfcSlab":
-                poly = [
+                pts_2d = [(raw_verts[i], raw_verts[i+1]) for i in range(0, len(raw_verts), 3)] if raw_verts else []
+                hull = self._get_2d_hull(pts_2d) if len(pts_2d) >= 3 else [
                     [min_x, min_y],
                     [max_x, min_y],
                     [max_x, max_y],
@@ -2170,7 +2241,7 @@ class BimModelManager:
                 meta.update({
                     "thickness": max(dz, 0.1),
                     "elevation": min_z,
-                    "polygon": poly,
+                    "polygon": hull,
                 })
 
             elif ifc_class == "IfcRoof":
