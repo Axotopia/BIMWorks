@@ -1,8 +1,8 @@
 # PROJECT BIMWORKS — Improved Master Specification v2
 ## A native-IFC architectural BIM authoring application, AI-first by design
-### Research-grounded rewrite of the Gemini draft — with audit, evidence, and corrected architecture
+### Master specification v2.3 — research-grounded, evidence-graded
 
-> Status: **v2.1 — decisions signed off** (hybrid container, GPL-3.0, decimal-feet internals — see §11). Every material claim carries a source and confidence grade.
+> Status: **v2.3 — decisions signed off** (hybrid container, GPL-3.0, decimal-feet internals, IFC4 schema-of-record — see §11). Family system §3.6, AI driver architecture §5, Revit LT UI coverage audit §6.1. Every material claim carries a source and confidence grade.
 > Grades: [Confirmed] = primary source fetched this session, quote matches; [Confirmed-as-printed] = record prints it, currency not established; ⚠ UNVERIFIED(reason) = not fetchable or secondary source only.
 
 ---

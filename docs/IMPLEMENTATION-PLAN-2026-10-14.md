@@ -19,7 +19,7 @@
 
 **Verified working (tests executed 2026-10-13 and re-executed 2026-10-14):**
 - Transaction engine with full-state snapshot undo/redo — `test_transactions.py` 28/28.
-- Wall-join Phase A geometry (miter/butt/square-off/T-junction/disallow) in 3D solids + 2D plan cleanup — `test_wall_joins.py` 18/18.
+- Wall-join Phase A geometry (miter/butt/square-off/T-junction/disallow) in 3D solids + 2D plan cleanup — `test_wall_joins.py` 18/18. **Amended 2026-10-15: the miter half of this claim was wrong, and the suite could not see it** because every fixture wall in it is `thickness: 0.3` — the one case where an angle-bisector miter and a side-face miter agree. See §0.2.
 - CommandBus: 13 typed commands, JSON Schema 2020-12 export, batched transactions — `test_v2_core.py`.
 - View-range 2D slicing with the Revit <6 ft not-cut rule; georeferencing (IfcProjectedCRS + IfcMapConversion); PyMuPDF vector sheet PDF.
 
@@ -74,6 +74,94 @@
 
 
 ---
+
+## 0.2 Folded in from an external review (2026-10-15)
+
+Four findings, all reached by executing the code rather than by reading it. Three are defects the
+suites could not see; the fourth is a defect in the suites themselves.
+
+### The miter was an angle bisector, and the join suite could not tell
+
+`test_wall_joins.py`'s 18 checks pass with every fixture wall at `thickness: 0.3`. For two walls of
+**equal** thickness an angle-bisector miter and a side-face miter produce identical geometry — so the
+corpus could not distinguish the two implementations, and "18/18" was green for eighteen checks that
+were all the same check.
+
+Revit 2025 `HostObjDB.dll` exports `MiterBySideFacesTargetData`. The miter derives from the walls'
+**side faces**: for perpendicular walls of thickness tA and tB the outer joint corner is
+`(tB/2, tA/2)` and the joint slope is `tA/tB`, whereas a bisector always yields `(tA/2, tA/2)` and
+slope 1.
+
+Measured before the fix:
+
+| tA / tB | A's corner (before) | required | error |
+|---|---|---|---|
+| 0.3 / 0.3 | (0.1500, 0.1500) | (0.1500, 0.1500) | none — the blind case |
+| 0.2 / 0.6 | (0.1000, 0.1000) | (0.3000, 0.1000) | 0.2 ft |
+| 0.6 / 0.2 | (0.3000, 0.3000) | (0.1000, 0.3000) | 0.2 ft |
+| 0.1 / 0.9 | (0.0500, 0.0500) | (0.4500, 0.0500) | **0.4 ft (~122 mm)** |
+
+The two walls' corners did not coincide in any unequal case. Two further defects surfaced the same
+way, neither visible from the symbol names:
+
+- **The miter lost area.** Total 5.37750 against an untrimmed 5.40000 — a `0.15 x 0.15` gap at every
+  inner corner, present at *equal* thickness. A miter is area-preserving: it gains at the inner corner
+  what it gives up at the outer. The joint plane can lie up to half the **partner's** thickness beyond
+  our endpoint, and the untrimmed rectangle had no material there, so the gain never happened.
+- **A spurious vertex at the junction.** Wall A's footprint carried a `(0,0)` vertex, which is why the
+  suite's "shared bisector edge" check passed: it counts vertices where `x == y`, and the degenerate
+  origin satisfies that for free.
+
+Both are fixed alongside the bisector. A miter now takes its joint line from the two walls' side
+faces, selecting the face pairing by the miter's defining property (the plane must put each wall's far
+end on **opposite** sides), and extends a mitered end's footprint past its own endpoint by half the
+partner's thickness before clipping. `scratch/test_wall_joins_matrix.py` was written to falsify the old
+implementation and now passes 37 checks; its first four assertions fail against a bisector by
+construction.
+
+### The rule this generalises to
+
+**If a key parameter is constant across a corpus, the suite is blind on that dimension regardless of
+how many checks it has.** A parameterised join has at least these dimensions — thickness, join angle,
+walls at the junction, join mode, end state, layer count, curvature, vertical offsets — and a corpus
+that varies one of them tests one case, however many assertions it makes about it.
+
+Two consequences, both now in force:
+
+1. Every geometric suite carries a **meta-test** asserting its corpus varies each dimension it relies
+   on, and the meta-test fails when a dimension collapses. `test_wall_joins_matrix.py` section 7 is the
+   reference implementation.
+2. **Probes inherit the rule.** The mitigation for disputed Revit behaviour in this plan is a live
+   probe under `docs/probes/`. A probe with one thickness is as blind as a test with one thickness, and
+   this defect survived for exactly that reason.
+
+Still unrepresentable, therefore still untested, and now reported as explicit gaps rather than
+skipped: per-layer / compound-structure joins (no layer model), curved-wall joins (no arc wall), and
+vertical join interaction (no base/top offsets).
+
+### Post-commit refresh was seven serial round trips
+
+The same category of error: a claim true of a part and reported as true of the whole.
+`executeTransaction` awaited seven requests in series per commit — `/api/constraints` among them
+**twice**, once inside `fetchProjectState` and once directly — so latency was the *sum* of seven round
+trips. Measured p50 36.7 ms / p95 66.9 ms end-to-end against a 16 ms budget, with roughly 30 ms in
+refetches. The 4.9 ms figure previously logged as the wall-drag result measures in-process recompute
+only, about a tenth of what a user waits for.
+
+Fixed as an interim step short of the delta push `SPEC.md` 3.2 specifies: one `GET /api/state` bundle,
+routed to the same plan/section/elevation code paths as the endpoints it replaces, returning
+per-section `timings` and an `engine_ms` that is engine-side only. The store records `clientMs` and
+`engineMs` separately, under distinct names. Seven requests become one, and a 404 from an engine that
+predates the route trips a breaker so it does not cost a failed request per commit.
+
+### Both CI gates were broken on Windows
+
+`check-bus-parity.mjs` and `check-ui-p0.mjs` both computed
+`new URL('..', import.meta.url).pathname`, which yields `/C:/Users/...` on Windows; `path.join` then
+produced `C:\C:\Users\...`. The parity gate — the P1 control for the bus-bypass class of defect —
+**crashed before performing a single check**, so `npm run check` could never pass on Windows. Fixed
+with `fileURLToPath`. Both gates now run, and `scripts/check-state-bundle.mjs` (30 checks, covering the
+post-commit protocol above) is wired into `npm run check`.
 
 ## 1. Architecture principles for everything below
 
@@ -202,6 +290,19 @@ The README's M2 core, now unblocked and correctly scoped.
 **Exit criteria:** README M2 gate verbatim — corner chain of 8 walls edits live; deleting a door heals the wall; move Level 2 → constrained walls follow; EQ holds through arbitrary later moves (new regression test); wall-drag p95 measured and logged.
 
 **Status: COMPLETE (2026-10-14).** Verified by `scratch/test_dependency_graph.py` (41 checks) plus the ten existing suites.
+
+**Join-geometry amendment (2026-10-15).** The "incremental join recompute" item above shipped, but the
+join *geometry* it recomputes was wrong for any unequal-thickness pair — see §0.2. The miter now
+derives from the walls' side faces (`MiterBySideFacesTargetData`) and extends the mitered end by half
+the partner's thickness, so the joint is area-preserving and both walls meet at one corner. Verified by
+`scratch/test_wall_joins_matrix.py` (37 checks: four unequal-thickness pairs, an angle sweep, 3- and
+4-wall junctions, and a meta-test over the corpus) and by the corrected `test_wall_joins.py`
+(18 checks, now ASCII output so it runs under cp1252).
+
+**P3 exit criteria, extended:** for any geometric change, the test corpus MUST vary each dimension the
+geometry depends on, and MUST carry a meta-test asserting that variation. `test_wall_joins.py` passed
+18/18 for months while the miter was wrong by 0.4 ft on a 9:1 thickness pair, because all eighteen
+checks shared one thickness.
 
 | Item | What landed |
 |---|---|

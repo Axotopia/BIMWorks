@@ -22,8 +22,13 @@
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+// `new URL(...).pathname` yields "/C:/Users/..." on Windows - a leading slash plus a
+// drive letter - and path.join() then doubles the drive ("C:\C:\Users\..."). That
+// made this gate crash before performing a single check on Windows. fileURLToPath
+// is the portable conversion.
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const STORE = join(ROOT, 'src/store/useBimStore.ts');
 
 /** Non-GET fetches that are legitimately not bus mutations. */

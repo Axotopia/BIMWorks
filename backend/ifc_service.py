@@ -2432,17 +2432,78 @@ class BimModelManager:
                 out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
         return out
 
-    def _wall_rect(self, meta):
-        """Plain (untrimmed) rectangular footprint of a wall, world XY."""
+    @staticmethod
+    def _miter_joint_line(E, uW, tW, uX, tX, farW, farX):
+        """The miter joint line, built from the two walls' SIDE FACES.
+
+        Revit 2025 `HostObjDB.dll` exports `MiterBySideFacesTargetData`. Each wall
+        contributes two face lines parallel to its baseline, offset half a
+        thickness. The joint plane passes through the intersection of the pair of
+        faces that forms the corner; which pair that is follows from the miter's
+        defining property - the plane must separate the two wall bodies, so each
+        wall's far end lies on an opposite side of it.
+
+        For equal thickness this coincides with the angle bisector, which is why a
+        single-thickness fixture corpus cannot distinguish the two
+        implementations. For unequal thickness it does not: perpendicular walls of
+        thickness tW and tX meet at an outer corner of (tX/2, tW/2) with joint
+        slope tW/tX, whereas a bisector always gives (tW/2, tW/2) and slope 1.
+
+        Returns (point_on_line, direction), or None when neither pairing separates
+        the bodies (near-collinear walls); the caller then falls back.
+        """
+        def face_lines(P, u, thickness):
+            n = (-u[1], u[0])
+            return (
+                ((P[0] + n[0] * thickness / 2.0, P[1] + n[1] * thickness / 2.0), u),
+                ((P[0] - n[0] * thickness / 2.0, P[1] - n[1] * thickness / 2.0), u),
+            )
+
+        def side(p0, d, q):
+            n = (-d[1], d[0])
+            return (q[0] - p0[0]) * n[0] + (q[1] - p0[1]) * n[1]
+
+        fw = face_lines(E, uW, tW)
+        fx = face_lines(E, uX, tX)
+
+        for fa, fb, fc, fd in (
+            (fw[0], fx[1], fw[1], fx[0]),
+            (fw[0], fx[0], fw[1], fx[1]),
+        ):
+            P1 = BimModelManager._line_intersect(fa[0], fa[1], fb[0], fb[1])
+            P2 = BimModelManager._line_intersect(fc[0], fc[1], fd[0], fd[1])
+            if P1 is None or P2 is None:
+                continue
+            d = (P2[0] - P1[0], P2[1] - P1[1])
+            if math.hypot(d[0], d[1]) < 1e-9:
+                continue
+            if side(P1, d, farW) * side(P1, d, farX) < 0:
+                return P1, d
+        return None
+
+    def _wall_rect(self, meta, ext_start: float = 0.0, ext_end: float = 0.0):
+        """Plain (untrimmed) rectangular footprint of a wall, world XY.
+
+        `ext_start` / `ext_end` push the corresponding end outward along the
+        baseline. A miter joint plane can lie up to half the PARTNER's thickness
+        beyond our own endpoint, so an unextended rectangle has no material there
+        and the joint silently loses its inner-corner sliver (measured: a
+        0.15 x 0.15 square at 0.3 ft thickness, with the corner misplaced by up to
+        0.4 ft when the thicknesses differ by 9:1). Extension is only ever applied
+        to a mitered end.
+        """
         sp, ep = meta["start"], meta["end"]
         ang = meta["angle"]
         t = meta["thickness"]
         nx, ny = -math.sin(ang) * (t / 2.0), math.cos(ang) * (t / 2.0)
+        ux, uy = math.cos(ang), math.sin(ang)
+        sx, sy = sp[0] - ux * ext_start, sp[1] - uy * ext_start
+        ex, ey = ep[0] + ux * ext_end, ep[1] + uy * ext_end
         return [
-            (sp[0] + nx, sp[1] + ny),
-            (ep[0] + nx, ep[1] + ny),
-            (ep[0] - nx, ep[1] - ny),
-            (sp[0] - nx, sp[1] - ny),
+            (sx + nx, sy + ny),
+            (ex + nx, ey + ny),
+            (ex - nx, ey - ny),
+            (sx - nx, sy - ny),
         ]
 
     def _find_join_partner(self, guid, end_index, walls):
@@ -2509,29 +2570,62 @@ class BimModelManager:
         # creation order for deterministic butt "through wall" decisions
         order = {g: i for i, g in enumerate(self.element_meta.keys())}
 
+        def _unit(dx, dy):
+            n = math.hypot(dx, dy)
+            return None if n < 1e-9 else (dx / n, dy / n)
+
         for guid, meta in walls.items():
             sp, ep = meta["start"], meta["end"]
             t = meta["thickness"]
-            ang = meta["angle"]
-            ux, uy = math.cos(ang), math.sin(ang)
-            poly = self._wall_rect(meta)
 
+            # --- pre-pass: resolve partners, and flag mitered ends ----------
+            # A mitered end's footprint must be extended past its own endpoint
+            # before clipping, because the joint plane can lie up to half the
+            # PARTNER's thickness beyond it. Resolving partners here rather than in
+            # the clip loop costs nothing: the old code searched once per end.
+            resolved = {}
+            ext = {0: 0.0, 1: 0.0}
             for end_index in (0, 1):
                 policy = self.join_policies.get(guid, {}).get(
                     f"end{end_index}", {"allow_join": True, "mode": "butt"})
                 if not policy.get("allow_join", True):
+                    resolved[end_index] = None
                     continue
-                E = (sp[0], sp[1]) if end_index == 0 else (ep[0], ep[1])
-                other = self._wall_rect_end_probe(meta, end_index)  # far-end centerline point
-                far = other
-
                 # Search the full wall set: a subset pass must still see partners
                 # that are not themselves being recomputed.
                 partner_guid, kind, oe = self._find_join_partner(guid, end_index, all_walls)
+                resolved[end_index] = (partner_guid, kind, oe, policy)
+                if not partner_guid or kind != "corner":
+                    continue
+                om = all_walls[partner_guid]
+                omode = self.join_policies.get(partner_guid, {}).get(
+                    f"end{oe}", {"allow_join": True, "mode": "butt"}).get("mode", "butt")
+                if policy.get("mode", "butt") != "miter" or omode != "miter":
+                    continue
+                E = (sp[0], sp[1]) if end_index == 0 else (ep[0], ep[1])
+                far = self._wall_rect_end_probe(meta, end_index)
+                uXf = self._partner_far_point(om, oe)
+                uW = _unit(far[0] - E[0], far[1] - E[1])
+                uX = _unit(uXf[0] - E[0], uXf[1] - E[1])
+                if uW is None or uX is None:
+                    continue
+                dot = max(-1.0, min(1.0, uW[0] * uX[0] + uW[1] * uX[1]))
+                angle_deg = math.degrees(math.acos(dot))
+                if self._MITER_MIN_ANGLE <= angle_deg <= 180 - self._MITER_MIN_ANGLE:
+                    ext[end_index] = om["thickness"] / 2.0
+
+            poly = self._wall_rect(meta, ext_start=ext[0], ext_end=ext[1])
+
+            # --- clip pass --------------------------------------------------
+            for end_index in (0, 1):
+                info = resolved[end_index]
+                if info is None:
+                    continue
+                partner_guid, kind, oe, policy = info
                 if not partner_guid:
                     continue
-                # partner was found in `all_walls`, which may include walls
-                # outside the subset being recomputed.
+                E = (sp[0], sp[1]) if end_index == 0 else (ep[0], ep[1])
+                far = self._wall_rect_end_probe(meta, end_index)
                 om = all_walls[partner_guid]
 
                 if kind == "tee":
@@ -2542,28 +2636,34 @@ class BimModelManager:
 
                 # Corner join
                 mode = policy.get("mode", "butt")
-                oend_pol = self.join_policies.get(partner_guid, {}).get(
-                    f"end{oe}", {"allow_join": True, "mode": "butt"})
-                omode = oend_pol.get("mode", "butt")
+                omode = self.join_policies.get(partner_guid, {}).get(
+                    f"end{oe}", {"allow_join": True, "mode": "butt"}).get("mode", "butt")
 
                 if mode == "miter" and omode == "miter":
-                    uW = (far[0] - E[0], far[1] - E[1])
                     uXf = self._partner_far_point(om, oe)
-                    uX = (uXf[0] - E[0], uXf[1] - E[1])
-                    nw = math.hypot(*uW) or 1.0
-                    nxm = math.hypot(*uX) or 1.0
-                    uW = (uW[0] / nw, uW[1] / nw)
-                    uX = (uX[0] / nxm, uX[1] / nxm)
-                    dot = uW[0] * uX[0] + uW[1] * uX[1]
-                    angle_deg = math.degrees(math.acos(max(-1.0, min(1.0, dot))))
-                    if self._MITER_MIN_ANGLE <= angle_deg <= 180 - self._MITER_MIN_ANGLE:
-                        # Miter line = internal bisector of the two into-wall
-                        # directions through the shared point: it splits the
-                        # overlap wedge evenly between the two walls.
+                    uW = _unit(far[0] - E[0], far[1] - E[1])
+                    uX = _unit(uXf[0] - E[0], uXf[1] - E[1])
+                    angle_ok = False
+                    if uW is not None and uX is not None:
+                        dot = max(-1.0, min(1.0, uW[0] * uX[0] + uW[1] * uX[1]))
+                        angle_deg = math.degrees(math.acos(dot))
+                        angle_ok = (
+                            self._MITER_MIN_ANGLE <= angle_deg <= 180 - self._MITER_MIN_ANGLE
+                        )
+                    if angle_ok:
+                        # Joint line built from the walls' SIDE FACES, not from an
+                        # angle bisector (Revit: MiterBySideFacesTargetData).
+                        joint = self._miter_joint_line(
+                            E, uW, t, uX, om["thickness"], far, uXf)
+                        if joint is not None:
+                            poly = self._clip_poly_line(poly, joint[0], joint[1], far)
+                            continue
+                        # Neither face pairing separated the two bodies; fall back.
                         bis = (uW[0] + uX[0], uW[1] + uX[1])
-                        nb = math.hypot(*bis)
+                        nb = math.hypot(bis[0], bis[1])
                         if nb > 1e-6:
-                            poly = self._clip_poly_line(poly, E, (bis[0] / nb, bis[1] / nb), far)
+                            poly = self._clip_poly_line(
+                                poly, E, (bis[0] / nb, bis[1] / nb), far)
                             continue
                 if mode == "square_off":
                     poly = self._clip_to_partner_face(meta, poly, om, far, E, square_off=True)
@@ -2571,7 +2671,7 @@ class BimModelManager:
 
                 # Butt: earlier-created wall runs through; later wall butts.
                 if order.get(guid, 0) < order.get(partner_guid, 0):
-                    continue  # we are the through wall — no trim
+                    continue  # we are the through wall - no trim
                 poly = self._clip_to_partner_face(meta, poly, om, far, E, square_off=False)
 
             # Store footprint; rebuild representation if it changed

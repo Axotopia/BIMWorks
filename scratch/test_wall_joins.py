@@ -1,5 +1,5 @@
 """
-BIMWorks — Wall join geometry regression tests (GLM Master Spec v2.3 §3.3 Phase A)
+BIMWorks - Wall join geometry regression tests (GLM Master Spec v2.3 section 3.3 Phase A)
 Verifies: miter/butt/square-off corner joins in actual 3D solids, T-junctions,
 Disallow-Join, join recompute on move/delete, 2D slice seam cleanup, undo/redo
 coherence with joins.
@@ -20,7 +20,7 @@ FAIL = []
 
 def check(name, cond, detail=""):
     (PASS if cond else FAIL).append(name)
-    print(f"  {'✓' if cond else '✗ FAIL'} {name}" + (f" — {detail}" if detail and not cond else ""))
+    print(f"  {'OK' if cond else 'FAIL'} {name}" + (f" - {detail}" if detail and not cond else ""))
 
 
 def poly_area(pts):
@@ -65,10 +65,18 @@ check("miter: A polygon corner cut", any(v for v in fa), len(fa))
 check("miter: both polygons share the bisector edge",
       sum(1 for x, y in fa if abs(x - y) < 1e-6) >= 2
       and sum(1 for x, y in fb if abs(x - y) < 1e-6) >= 2)
-# Each wall loses a right triangle with legs t/2 at the shared corner:
-expected = 10 * 0.3 + 8 * 0.3 - 2 * (0.15 ** 2 / 2.0)
+# A miter is AREA-PRESERVING: each wall gives up a wedge at the outer corner and
+# takes an equal one at the inner corner, so the two footprints still sum to the
+# untrimmed total.
+#
+# This check previously expected 5.3775 - a deliberate 0.15 x 0.15 (0.0225 sq ft)
+# deficit. That deficit WAS the angle-bisector defect: the joint was clipped to the
+# positive quadrant instead of to the side-face joint plane, so every inner corner
+# kept a gap. The expectation had been fitted to the bug, which is why it passed.
+# See test_wall_joins_matrix.py, which falsifies the bisector on unequal thickness.
+expected = 10 * 0.3 + 8 * 0.3
 total = poly_area(fa) + poly_area(fb)
-check("miter pieces tile without gap or overlap", abs(total - expected) < 1e-6, f"{total:.5f} vs {expected:.5f}")
+check("miter is area-preserving (no gap, no overlap)", abs(total - expected) < 1e-6, f"{total:.5f} vs {expected:.5f}")
 
 # --------------------------------------------------- 3. square-off join
 print("3. Square-off join")
@@ -119,12 +127,12 @@ check("wall A uses extruded arbitrary profile", any(it.is_a("IfcExtrudedAreaSoli
 print("8. 2D slice uses join-trimmed footprints")
 slices = mgr.slice_2d_vector_plan(cut_elevation=1.2)
 cut_paths = [p for p in slices.get("cut_paths", []) if "cut" in p.get("class", "")]
-# wall B (mitered earlier -> later set square_off/disallow...) — use wall C: tee-trimmed
+# wall B (mitered earlier -> later set square_off/disallow...) - use wall C: tee-trimmed
 c_paths = [p for p in cut_paths if p.get("guid") == gc]
 check("wall C emits cut path", len(c_paths) >= 1)
 if c_paths:
     d = c_paths[0]["d"]
-    # trimmed C spans y from 0.15 (A's face) to 6.0 — its polygon must NOT
+    # trimmed C spans y from 0.15 (A's face) to 6.0 - its polygon must NOT
     # include y < 0.15 points
     ys = [float(tok) for i, tok in enumerate(d.replace("M", " ").replace("L", " ").replace("Z", " ").split()) if i % 2 == 1]
     check("tee-trimmed C starts at A's face (y=0.15), not y=0", abs(min(ys) - 0.15) < 1e-3, f"min_y={min(ys):.3f}")

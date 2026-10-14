@@ -726,6 +726,111 @@ def get_transaction_journal(limit: int = 50):
     return command_bus.get_journal(limit=limit)
 
 
+# ---------------------------------------------------------------------------
+# Post-commit state bundle - SPECIFICATION-v0.2.md 6.3
+# ---------------------------------------------------------------------------
+@app.get("/api/state")
+def get_state_bundle(
+    cut_elevation: float = 4.0,
+    level_id: Optional[str] = None,
+    view_type: str = "floor_plan",
+    direction: str = "south",
+    view_depth: Optional[float] = None,
+    top: Optional[float] = None,
+    bottom: Optional[float] = None,
+    journal_limit: int = 25,
+):
+    """
+    Post-commit state bundle: ONE round trip instead of the seven sequential
+    requests the UI used to issue after every transaction.
+
+    Spec 3.2 says the frontend subscribes to delta events. The UI was instead
+    pulling full model state seven times in series per commit, and one of those
+    seven (/api/constraints) was fetched twice - once inside fetchProjectState and
+    again directly. Measured at roughly 30 ms of a p50 36.7 / p95 66.9 ms edit
+    round.
+
+    This does not implement deltas yet. It removes the serial round-trip
+    amplification and returns per-section timings so engine compute and protocol
+    cost can be told apart.
+
+    The 2D linework is routed the same way /api/slice/2d and /api/view/2d are:
+    plans go through slice_2d_vector_plan with a level-relative cut, while sections
+    and elevations need render_2d_view and the view-range fields. Routing it here
+    rather than in the UI keeps the two paths from disagreeing.
+
+    timings and engine_ms are ENGINE-SIDE ONLY. They are not interaction latency
+    and must never be reported as the drag result: what the user waits for includes
+    the protocol, the transfer and the store commit, and only the UI can measure
+    that. The two numbers belong in the log under separate names.
+    """
+    import time as _time
+
+    t_total = _time.perf_counter()
+    timings: Dict[str, float] = {}
+    errors: Dict[str, str] = {}
+
+    def timed(key, fn):
+        t0 = _time.perf_counter()
+        value = fn()
+        timings[key] = round((_time.perf_counter() - t0) * 1000.0, 2)
+        return value
+
+    def timed_soft(key, fn):
+        """A failing section must not discard the sections that succeeded: a
+        transient slice error should not cost the caller its geometry update."""
+        t0 = _time.perf_counter()
+        try:
+            value = fn()
+        except Exception as exc:
+            errors[key] = f"{type(exc).__name__}: {exc}"
+            value = None
+        timings[key] = round((_time.perf_counter() - t0) * 1000.0, 2)
+        return value
+
+    def _slice():
+        if view_type in ("section", "elevation"):
+            view_range = {
+                k: v
+                for k, v in (("top", top), ("bottom", bottom), ("view_depth", view_depth))
+                if v is not None
+            }
+            view_range["cut"] = cut_elevation
+            return bim_manager.render_2d_view(
+                view_type=view_type,
+                cut_elevation=cut_elevation,
+                direction=direction,
+                view_range=view_range,
+            )
+        return bim_manager.slice_2d_vector_plan(
+            cut_elevation=cut_elevation, level_id=level_id
+        )
+
+    project = timed("project", lambda: {
+        "project_name": bim_manager.project_name,
+        "levels": list(bim_manager.levels.values()),
+        "elements_count": len(bim_manager.element_meta),
+        "georeference": bim_manager.georeference_data,
+    })
+    constraints = timed_soft("constraints", lambda: list(bim_manager.constraints.values()))
+    wall_joins = timed_soft("wall_joins", lambda: bim_manager.get_wall_joins())
+    geometry = timed_soft("geometry", lambda: bim_manager.get_geometry_buffers())
+    slice2d = timed_soft("slice2d", _slice)
+    journal = timed_soft("journal", lambda: command_bus.get_journal(limit=journal_limit))
+
+    total_ms = round((_time.perf_counter() - t_total) * 1000.0, 2)
+    return {
+        "project": project,
+        "constraints": constraints,
+        "wall_joins": wall_joins,
+        "geometry": geometry,
+        "slice2d": slice2d,
+        "journal": journal,
+        "timings": timings,
+        "errors": errors,
+        "engine_ms": total_ms,
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8008)

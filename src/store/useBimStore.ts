@@ -127,6 +127,145 @@ export const UI_ACTION_COMMANDS = {
 
 export type UiAction = keyof typeof UI_ACTION_COMMANDS;
 
+// ---------------------------------------------------------------------------
+// Post-commit refresh: one round trip, and two numbers that cannot be confused.
+// See docs/SPECIFICATION-v0.2.md §6.3 (delta push) and §6.4 (instrumentation).
+// ---------------------------------------------------------------------------
+
+/**
+ * The single implementation of "apply an engine geometry payload". Both
+ * fetchGeometry() and fetchStateBundle() go through it, so the two paths cannot
+ * drift. The `elements` record is built from each mesh's `params`, not from the
+ * tessellation: baselines, host GUIDs and offset_along_wall exist only in the
+ * parametric payload.
+ */
+function geometryPatch(
+  data: any,
+  current: { levels: BimStoreState['levels']; grids: BimStoreState['grids'] }
+): Partial<BimStoreState> {
+  const meshes: MeshBufferData[] = data.meshes || [];
+  const elements: Record<string, BimElement> = {};
+  for (const mesh of meshes) {
+    const params = mesh.params;
+    if (!params) continue;
+    elements[mesh.guid] = {
+      guid: mesh.guid,
+      ifc_class: (params.ifc_class || mesh.ifc_class) as BimElement['ifc_class'],
+      name: params.name || mesh.name,
+      start: params.start,
+      end: params.end,
+      length: params.length,
+      height: params.height,
+      thickness: params.thickness,
+      angle: params.angle,
+      level_id: params.level_id,
+      host_wall_guid: params.host_wall_guid,
+      offset_along_wall: params.offset_along_wall,
+      width: params.width,
+      sill_height: params.sill_height,
+      swing_flipped: params.swing_flipped,
+      elevation: params.elevation,
+      pitch: params.pitch,
+      tag: params.tag,
+      type_properties: params.type_properties,
+    };
+  }
+  return {
+    meshes,
+    elements,
+    levels: data.levels || current.levels,
+    grids: data.grids || current.grids,
+  };
+}
+
+/**
+ * Resolves the active view's 2D request context. Shared by fetch2DSlice() and
+ * fetchStateBundle() so the two cannot route a section as a plan.
+ *
+ * Plans are LEVEL-RELATIVE: `cut` is a height above the storey, not an absolute
+ * elevation - the Revit convention, and the only thing that works on a real model
+ * (a storey at 1824 ft cut at an absolute 4 ft sections empty space).
+ */
+function sliceContext(
+  views: BimStoreState['views'],
+  activeViewId: BimStoreState['activeViewId'],
+  cutElevation?: number
+) {
+  const active = views.find((v) => v.id === activeViewId);
+  const range = active?.viewRange;
+  return {
+    viewType: active?.type ?? 'floor_plan',
+    cut: cutElevation ?? range?.cut ?? 4.0,
+    levelId: active?.levelId,
+    top: range?.top,
+    bottom: range?.bottom,
+    viewDepth: range?.viewDepth,
+  };
+}
+
+const REFRESH_LIMIT = 100;
+const REFRESH_SAMPLES: { clientMs: number; engineMs: number | null }[] = [];
+
+/** Set once if the engine has no /api/state. A 404 is definitive, so we stop
+ *  paying a failed request on every commit. Other failures stay retryable. */
+let bundleUnsupported = false;
+
+/** Section failures already surfaced, keyed by section + message, so a
+ *  persistently failing section logs once instead of once per commit. */
+const reportedSectionErrors = new Set<string>();
+
+/**
+ * The pre-bundle refresh path, retained as a fallback and run in PARALLEL.
+ * A bundle failure must not become a slow path.
+ */
+async function refreshIndividually(
+  getState: () => BimStoreState,
+  cutElevation?: number
+): Promise<void> {
+  await Promise.all([
+    getState().fetchProjectState(),
+    getState().fetchConstraints(),
+    getState().fetchGeometry(),
+    getState().fetchWallJoins(),
+    getState().fetch2DSlice(cutElevation),
+    getState().fetchTransactionJournal(),
+  ]);
+}
+
+/** Records one refresh. `clientMs` is what the user waits for; `engineMs` is
+ *  engine compute only, and the two are never averaged together. */
+function recordRefresh(clientMs: number, engineMs: number | null | undefined) {
+  REFRESH_SAMPLES.push({ clientMs, engineMs: engineMs ?? null });
+  if (REFRESH_SAMPLES.length > REFRESH_LIMIT) REFRESH_SAMPLES.shift();
+  (globalThis as any).__bimworksRefresh = refreshStats();
+}
+
+function pctOf(values: number[], p: number): number {
+  const s = [...values].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))];
+}
+
+/** Rolling refresh statistics, separable by kind. Reachable at runtime as
+ *  `globalThis.__bimworksRefresh` so a measurement needs no bundler change. */
+export function refreshStats() {
+  const n = REFRESH_SAMPLES.length;
+  if (!n) {
+    return { samples: 0, bundleSupported: !bundleUnsupported, client: null, engine: null };
+  }
+  const c = REFRESH_SAMPLES.map((s) => s.clientMs);
+  const e = REFRESH_SAMPLES
+    .map((s) => s.engineMs)
+    .filter((v): v is number => v !== null && v !== undefined);
+  return {
+    samples: n,
+    bundleSupported: !bundleUnsupported,
+    client: { p50: pctOf(c, 50), p95: pctOf(c, 95), max: Math.max(...c) },
+    engine: e.length
+      ? { p50: pctOf(e, 50), p95: pctOf(e, 95), max: Math.max(...e) }
+      : null,
+  };
+}
+
 /**
  * The engine's internal unit is decimal feet (spec §11.3), so command parameters
  * are feet and no conversion happens here. Only explicitly metric prompt input
@@ -453,6 +592,13 @@ interface BimStoreState {
   redoTransaction: () => Promise<void>;
   transactionJournal: TransactionJournalEntry[];
   fetchTransactionJournal: () => Promise<void>;
+
+  /**
+   * Refreshes every read-model the UI holds in ONE round trip. Replaces the
+   * sequence of up-to-seven serial fetches that ran after each commit, and is
+   * the only post-commit refresh path.
+   */
+  fetchStateBundle: (cutElevation?: number) => Promise<void>;
 
   isPromptBarOpen: boolean;
   setPromptBarOpen: (open: boolean) => void;
@@ -1072,9 +1218,81 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   },
 
   // API Callbacks
+  fetchStateBundle: async (cutElevation?: number) => {
+    const ctx = sliceContext(get().views, get().activeViewId, cutElevation);
+    const q = new URLSearchParams({ cut_elevation: String(ctx.cut) });
+    if (ctx.levelId) q.set('level_id', String(ctx.levelId));
+    if (ctx.viewType !== 'floor_plan') {
+      q.set('view_type', ctx.viewType);
+      if (ctx.top !== undefined) q.set('top', String(ctx.top));
+      if (ctx.bottom !== undefined) q.set('bottom', String(ctx.bottom));
+      // A view depth of 0 means "not set"; sending it would filter everything out.
+      if (ctx.viewDepth) q.set('view_depth', String(ctx.viewDepth));
+    }
+
+    if (bundleUnsupported) {
+      await refreshIndividually(get, cutElevation);
+      return;
+    }
+
+    const t0 = performance.now();
+    try {
+      const res = await fetch(`${API_BASE}/state?${q.toString()}`);
+      if (res.status === 404) {
+        // The engine predates /api/state. Trip once rather than paying a failed
+        // request on every commit; the fallback keeps the app correct.
+        bundleUnsupported = true;
+        console.warn(
+          'Engine has no /api/state (404) - using the per-resource refresh path.'
+        );
+        // The breaker state changed even though no refresh sample was recorded,
+        // so refresh the exposed diagnostics rather than leaving them stale.
+        (globalThis as any).__bimworksRefresh = refreshStats();
+        await refreshIndividually(get, cutElevation);
+        return;
+      }
+      if (!res.ok) throw new Error(`state bundle HTTP ${res.status}`);
+      const data = await res.json();
+
+      // Two numbers, recorded separately and never reported as one another.
+      recordRefresh(performance.now() - t0, data.engine_ms);
+
+      const cur = get();
+      set({
+        ...(data.project
+          ? {
+              projectName: data.project.project_name || cur.projectName,
+              georeference: data.project.georeference || cur.georeference,
+            }
+          : {}),
+        ...(data.constraints ? { constraints: data.constraints } : {}),
+        ...(data.wall_joins ? { wallJoins: data.wall_joins } : {}),
+        ...(data.geometry ? geometryPatch(data.geometry, cur) : {}),
+        // A failed slice returns null; keep the last good linework rather than
+        // blanking the viewport.
+        ...(data.slice2d ? { sliced2D: data.slice2d } : {}),
+        ...(data.journal ? { transactionJournal: data.journal } : {}),
+      });
+
+      if (data.errors) {
+        for (const [section, message] of Object.entries(data.errors)) {
+          const key = `${section}: ${message}`;
+          if (reportedSectionErrors.has(key)) continue;
+          reportedSectionErrors.add(key);
+          console.warn(`State bundle section "${section}" failed: ${message}`);
+        }
+      }
+    } catch (e) {
+      console.error('State bundle refresh failed; falling back to per-resource fetches', e);
+      await refreshIndividually(get, cutElevation);
+    }
+  },
+
   fetchProjectState: async () => {
     try {
-      await get().fetchConstraints();
+      // Constraints are NOT fetched here. This used to call fetchConstraints(),
+      // and every caller then called fetchConstraints() again - two requests for
+      // one resource per refresh. Callers that need them ask for them.
       const res = await fetch(`${API_BASE}/project`);
       if (res.ok) {
         const data = await res.json();
@@ -1184,9 +1402,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       set({ isLoadingFile: true, statusMessage: 'Loading Sample BIM Building...' });
       const res = await fetch(`${API_BASE}/sample`, { method: 'POST' });
       if (res.ok) {
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-        await get().fetchProjectState();
+        await get().fetchStateBundle();
         set({
           projectName: 'BIMWorks Prototype Building',
           isLoadingFile: false,
@@ -1217,10 +1433,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           selectedGuid: null,
           hoveredGuid: null,
         });
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-        await get().fetchProjectState();
-        await get().fetchConstraints();
+        await get().fetchStateBundle();
         return true;
       } else {
         const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
@@ -1551,11 +1764,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         return false;
       }
 
-      await get().fetchProjectState();
-      await get().fetchGeometry();
-      await get().fetch2DSlice();
-      await get().fetchConstraints();
-      await get().fetchWallJoins();
+      await get().fetchStateBundle();
 
       set({
         isLoadingFile: false,
@@ -1759,13 +1968,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
       const data = await res.json();
       // View state is refreshed from the engine after every commit; the store
-      // holds no independent model state.
-      await get().fetchProjectState();
-      await get().fetchGeometry();
-      await get().fetch2DSlice();
-      await get().fetchConstraints();
-      await get().fetchWallJoins();
-      await get().fetchTransactionJournal();
+      // holds no independent model state. This is ONE round trip: the previous
+      // sequence issued seven serial requests and fetched /api/constraints twice.
+      await get().fetchStateBundle();
 
       return data;
     } catch (e) {
@@ -1789,10 +1994,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       if (res.ok) {
         const data = await res.json();
         set({ statusMessage: `Undone transaction (${data.description || 'Done'})` });
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-        await get().fetchProjectState();
-        await get().fetchTransactionJournal();
+        await get().fetchStateBundle();
       }
     } catch (e) {
       console.error('undoTransaction error:', e);
@@ -1805,10 +2007,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       if (res.ok) {
         const data = await res.json();
         set({ statusMessage: `Redone transaction (${data.description || 'Done'})` });
-        await get().fetchGeometry();
-        await get().fetch2DSlice();
-        await get().fetchProjectState();
-        await get().fetchTransactionJournal();
+        await get().fetchStateBundle();
       }
     } catch (e) {
       console.error('redoTransaction error:', e);
@@ -2184,8 +2383,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         activeTool: 'select',
       });
       get().resetInteraction('sketch-finish');
-      await get().fetchGeometry();
-      await get().fetch2DSlice();
+      await get().fetchStateBundle();
       return true;
     } catch (e: any) {
       set({ statusMessage: `Finish sketch: failed: ${failureMessage(e)}` });
