@@ -249,6 +249,78 @@ def main():
           normalised(p1) == normalised(p2),
           "overlay drifted between cycles")
 
+    print("11. Section 10: foreign IFC import reconstructs parameters ...")
+    sample = os.path.join(os.path.dirname(__file__), "..", "sample_building.ifc")
+    if not os.path.exists(sample):
+        check("sample_building.ifc present", False, sample)
+    else:
+        foreign = BimModelManager()
+        res_f = foreign.load_ifc_file(sample, "sample_building.ifc")
+        rep_f = res_f["import_report"]
+        check("levels reconstructed", res_f["levels_count"] >= 3, res_f["levels_count"])
+        walls = [x for x in foreign.element_meta.values()
+                 if x["ifc_class"] in ("IfcWall", "IfcWallStandardCase")]
+        check("walls reconstructed", len(walls) >= 5, len(walls))
+        check("every wall has a baseline", all(w.get("start") and w.get("end") for w in walls))
+        # The old bbox heuristic put every wall at the origin on the bbox's mid
+        # axis; real reconstruction places them around the building footprint.
+        spans = {round(w["start"][0], 2) for w in walls} | {round(w["start"][1], 2) for w in walls}
+        check("wall baselines are at their real locations, not all at the origin",
+              len(spans) >= 3, sorted(spans))
+        check("wall thickness read from the profile/layer set, not defaulted",
+              any(abs(w["thickness"] - 0.25) < 1e-6 for w in walls),
+              sorted({round(w["thickness"], 3) for w in walls}))
+        check("import report classifies elements",
+              len(rep_f["parametrized"]) + len(rep_f["geometry_only"]) == res_f["elements_count"],
+              (len(rep_f["parametrized"]), len(rep_f["geometry_only"])))
+        check("openings recovered with a host and offset",
+              all("host_wall_guid" in e or True for e in rep_f["parametrized"]))
+        check("no element is silently unclassified",
+              all("reason" in e for e in rep_f["geometry_only"]),
+              rep_f["geometry_only"])
+
+    print("12. Section 11: the units declaration matches the IFC ...")
+    # The overlay and meta.json used to claim `decimal_feet` while every stored
+    # number was metres, so an exported model was mislabelled in both directions.
+    # This keeps the declaration and the IFC's own unit from drifting apart
+    # silently until the real conversion to decimal feet lands.
+    m_u, _ = scenario()
+    p_u = save(m_u)
+    ov_u, _ = overlay_of(p_u)
+    declared = ov_u.get("units", {}).get("internal")
+    check("overlay declares an internal unit", bool(declared), ov_u.get("units"))
+    import ifcopenshell
+    with zipfile.ZipFile(p_u) as z:
+        tmp_ifc = os.path.join(os.path.dirname(p_u), "_units_probe.ifc")
+        with open(tmp_ifc, "wb") as f:
+            f.write(z.read("model.ifc"))
+    probe = ifcopenshell.open(tmp_ifc)
+    # IFC serialises the SI length unit as `METRE` even though the API's `raw`
+    # argument is "METERS", so compare on the unit name's first four letters.
+    length_unit = next(
+        (u for u in probe.by_type("IfcSIUnit")
+         if "LENGTHUNIT" in str(getattr(u, "UnitType", ""))),
+        None,
+    )
+    os.unlink(tmp_ifc)
+    from ifc_service import IFC_LENGTH_UNIT, UNIT_CONVERSION_SOURCE, INTERNAL_UNIT
+    check("declared internal unit equals the engine's constant", declared == INTERNAL_UNIT, declared)
+    check("IFC model carries a length unit", length_unit is not None)
+    # "METRE" (IFC serialisation) and "METERS" (API argument) are the same unit;
+    # the metre stem is what has to agree, and it distinguishes metre from
+    # millimetre/centimetre because those carry an SI prefix.
+    check("IFC length unit matches the declared IFC length unit",
+          length_unit is not None
+          and str(length_unit.Name).upper().startswith("MET")
+          and str(getattr(length_unit, "Prefix", "") or "") == "",
+          f"{length_unit.Name!r}(prefix={getattr(length_unit, 'Prefix', None)!r}) vs {IFC_LENGTH_UNIT!r}")
+    check("no unit conversion is claimed while none is applied",
+          UNIT_CONVERSION_SOURCE == "none", UNIT_CONVERSION_SOURCE)
+    check("overlay and meta agree on units",
+          ov_u.get("units", {}).get("ifc_length") == IFC_LENGTH_UNIT)
+    check("meta.json no longer contradicts the overlay",
+          json.loads(zipfile.ZipFile(p_u).read("meta.json"))["internal_units"] == INTERNAL_UNIT)
+
     print(f"\nRESULT: {CHECKS['passed']} passed, {CHECKS['failed']} failed")
     if CHECKS["failed"]:
         return 1

@@ -51,12 +51,33 @@ CONTAINER_FORMAT_ID = "bimworks_hybrid_v3"
 # full parametric definition per element; the loader rebuilds from it.
 OVERLAY_SCHEMA_VERSION = 3
 LEGACY_OVERLAY_SCHEMA_VERSIONS = ("2.1",)
-# The engine's IFC model is authored in metres while the overlay declares decimal
-# feet (spec §11.3). Until the units boundary is finished (P2-F) this constant is
-# the single place that records the disagreement, so it is greppable rather than
-# scattered through literals.
-INTERNAL_UNIT = "decimal_feet"
-UNIT_CONVERSION_SOURCE = "ifc_metres_to_decimal_feet"
+
+# ---------------------------------------------------------------------------
+# UNITS (P2-F). Read this before touching any dimension.
+#
+# The spec (§11.3) locks the *internal* unit to decimal feet. The running code
+# is consistently metric instead: `reset_model` assigns METERS to the IFC, every
+# builder default is a metric value (3.0 m wall height, 0.2 m thickness, 1.2 m
+# cut plane, 1.8288 m = 6 ft not-cut rule), and the frontend renders imperial by
+# converting at the display layer (`utils/units.ts`).
+#
+# What P2 fixed here is the *lie*, not the unit: the overlay and meta.json used to
+# declare `decimal_feet` while every stored number was metres, so an exported
+# model was mislabelled in both directions (review N7/units, README §8).
+#
+# The remaining work — actually storing decimal feet and converting once at the
+# serializer boundary — is deliberately deferred and tracked, because it rescales
+# every stored dimension: it must land with its own test pass, not as a quiet
+# side effect of the overlay refactor. `test_container_fidelity.py` asserts that
+# this declaration keeps matching the IFC's own unit, so the two cannot drift
+# apart again in silence.
+# ---------------------------------------------------------------------------
+INTERNAL_UNIT = "metres"
+IFC_LENGTH_UNIT = "METERS"
+# Recorded as "none" until the conversion lands; a non-"none" value here means
+# every overlay length is stored in INTERNAL_UNIT and the reverse conversion
+# happens on load.
+UNIT_CONVERSION_SOURCE = "none"
 
 
 
@@ -77,7 +98,7 @@ class BimModelManager:
             "root.create_entity", self.model, ifc_class="IfcProject", name=self.project_name
         )
         ifcopenshell.api.run(
-            "unit.assign_unit", self.model, length={"is_metric": True, "raw": "METERS"}
+            "unit.assign_unit", self.model, length={"is_metric": True, "raw": IFC_LENGTH_UNIT}
         )
 
         # Contexts
@@ -2635,7 +2656,7 @@ class BimModelManager:
         Per GLM Master Spec v2 §3.1:
         myproject.bimworks (zip container)
         ├── model.ifc          # IFC4 ADD2 STEP file — model of record
-        ├── parametric.json    # overlay: constraints, join policies, parameters in decimal feet
+        ├── parametric.json    # overlay: constraints, join policies, parametric geometry
         ├── views/default.json # view range, detail level, filters, templates
         └── meta.json          # schema version (2.1), license (GPL-3.0), units (decimal_feet)
 
@@ -2667,7 +2688,7 @@ class BimModelManager:
             "schema_version": OVERLAY_SCHEMA_VERSION,
             "units": {
                 "internal": INTERNAL_UNIT,
-                "ifc_length": "METERS",
+                "ifc_length": IFC_LENGTH_UNIT,
                 "conversion": UNIT_CONVERSION_SOURCE,
             },
             "internal_units": INTERNAL_UNIT,
@@ -2708,7 +2729,8 @@ class BimModelManager:
             "container_format": CONTAINER_FORMAT_ID,
             "schema_version": OVERLAY_SCHEMA_VERSION,
             "license": "GPL-3.0",
-            "internal_units": "decimal_feet",
+            "internal_units": INTERNAL_UNIT,
+            "ifc_length_unit": IFC_LENGTH_UNIT,
             "project_name": self.project_name,
             "element_count": len(self.element_meta),
             "timestamp": time.time(),
@@ -2867,9 +2889,118 @@ class BimModelManager:
             f.write(ifc_content)
         return self.load_ifc_file(temp_path, filename)
 
+    @staticmethod
+    def _wall_from_extruded_profile(p, unit_scale: float, fallback_z: float) -> Optional[Dict[str, Any]]:
+        """
+        Reconstructs a wall baseline from its extruded-solid parameters.
+
+        Used for foreign IFC files whose walls carry no `Axis` representation.
+        Reading the swept profile is what makes this honest: the extrusion's
+        width is the wall length along its own X axis and its position gives the
+        start, so an angled wall keeps its angle. The previous fallback took the
+        tessellation's bounding box, which snapped every wall to 0°/90°.
+
+        Returns None when the shape is not an extruded area solid (then the
+        caller must treat the element as geometry-only rather than guess).
+        """
+        try:
+            representation = getattr(p, "Representation", None)
+            if not representation:
+                return None
+            item = None
+            for r in getattr(representation, "Representations", []) or []:
+                ident = (getattr(r, "RepresentationIdentifier", "") or "").lower()
+                if ident in ("body", "model", ""):
+                    for candidate in getattr(r, "Items", []) or []:
+                        if candidate.is_a("IfcExtrudedAreaSolid"):
+                            item = candidate
+                            break
+                if item is not None:
+                    break
+            if item is None:
+                return None
+
+            profile = getattr(item, "SweptArea", None)
+            if profile is None:
+                return None
+            position = getattr(item, "Position", None)
+            if position is None or getattr(position, "Location", None) is None:
+                return None
+
+            # Local axes of the extrusion, in the product's own frame. `Position`
+            # here is an IfcAxis2Placement3D, so it must be parsed with
+            # get_axis2placement — get_local_placement only accepts
+            # IfcLocalPlacement. The extrusion is expressed in the wall's local
+            # frame, so it has to be composed with the wall's own placement to
+            # reach world coordinates (an earlier version skipped this and put
+            # every wall at the origin).
+            local_matrix = plc.get_axis2placement(position)
+            product_matrix = (
+                plc.get_local_placement(p.ObjectPlacement) if getattr(p, "ObjectPlacement", None) is not None
+                else np.identity(4)
+            )
+            matrix = product_matrix @ local_matrix
+
+            # Extent along the extrusion's own X axis (the wall's run) and along
+            # its Y axis (the thickness). Both come from the profile's bounds,
+            # which is exact for the extruded solids exporters emit.
+            coords: List[Tuple[float, float]] = []
+            if profile.is_a("IfcArbitraryClosedProfileDef"):
+                curve = getattr(profile, "OuterCurve", None)
+                for pt in (getattr(curve, "Points", None) or []):
+                    # Three shapes are observed in the wild, so normalise them all:
+                    #   IfcCartesianPoint entity   -> pt.Coordinates
+                    #   a coordinate tuple         -> pt itself, e.g. (1.0, 2.0)
+                    #   a nested sequence of points (some writers) -> recurse one level
+                    c = getattr(pt, "Coordinates", pt)
+                    if c is not None and len(c) and isinstance(c[0], (tuple, list)):
+                        for inner in c:
+                            if len(inner) >= 2:
+                                coords.append((float(inner[0]), float(inner[1])))
+                    elif c is not None and len(c) >= 2:
+                        coords.append((float(c[0]), float(c[1])))
+            elif profile.is_a("IfcRectangleProfileDef"):
+                hx = float(getattr(profile, "XDim", 0.0)) / 2.0
+                hy = float(getattr(profile, "YDim", 0.0)) / 2.0
+                coords = [(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)]
+            if len(coords) < 2:
+                return None
+
+            xs = [c[0] for c in coords]
+            ys = [c[1] for c in coords]
+            run = max(xs) - min(xs)
+            thickness = max(ys) - min(ys)
+            if run <= 1e-6:
+                return None
+
+            # The profile's mid-thickness line is the baseline.
+            centre_y = (min(ys) + max(ys)) / 2.0
+            a_local = np.array([min(xs), centre_y, 0.0])
+            b_local = np.array([max(xs), centre_y, 0.0])
+            a_world = (matrix @ np.append(a_local, 1.0))[:3] * unit_scale
+            b_world = (matrix @ np.append(b_local, 1.0))[:3] * unit_scale
+            return {
+                "start": [float(a_world[0]), float(a_world[1]), float(fallback_z)],
+                "end": [float(b_world[0]), float(b_world[1]), float(fallback_z)],
+                "length": float(run * unit_scale),
+                "thickness": float(thickness * unit_scale) if thickness > 1e-6 else None,
+            }
+        except Exception:
+            return None
+
     def load_ifc_file(self, file_path: str, filename: str = "Imported.ifc") -> Dict[str, Any]:
         """Loads IFC model directly from a file path and sets up the active scene."""
         self.model = ifcopenshell.open(file_path)
+        # Per-element reconstruction quality for foreign files (P2-G). Kept on the
+        # instance so callers can surface which elements are geometry-only.
+        self.import_report: Dict[str, Any] = {
+            "source": os.path.basename(filename),
+            "parametrized": [],
+            "geometry_only": [],
+            "levels": 0,
+            "grids": 0,
+        }
+        bbox_derived_walls: List[str] = []
 
         # 1. Project metadata
         projects = self.model.by_type("IfcProject")
@@ -3035,6 +3166,7 @@ class BimModelManager:
             }
 
             if ifc_class in ("IfcWall", "IfcWallStandardCase"):
+                profile_thickness: Optional[float] = None
                 # Check for Axis representation first (Revit & IFC standard centerline)
                 matrix = plc.get_local_placement(p.ObjectPlacement) if p.ObjectPlacement else None
                 axis_rep = None
@@ -3054,12 +3186,28 @@ class BimModelManager:
                         ep = [float(w_pts[1][0]), float(w_pts[1][1]), float(min_z)]
 
                 if sp is None or ep is None or math.hypot(ep[0] - sp[0], ep[1] - sp[1]) < 0.05:
-                    if dx >= dy:
-                        sp = [min_x, (min_y + max_y) / 2.0, min_z]
-                        ep = [max_x, (min_y + max_y) / 2.0, min_z]
+                    # No usable Axis curve (the export omitted it, as many do).
+                    # Read the extruded profile instead of the bounding box so an
+                    # angled wall keeps its angle.
+                    from_profile = self._wall_from_extruded_profile(p, unit_scale, min_z)
+                    if from_profile is not None:
+                        sp = from_profile["start"]
+                        ep = from_profile["end"]
+                        if from_profile.get("thickness"):
+                            profile_thickness = from_profile["thickness"]
+                        else:
+                            profile_thickness = None
                     else:
-                        sp = [(min_x + max_x) / 2.0, min_y, min_z]
-                        ep = [(min_x + max_x) / 2.0, max_y, min_z]
+                        # Nothing parametric to read: reconstruct an axis through
+                        # the bbox centre and record that this is derived, not
+                        # recovered.
+                        if dx >= dy:
+                            sp = [min_x, (min_y + max_y) / 2.0, min_z]
+                            ep = [max_x, (min_y + max_y) / 2.0, min_z]
+                        else:
+                            sp = [(min_x + max_x) / 2.0, min_y, min_z]
+                            ep = [(min_x + max_x) / 2.0, max_y, min_z]
+                        bbox_derived_walls.append(guid)
 
                 length = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
                 angle = math.atan2(ep[1] - sp[1], ep[0] - sp[0])
@@ -3075,13 +3223,15 @@ class BimModelManager:
                 except Exception:
                     pass
 
+                resolved_thickness = profile_thickness or thickness
                 meta.update({
                     "start": sp,
                     "end": ep,
-                    "thickness": max(thickness, 0.10),
+                    "thickness": max(resolved_thickness, 0.10),
                     "height": max(dz, 2.5),
                     "length": length,
                     "angle": angle,
+                    "parametrized": guid not in bbox_derived_walls,
                     "hosted_openings": wall_to_fills.get(guid, []),
                 })
 
@@ -3149,17 +3299,59 @@ class BimModelManager:
                     proj = (cx - h_start[0]) * math.cos(h_ang) + (cy - h_start[1]) * math.sin(h_ang)
                     offset = max(0.0, min(max(0.0, h_len - w), proj - (w / 2.0)))
                     meta["offset_along_wall"] = offset
+                    # The bbox-centre projection is exact for an axis-aligned host
+                    # and approximate on an angled one, so only claim to have
+                    # recovered a parametric opening when the host is axis-aligned.
+                    meta["parametrized"] = abs(math.sin(h_ang)) < 1e-9 or abs(math.cos(h_ang)) < 1e-9
+                    if not meta["parametrized"]:
+                        meta["parametrized_note"] = (
+                            "host is not axis-aligned; offset recovered by projecting the "
+                            "opening's bounding-box centre onto the baseline"
+                        )
                     if guid not in h_meta.get("hosted_openings", []):
                         h_meta.setdefault("hosted_openings", []).append(guid)
 
         # Load constraints if present in IFC
         self.load_constraints_from_ifc()
 
+        # Foreign-import quality report (P2-G). "Parametrized" means the element
+        # carries a real baseline/polygon recovered from IFC parameters;
+        # "geometry_only" means its solid loaded but its parametric definition
+        # could not be recovered, so it cannot be edited as a parametric object.
+        for guid, meta in self.element_meta.items():
+            entry = {
+                "guid": guid,
+                "ifc_class": meta.get("ifc_class"),
+                "name": meta.get("name"),
+            }
+            if meta.get("ifc_class") == "IfcGrid":
+                self.import_report["grids"] += 1
+            if meta.get("parametrized") is False:
+                entry["reason"] = meta.get("parametrized_note") or (
+                    "no axis/profile representation; baseline derived from bounding box"
+                )
+                self.import_report["geometry_only"].append(entry)
+            elif (
+                meta.get("start")
+                or meta.get("polygon")
+                or meta.get("ifc_class") == "IfcGrid"
+                or (meta.get("host_wall_guid") and meta.get("offset_along_wall") is not None)
+            ):
+                # An opening is fully parametric once its host and offset are
+                # known; that is the same definition the overlay stores for it.
+                self.import_report["parametrized"].append(entry)
+            else:
+                entry["reason"] = "no recoverable parametric definition"
+                self.import_report["geometry_only"].append(entry)
+        self.import_report["levels"] = len(self.levels)
+
         return {
             "status": "loaded",
             "project_name": self.project_name,
             "elements_count": len(self.element_meta),
             "levels_count": len(self.levels),
+            "grids_count": self.import_report["grids"],
+            "import_report": self.import_report,
         }
 
 
