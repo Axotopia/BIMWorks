@@ -620,6 +620,38 @@ export const PlanViewport2D: React.FC = () => {
             />
           ))}
 
+          {/* 4b. Hidden lines: occluded geometry, separated by the HLR renderer.
+              Dashed and light per drawing convention, and drawn before the cut so the
+              heavy linework sits on top. */}
+          {(sliced2D?.hidden_paths || []).map((p, idx) => (
+            <path
+              key={`hidden-${idx}`}
+              d={p.d}
+              className={p.class}
+              stroke="#94a3b8"
+              strokeWidth="0.8"
+              strokeDasharray="4 3"
+              vectorEffect="non-scaling-stroke"
+              fill="none"
+              style={{ fill: 'none' }}
+            />
+          ))}
+
+          {/* 4c. Window symbols: jambs and glazing. Annotation, so a window reads as
+              a window rather than a plain gap in the wall. */}
+          {(sliced2D?.window_paths || []).map((p, idx) => (
+            <path
+              key={`window-${idx}`}
+              d={p.d}
+              className={p.class}
+              stroke="#0e7490"
+              strokeWidth="0.9"
+              vectorEffect="non-scaling-stroke"
+              fill="none"
+              style={{ fill: 'none' }}
+            />
+          ))}
+
           {/* 5. Door Swings */}
           {sliced2D?.swing_paths.map((p, idx) => (
             <path

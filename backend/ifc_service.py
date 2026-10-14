@@ -3564,8 +3564,14 @@ class BimModelManager:
             return None
 
         projector = MeshHlrProjector(meshes)
+        # The lineweight table is applied here too, so the plan entry point and
+        # `render_2d_view` produce identically styled output. Applying it on only one
+        # of the two paths is the kind of inconsistency that makes the same drawing
+        # look different depending on how it was requested.
+        from hlr_renderer import LineweightTable
+
         view = projector.render(cut_z=feet_to_metres(float(cut_elevation)))
-        contract = projector.to_contract(view)
+        contract = projector.to_contract(view, lineweights=LineweightTable())
         for key in ("cut_paths", "projection_paths", "hidden_paths"):
             for entry in contract.get(key, []):
                 entry["d"] = _scale_path(entry.get("d", ""), metres_to_feet)

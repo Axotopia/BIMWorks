@@ -464,7 +464,14 @@ def get_geometry():
 
 @app.get("/api/slice/2d")
 def get_2d_slice(cut_elevation: float = 1.2):
-    """Returns 2D vector linework with .cut, .projection, .overhead classes."""
+    """
+    Returns 2D vector linework for a plan view.
+
+    Since P5 the linework comes from the in-process hidden-line projector, so the
+    response carries `cut_paths`, `projection_paths` and `hidden_paths` (separated),
+    plus annotation drives (`grids`, `swing_paths`, `window_paths`, `dimensions`),
+    the `lineweights` table used to draw them, and the `renderer` that produced it.
+    """
     return bim_manager.slice_2d_vector_plan(cut_elevation=cut_elevation)
 
 

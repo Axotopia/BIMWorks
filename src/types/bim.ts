@@ -94,6 +94,16 @@ export interface Sliced2DData {
   cut_paths: Array<{ guid: string; class: string; d: string; fill?: string }>;
   projection_paths: Array<{ guid: string; class: string; d: string }>;
   swing_paths: Array<{ guid: string; class: string; d: string }>;
+  // Occluded geometry, separated by the hidden-line renderer. Drawn dashed and light.
+  hidden_paths?: Array<{ guid: string; class: string; d: string }>;
+  // Window glazing/jamb symbols. Annotation, not geometry, so they are a separate
+  // drive from door swings.
+  window_paths?: Array<{ guid: string; class: string; d: string }>;
+  // Which renderer produced this view ("mesh-hlr" | "hlr" | "analytic").
+  renderer?: string;
+  partitions?: { cut: number; projection: number; hidden: number; below?: number };
+  view_range?: Record<string, number>;
+  lineweights?: Record<string, { weight_mm: number; pattern: string; colour: string }>;
   slabs: Array<{ guid: string; d: string; class: string }>;
   roofs?: Array<{
     guid: string;
