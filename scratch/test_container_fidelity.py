@@ -303,6 +303,36 @@ def main():
               any(x["ifc_class"] == "IfcRoof" and x.get("pitch") is not None
                   for x in foreign.element_meta.values()))
 
+    print("12. Section 11b: grids reconstruct from a foreign IFC's own geometry ...")
+    # The exit criterion says an external file must import with "walls + levels +
+    # grids reconstructed". sample_building.ifc contains no IfcGrid at all (it has
+    # walls/doors/windows/slab/roof/3 storeys only), so grid reconstruction is
+    # proven from a file that genuinely carries grids: our own exported model.ifc,
+    # read back through the *foreign* import path rather than the overlay.
+    src = fresh()
+    src.add_wall((0, 0, 0), (30, 0, 0), height=10.0, thickness=0.6667, name="W")
+    src.add_grid("1", (-2.0, 0.0), (32.0, 0.0))
+    src.add_grid("A", (0.0, -2.0), (0.0, 20.0))
+    src.add_grid("2", (-2.0, 20.0), (32.0, 20.0))
+    p_src = save(src)
+    with zipfile.ZipFile(p_src) as z:
+        grid_ifc = os.path.join(os.path.dirname(p_src), "_grids_foreign.ifc")
+        with open(grid_ifc, "wb") as f:
+            f.write(z.read("model.ifc"))
+    foreign_grids = BimModelManager()
+    res_g = foreign_grids.load_ifc_file(grid_ifc, "grids_foreign.ifc")
+    os.unlink(grid_ifc)
+    rebuilt = {v["tag"]: v for v in foreign_grids.element_meta.values()
+               if v.get("ifc_class") == "IfcGrid"}
+    check("all three grid axes reconstructed from IFC geometry",
+          set(rebuilt) == {"1", "A", "2"}, sorted(rebuilt))
+    check("grid axis endpoints recovered exactly",
+          rebuilt.get("1") and rebuilt["1"]["start"] == [-2.0, 0.0]
+          and rebuilt["1"]["end"] == [32.0, 0.0],
+          rebuilt.get("1") and (rebuilt["1"]["start"], rebuilt["1"]["end"]))
+    check("import report counts the grids", res_g["import_report"]["grids"] == 3,
+          res_g["import_report"]["grids"])
+
     print("12. Section 11: internals are decimal feet, end to end ...")
     # The spec (§11.3) locks decimal feet as the internal unit. Before P2 the
     # engine was metric while the overlay *claimed* feet, so every stored number
