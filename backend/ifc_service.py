@@ -46,6 +46,19 @@ LEGACY_CONTAINER_EXTENSION = ".orlt"
 CONTAINER_EXTENSIONS = (CONTAINER_EXTENSION, LEGACY_CONTAINER_EXTENSION)
 CONTAINER_FORMAT_ID = "bimworks_hybrid_v3"
 
+# Overlay schema. v2.1 stored only type properties (no geometry), which forced
+# the loader to reconstruct walls from tessellated bounding boxes. v3 stores the
+# full parametric definition per element; the loader rebuilds from it.
+OVERLAY_SCHEMA_VERSION = 3
+LEGACY_OVERLAY_SCHEMA_VERSIONS = ("2.1",)
+# The engine's IFC model is authored in metres while the overlay declares decimal
+# feet (spec §11.3). Until the units boundary is finished (P2-F) this constant is
+# the single place that records the disagreement, so it is greppable rather than
+# scattered through literals.
+INTERNAL_UNIT = "decimal_feet"
+UNIT_CONVERSION_SOURCE = "ifc_metres_to_decimal_feet"
+
+
 
 class BimModelManager:
     """
@@ -119,6 +132,14 @@ class BimModelManager:
 
         # Wall Join Policies (Butt / Miter / Square-off and per-endpoint allowJoin)
         self.join_policies: Dict[str, Dict[str, Any]] = {}
+
+        # Bulk-rebuild guard. While replaying the overlay we create elements in
+        # dependency order, and per-element join recomputation is both wrong
+        # (partners do not exist yet) and dangerous: `_rebuild_wall_representation`
+        # calls `remove_representation` on a wall whose representation graph is
+        # still being assembled, which segfaults inside ifcopenshell. Joins are
+        # therefore suppressed during the replay and recomputed once at the end.
+        self._suppress_join_recompute = False
 
         # Default Georeferencing (EPSG:2285 - NAD83 / Washington North)
         self.georeference_data = {
@@ -305,6 +326,62 @@ class BimModelManager:
         return list(self.levels.values())[0]["entity"]
 
     # =========================================================================
+    # GUID PRESERVATION (P2 overlay-as-truth)
+    # =========================================================================
+    # Rebuilding a model from the overlay must not renumber its elements: every
+    # GUID the overlay, constraints, join policies and hosted-element links refer
+    # to has to survive the rebuild. The builders below therefore accept an
+    # explicit `guid`, and this helper applies it. `by_guid` is a live lookup
+    # into the IFC file's own map, so assigning the attribute is sufficient —
+    # no reference bookkeeping is needed (verified against ifcopenshell 0.9).
+
+    @staticmethod
+    def _apply_guid(entity, guid: Optional[str]) -> str:
+        """Forces an entity's GlobalId (used when replaying the overlay)."""
+        if guid:
+            entity.GlobalId = guid
+        return entity.GlobalId
+
+    @staticmethod
+    def _jsonable(value: Any) -> Any:
+        """Converts numpy arrays/scalars to plain JSON types."""
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, (np.floating, np.integer)):
+            return value.item()
+        if isinstance(value, (list, tuple)):
+            return [BimModelManager._jsonable(v) for v in value]
+        if isinstance(value, dict):
+            return {k: BimModelManager._jsonable(v) for k, v in value.items()}
+        return value
+
+    def _build_overlay_element(self, guid: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Full parametric record for one element (overlay schema v3).
+
+        Deliberately excludes: live entity refs, cached tessellation (`cached_verts`
+        / `cached_faces` / `bbox`), and anything derivable — those are regenerated.
+        Includes the footprint because join trimming is real geometry the overlay
+        must not silently re-derive.
+        """
+        record: Dict[str, Any] = {
+            "ifc_class": meta.get("ifc_class"),
+            "name": meta.get("name"),
+            "type_properties": self._jsonable(meta.get("type_properties", {})),
+        }
+        for key in self.ELEMENT_PARAM_FIELDS:
+            if key in ("ifc_class", "name", "type_properties"):
+                continue
+            if meta.get(key) is not None:
+                record[key] = self._jsonable(meta[key])
+        if meta.get("footprint"):
+            record["footprint"] = self._jsonable(meta["footprint"])
+        if meta.get("hosted_openings"):
+            record["hosted_openings"] = list(meta["hosted_openings"])
+        record["join_policy"] = self._jsonable(self.join_policies.get(guid, {}))
+        return record
+
+    # =========================================================================
     # ARCHITECTURAL MODELING: WALLS, DOORS, WINDOWS, SLABS, ROOFS, GRIDS
     # =========================================================================
 
@@ -352,10 +429,14 @@ class BimModelManager:
         level_id: Optional[str] = None,
         name: str = "Basic Wall : Exterior - 8\" CMU",
         wall_id: Optional[str] = None,
+        guid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Creates an IfcWallStandardCase defined by 2D baseline, height, and thickness.
         Places wall in spatial structure and computes representation.
+
+        `guid` re-uses the caller's GUID (overlay replay); `wall_id` is the legacy
+        alias kept for callers that predate it.
         """
         dx = end_pt[0] - start_pt[0]
         dy = end_pt[1] - start_pt[1]
@@ -370,7 +451,7 @@ class BimModelManager:
         wall = ifcopenshell.api.run(
             "root.create_entity", self.model, ifc_class="IfcWallStandardCase", name=name
         )
-        guid = wall.GlobalId
+        guid = self._apply_guid(wall, guid or wall_id)
 
         ifcopenshell.api.run(
             "spatial.assign_container", self.model, relating_structure=storey, products=[wall]
@@ -431,7 +512,8 @@ class BimModelManager:
             "end0": {"allow_join": True, "mode": "butt"},
             "end1": {"allow_join": True, "mode": "butt"},
         }
-        self.recompute_wall_joins()
+        if not self._suppress_join_recompute:
+            self.recompute_wall_joins()
         return meta
 
     def add_door(
@@ -442,6 +524,7 @@ class BimModelManager:
         height: float = 2.1,
         name: str = "Single Flush : 36\" x 84\"",
         swing_flipped: bool = False,
+        guid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Creates an IfcDoor hosted inside host wall.
@@ -486,7 +569,7 @@ class BimModelManager:
         door = ifcopenshell.api.run(
             "root.create_entity", self.model, ifc_class="IfcDoor", name=name
         )
-        door_guid = door.GlobalId
+        door_guid = self._apply_guid(door, guid)
         storey = self.get_storey_by_id(wall_meta["level_id"])
         ifcopenshell.api.run(
             "spatial.assign_container", self.model, relating_structure=storey, products=[door]
@@ -544,6 +627,7 @@ class BimModelManager:
         height: float = 1.2,
         sill_height: float = 0.9,
         name: str = "Fixed Window : 48\" x 48\"",
+        guid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Creates an IfcWindow hosted in wall with automated IfcOpeningElement."""
         if host_wall_guid not in self.element_meta:
@@ -584,7 +668,7 @@ class BimModelManager:
         window = ifcopenshell.api.run(
             "root.create_entity", self.model, ifc_class="IfcWindow", name=name
         )
-        win_guid = window.GlobalId
+        win_guid = self._apply_guid(window, guid)
         storey = self.get_storey_by_id(wall_meta["level_id"])
         ifcopenshell.api.run(
             "spatial.assign_container", self.model, relating_structure=storey, products=[window]
@@ -641,31 +725,39 @@ class BimModelManager:
         elevation: float = 0.0,
         level_id: Optional[str] = None,
         name: str = "Floor : 10\" Concrete Slab",
+        guid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Creates an IfcSlab with boundary polygon."""
         storey = self.get_storey_by_id(level_id)
         slab = ifcopenshell.api.run("root.create_entity", self.model, ifc_class="IfcSlab", name=name)
-        guid = slab.GlobalId
+        guid = self._apply_guid(slab, guid)
 
         ifcopenshell.api.run(
             "spatial.assign_container", self.model, relating_structure=storey, products=[slab]
         )
 
-        # Compute bounding rectangle for basic representation or custom profile
+        # The representation must extrude the actual boundary polygon. This used
+        # to build a box from the polygon's bounding rectangle, which meant a
+        # concave or non-rectangular floor became a rectangle in the IFC — the
+        # overlay could preserve the polygon all it liked and the model of record
+        # would still be wrong (review N1's "slab/roof polygons degrade").
         xs = [p[0] for p in polygon_pts]
         ys = [p[1] for p in polygon_pts]
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
-        w = max_x - min_x
-        l = max_y - min_y
-
+        min_x, min_y = min(xs), min(ys)
+        # Profile in local coordinates relative to the placement below.
+        local = [[float(p[0]) - min_x, float(p[1]) - min_y] for p in polygon_pts]
+        profile = ifcopenshell.api.run(
+            "profile.add_arbitrary_profile",
+            self.model,
+            profile=local,
+            name=f"Slab-Boundary-{guid}",
+        )
         rep = ifcopenshell.api.run(
-            "geometry.add_wall_representation",
+            "geometry.add_profile_representation",
             self.model,
             context=self.context_body,
-            length=float(w),
-            height=float(thickness),
-            thickness=float(l),
+            profile=profile,
+            depth=float(thickness),
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=slab, representation=rep
@@ -706,30 +798,34 @@ class BimModelManager:
         pitch_degrees: float = 15.0,
         level_id: Optional[str] = None,
         name: str = "Roof : Pitched Metal Deck",
+        guid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Creates an IfcRoof."""
         storey = self.get_storey_by_id(level_id)
         roof = ifcopenshell.api.run("root.create_entity", self.model, ifc_class="IfcRoof", name=name)
-        guid = roof.GlobalId
+        guid = self._apply_guid(roof, guid)
 
         ifcopenshell.api.run(
             "spatial.assign_container", self.model, relating_structure=storey, products=[roof]
         )
 
+        # Same as the slab: extrude the real footprint, not its bounding box.
         xs = [p[0] for p in polygon_pts]
         ys = [p[1] for p in polygon_pts]
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
-        w = max_x - min_x
-        l = max_y - min_y
-
+        min_x, min_y = min(xs), min(ys)
+        local = [[float(p[0]) - min_x, float(p[1]) - min_y] for p in polygon_pts]
+        profile = ifcopenshell.api.run(
+            "profile.add_arbitrary_profile",
+            self.model,
+            profile=local,
+            name=f"Roof-Boundary-{guid}",
+        )
         rep = ifcopenshell.api.run(
-            "geometry.add_wall_representation",
+            "geometry.add_profile_representation",
             self.model,
             context=self.context_body,
-            length=float(w),
-            height=float(thickness),
-            thickness=float(l),
+            profile=profile,
+            depth=float(thickness),
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=roof, representation=rep
@@ -768,23 +864,69 @@ class BimModelManager:
         axis_name: str,
         start_pt: Tuple[float, float],
         end_pt: Tuple[float, float],
+        guid: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Creates an architectural grid line."""
-        grid_id = str(uuid.uuid4())
+        """
+        Creates an architectural grid line as a real IfcGrid + IfcGridAxis.
+
+        P2: grids used to be a Python-dict only — `str(uuid.uuid4())` as the id and
+        no ifcopenshell call at all — so they never reached `model.ifc` and were
+        lost on every reload (review N2). Each BIMWorks grid line is authored as
+        its own IfcGrid holding one axis, because that is how the application
+        models them (one independent line per element, not a rectangular system).
+        The axis curve is in world coordinates and the grid sits at the origin, so
+        the importer's placement matrix reads back as identity.
+        """
+        import ifcopenshell.api.grid
+
+        grid = ifcopenshell.api.run("root.create_entity", self.model, ifc_class="IfcGrid",
+                                    name=f"Grid {axis_name}")
+        grid_guid = self._apply_guid(grid, guid)
+
+        # A grid is a spatial datum: hang it off the site (else the building)
+        # rather than inside a storey.
+        container = getattr(self, "site", None) or getattr(self, "building", None)
+        if container is not None:
+            try:
+                ifcopenshell.api.run(
+                    "spatial.assign_container", self.model,
+                    relating_structure=container, products=[grid],
+                )
+            except Exception:
+                pass
+
+        origin = self.model.create_entity("IfcCartesianPoint", Coordinates=(0.0, 0.0, 0.0))
+        axis_placement = self.model.create_entity("IfcAxis2Placement3D", Location=origin)
+        grid.ObjectPlacement = self.model.create_entity(
+            "IfcLocalPlacement", RelativePlacement=axis_placement
+        )
+
+        axis = ifcopenshell.api.run(
+            "grid.create_grid_axis", self.model,
+            grid=grid, axis_tag=str(axis_name), uvw_axes="UAxes",
+        )
+        ifcopenshell.api.run(
+            "grid.create_axis_curve", self.model,
+            grid_axis=axis,
+            p1=[float(start_pt[0]), float(start_pt[1]), 0.0],
+            p2=[float(end_pt[0]), float(end_pt[1]), 0.0],
+        )
+
         meta = {
-            "guid": grid_id,
+            "guid": grid_guid,
             "ifc_class": "IfcGrid",
             "name": f"Grid {axis_name}",
             "tag": axis_name,
             "start": list(start_pt),
             "end": list(end_pt),
+            "entity": grid,
             "type_properties": {
                 "Bubble": "Circle 1/4\"",
                 "Lineweight": "0.25mm",
                 "Line Pattern": "Centerline",
             },
         }
-        self.element_meta[grid_id] = meta
+        self.element_meta[grid_guid] = meta
         return meta
 
     def delete_element(self, guid: str) -> bool:
@@ -1701,16 +1843,15 @@ class BimModelManager:
             profile=[[float(x), float(y)] for x, y in local],
             name=f"Wall-Footprint-{guid}",
         )
-        # remove old representations
-        old_rep = getattr(wall, "Representation", None)
-        if old_rep is not None:
-            for r in list(old_rep.Representations):
-                try:
-                    ifcopenshell.api.run(
-                        "geometry.remove_representation", self.model, representation=r
-                    )
-                except Exception:
-                    pass
+        # Drop the wall's previous representation before assigning the new one.
+        # Deliberately not `ifcopenshell.api.geometry.remove_representation`: that
+        # usecase walks the representation graph's inverse attributes and
+        # segfaults inside the C++ wrapper on a file that has been rebuilt
+        # (reproducible here, and it takes the process down rather than raising).
+        # Detaching the representation from the product and deleting it directly
+        # leaves an unreferenced profile/solid behind, which is valid IFC and
+        # cheap, and it cannot crash.
+        self._detach_representations(wall)
         rep = ifcopenshell.api.run(
             "geometry.add_profile_representation",
             self.model,
@@ -1724,48 +1865,79 @@ class BimModelManager:
         meta["representation_entity"] = rep
         self._refresh_wall_placement(guid)
 
+    def _detach_representations(self, product) -> int:
+        """
+        Removes a product's IfcProductDefinitionShape and its representations.
+
+        Returns the number of representation items detached. Safe to call on a
+        product with no representation, and safe during a bulk rebuild.
+        """
+        shape = getattr(product, "Representation", None)
+        if shape is None:
+            return 0
+        removed = 0
+        for representation in list(getattr(shape, "Representations", []) or []):
+            try:
+                self.model.remove(representation)
+                removed += 1
+            except Exception:
+                pass
+        try:
+            self.model.remove(shape)
+        except Exception:
+            pass
+        try:
+            product.Representation = None
+        except Exception:
+            pass
+        return removed
+
+    # Name of the custom property set that used to hold the constraint graph.
+    # README/spec §0.1 explicitly rejected this pset: property sets are static
+    # data, so "persisting" constraints there never made them re-executable, and
+    # a custom pset on IfcProject undermines the interop promise (hand model.ifc
+    # to Revit/Bonsai). Constraints live in the overlay only (P2-E).
+    LEGACY_CONSTRAINT_PSET = "Pset_ORLT_Constraints"
+
     def save_constraints_to_ifc(self):
         """
-        Persists active constraint relationships into standard IFC4
-        under custom property set Pset_ORLT_Constraints on IfcProject.
-        """
-        try:
-            import json
-            import ifcopenshell.api.pset
+        Removed in P2. Constraints are overlay-only.
 
-            payload = json.dumps(list(self.constraints.values()))
-            pset = None
-            for rel in getattr(self.project, "IsDefinedBy", []):
-                if hasattr(rel, "RelatingPropertyDefinition"):
-                    p_def = rel.RelatingPropertyDefinition
-                    if hasattr(p_def, "Name") and p_def.Name == "Pset_ORLT_Constraints":
-                        pset = p_def
-                        break
-            if not pset:
-                pset = ifcopenshell.api.pset.add_pset(
-                    self.model, product=self.project, name="Pset_ORLT_Constraints"
-                )
-            ifcopenshell.api.pset.edit_pset(
-                self.model, pset=pset, properties={"ConstraintGraph": payload}
-            )
+        Retained as a no-op so the existing call sites stay honest rather than
+        silently disappearing: writing the constraint graph into the IFC is the
+        rejected design, and `strip_legacy_constraint_pset()` actively removes any
+        pset a previously saved container may still carry.
+        """
+        return None
+
+    def strip_legacy_constraint_pset(self) -> int:
+        """
+        Deletes any `Pset_ORLT_Constraints` from the model. Returns how many were
+        removed. Applied before serializing so the container cannot keep shipping
+        the pset after an upgrade from an older build.
+        """
+        removed = 0
+        try:
+            import ifcopenshell.api.pset  # noqa: F401  (kept for parity of imports)
+            for pset in list(self.model.by_type("IfcPropertySet")):
+                if getattr(pset, "Name", None) == self.LEGACY_CONSTRAINT_PSET:
+                    try:
+                        self.model.remove(pset)
+                        removed += 1
+                    except Exception:
+                        pass
         except Exception as e:
-            print(f"Notice persisting constraints to IFC: {e}")
+            print(f"Notice stripping legacy constraint pset: {e}")
+        return removed
 
     def load_constraints_from_ifc(self):
-        """Loads and deserializes active constraint graph from Pset_ORLT_Constraints."""
-        try:
-            import json
-            for rel in getattr(self.project, "IsDefinedBy", []):
-                if hasattr(rel, "RelatingPropertyDefinition"):
-                    p_def = rel.RelatingPropertyDefinition
-                    if hasattr(p_def, "Name") and p_def.Name == "Pset_ORLT_Constraints":
-                        for prop in getattr(p_def, "HasProperties", []):
-                            if prop.Name == "ConstraintGraph":
-                                data = json.loads(prop.NominalValue.wrappedValue)
-                                self.constraints = {c["id"]: c for c in data}
-                                return
-        except Exception as e:
-            print(f"Notice loading constraints from IFC: {e}")
+        """
+        Removed in P2. Constraints are read from the overlay, never from IFC.
+
+        Left as a no-op for callers that predate the overlay (and to make the
+        deliberate absence visible in a search for the pset name).
+        """
+        return None
 
     # =========================================================================
     # 3D GEOMETRY EXTRACTION (Three.js Buffer Geometry Generation)
@@ -1791,6 +1963,11 @@ class BimModelManager:
         "swing_flipped",
         "elevation",
         "pitch",
+        # Sketch geometry. Without this the overlay silently dropped slab/roof
+        # polygons, so a reload could not rebuild them (found by the P2 round-trip
+        # test, not by reading: the IFC carries the bbox rectangle, so the model
+        # still "looked" fine while the polygon was gone).
+        "polygon",
         "tag",
         "type_properties",
     )
@@ -1803,6 +1980,196 @@ class BimModelManager:
                 record[key] = meta[key]
         record["hosted_openings"] = list(meta.get("hosted_openings", []))
         return record
+
+    def _rebuild_element_from_overlay(self, guid: str, rec: Dict[str, Any]) -> bool:
+        """
+        Rebuilds a single element from its overlay record, preserving its GUID.
+
+        Returns False when the record cannot be rebuilt (unknown class, missing
+        host, malformed geometry) so the caller can report it instead of silently
+        dropping the element.
+        """
+        ifc_class = rec.get("ifc_class")
+        name = rec.get("name") or ifc_class or "Element"
+        level_id = rec.get("level_id")
+
+        try:
+            if ifc_class in ("IfcWallStandardCase", "IfcWall"):
+                start = rec.get("start")
+                end = rec.get("end")
+                if not start or not end:
+                    return False
+                meta = self.add_wall(
+                    start_pt=tuple(start), end_pt=tuple(end),
+                    height=float(rec.get("height", 3.0)),
+                    thickness=float(rec.get("thickness", 0.2)),
+                    level_id=level_id, name=name, guid=guid,
+                )
+
+            elif ifc_class in ("IfcDoor", "IfcWindow"):
+                host_guid = rec.get("host_wall_guid")
+                if not host_guid or host_guid not in self.element_meta:
+                    # The host is genuinely unknown (stale reference), not a crash.
+                    return False
+                if ifc_class == "IfcDoor":
+                    meta = self.add_door(
+                        host_wall_guid=host_guid,
+                        offset_along_wall=float(rec.get("offset_along_wall", 0.0)),
+                        width=float(rec.get("width", 0.95)),
+                        height=float(rec.get("height", 2.1)),
+                        name=name,
+                        swing_flipped=bool(rec.get("swing_flipped", False)),
+                        guid=guid,
+                    )
+                else:
+                    meta = self.add_window(
+                        host_wall_guid=host_guid,
+                        offset_along_wall=float(rec.get("offset_along_wall", 0.0)),
+                        width=float(rec.get("width", 1.2)),
+                        height=float(rec.get("height", 1.2)),
+                        sill_height=float(rec.get("sill_height", 0.9)),
+                        name=name, guid=guid,
+                    )
+
+            elif ifc_class == "IfcSlab":
+                polygon = rec.get("polygon")
+                if not polygon:
+                    return False
+                meta = self.add_slab(
+                    polygon_pts=[tuple(p) for p in polygon],
+                    thickness=float(rec.get("thickness", 0.25)),
+                    elevation=float(rec.get("elevation", 0.0)),
+                    level_id=level_id, name=name, guid=guid,
+                )
+
+            elif ifc_class == "IfcRoof":
+                polygon = rec.get("polygon")
+                if not polygon:
+                    return False
+                meta = self.add_roof(
+                    polygon_pts=[tuple(p) for p in polygon],
+                    thickness=float(rec.get("thickness", 0.3)),
+                    elevation=float(rec.get("elevation", 6.0)),
+                    pitch_degrees=float(rec.get("pitch", 15.0)),
+                    level_id=level_id, name=name, guid=guid,
+                )
+
+            elif ifc_class == "IfcGrid":
+                start = rec.get("start")
+                end = rec.get("end")
+                if not start or not end:
+                    return False
+                meta = self.add_grid(
+                    axis_name=str(rec.get("tag") or name),
+                    start_pt=(start[0], start[1]),
+                    end_pt=(end[0], end[1]),
+                    guid=guid,
+                )
+
+            else:
+                return False
+        except Exception as e:
+            print(f"Notice: could not rebuild element {guid} ({ifc_class}): {e}")
+            return False
+
+        # Restore the non-geometric payload the builders do not take.
+        if rec.get("type_properties"):
+            meta.setdefault("type_properties", {}).update(rec["type_properties"])
+        return True
+
+    def rebuild_from_overlay(self, overlay: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Rebuilds `element_meta`, join policies and constraints from the overlay.
+
+        P2 (the decisive change): the overlay is authoritative. Geometry is
+        regenerated through the normal builders rather than inferred from the
+        tessellated IFC that happened to be in the container, which is what made
+        diagonal walls snap to 0°/90° and slab polygons degrade to rectangles.
+
+        The IFC is *not* trusted as the parametric source, but it is still used to
+        detect staleness: an overlay record whose GUID is absent from the saved
+        IFC is reported as `stale` and skipped (spec §3.1 — flagged, never
+        silently applied). Records present in the IFC but absent from the overlay
+        are reported as `unparametrized`.
+        """
+        reported_ifc_guids = set(overlay.get("_ifc_guids", []))
+        elements = overlay.get("elements", {}) or {}
+        report: Dict[str, Any] = {
+            "rebuilt": [],
+            "stale": [],           # in overlay, absent from the saved IFC
+            "unparametrized": [],  # in the saved IFC, absent from the overlay
+            "failed": [],          # present but could not be reconstructed
+            "schema_version": overlay.get("schema_version"),
+        }
+
+        self.element_meta = {}
+        self.join_policies = {}
+        self.constraints = self._jsonable(overlay.get("constraints", {}) or {})
+
+        # Levels: keep whatever the IFC import produced (storeys are structural)
+        # but adopt overlay names/elevations where they exist.
+        for lv in overlay.get("levels", []) or []:
+            lid = lv.get("id")
+            if lid and lid in self.levels:
+                self.levels[lid]["name"] = lv.get("name", self.levels[lid]["name"])
+                if lv.get("elevation") is not None:
+                    self.levels[lid]["elevation"] = lv["elevation"]
+
+        # Rebuild order matters: hosts before hosted, walls before join recompute.
+        order = {
+            "IfcWallStandardCase": 0, "IfcWall": 0,
+            "IfcGrid": 1,
+            "IfcDoor": 2, "IfcWindow": 2,
+            "IfcSlab": 3, "IfcRoof": 3,
+        }
+        ordered = sorted(
+            elements.items(),
+            key=lambda kv: order.get((kv[1] or {}).get("ifc_class"), 4),
+        )
+
+        # Joins are recomputed once, after the whole model exists: per-wall
+        # recomputation during the replay is both premature (partners are not
+        # there yet) and segfault-prone inside ifcopenshell.
+        self._suppress_join_recompute = True
+        try:
+            for guid, rec in ordered:
+                if not isinstance(rec, dict):
+                    continue
+                if reported_ifc_guids and guid not in reported_ifc_guids:
+                    report["stale"].append({
+                        "guid": guid,
+                        "ifc_class": rec.get("ifc_class"),
+                        "name": rec.get("name"),
+                        "reason": "GUID not present in the container's model.ifc",
+                    })
+                    continue
+                if self._rebuild_element_from_overlay(guid, rec):
+                    report["rebuilt"].append(guid)
+                else:
+                    report["failed"].append({
+                        "guid": guid,
+                        "ifc_class": rec.get("ifc_class"),
+                        "name": rec.get("name"),
+                    })
+        finally:
+            self._suppress_join_recompute = False
+
+        # Join policies from the overlay, then recompute geometry from baselines.
+        self.join_policies = self._jsonable(overlay.get("join_policies", {}) or {})
+        for guid in list(self.join_policies.keys()):
+            if guid not in self.element_meta:
+                self.join_policies.pop(guid, None)
+        try:
+            self.recompute_wall_joins()
+        except Exception as e:
+            print(f"Notice: join recompute after overlay rebuild failed: {e}")
+
+        if reported_ifc_guids:
+            overlay_guids = set(elements.keys())
+            report["unparametrized"] = sorted(reported_ifc_guids - overlay_guids - set(report["rebuilt"]))
+
+        report["elements_count"] = len(self.element_meta)
+        return report
 
     @staticmethod
     def _get_product_shape(settings, p):
@@ -2281,25 +2648,38 @@ class BimModelManager:
             safe_name = "".join(c for c in self.project_name if c.isalnum() or c in ("-", "_")).strip() or "Project"
             filepath = os.path.join(temp_dir, f"{safe_name}{CONTAINER_EXTENSION}")
 
-        # 1. Generate IFC4 STEP model of record
+        # 1. Generate IFC4 STEP model of record. Strip the rejected constraint
+        #    pset first so a container upgraded from an older build cannot keep
+        #    shipping it (constraints are overlay-only, P2-E).
+        self.strip_legacy_constraint_pset()
         ifc_temp = tempfile.NamedTemporaryFile(suffix=".ifc", delete=False)
         ifc_temp.close()
         self.model.write(ifc_temp.name)
 
-        # 2. Parametric overlay (all values in decimal feet / internal units)
+        # 2. Parametric overlay — schema v3: the overlay is the parametric truth.
+        #    Every element carries the data needed to rebuild it from scratch
+        #    (baseline, polygon, host + offset, pitch, levels, grids), so a load
+        #    never has to infer geometry from tessellation. Live entity refs and
+        #    cached tessellation are excluded; footprints are excluded because the
+        #    join engine recomputes them deterministically from baselines +
+        #    policies (storing them would add a second source of truth).
         parametric_overlay = {
-            "schema_version": "2.1",
-            "internal_units": "decimal_feet",
-            "constraints": self.constraints,
-            "join_policies": self.join_policies,
+            "schema_version": OVERLAY_SCHEMA_VERSION,
+            "units": {
+                "internal": INTERNAL_UNIT,
+                "ifc_length": "METERS",
+                "conversion": UNIT_CONVERSION_SOURCE,
+            },
+            "internal_units": INTERNAL_UNIT,
+            "constraints": self._jsonable(self.constraints),
+            "join_policies": self._jsonable(self.join_policies),
+            "levels": [
+                {"id": lid, "name": lv.get("name"), "elevation": self._jsonable(lv.get("elevation", 0.0))}
+                for lid, lv in self.levels.items()
+            ],
             "elements": {
-                guid: {
-                    "ifc_class": m.get("ifc_class"),
-                    "name": m.get("name"),
-                    "type_properties": m.get("type_properties", {}),
-                    "join_policy": self.join_policies.get(guid, {}),
-                }
-                for guid, m in self.element_meta.items()
+                guid: self._build_overlay_element(guid, meta)
+                for guid, meta in self.element_meta.items()
             },
         }
 
@@ -2326,6 +2706,7 @@ class BimModelManager:
             "version": "2.1",
             "spec": "GLM Master Spec v2.1",
             "container_format": CONTAINER_FORMAT_ID,
+            "schema_version": OVERLAY_SCHEMA_VERSION,
             "license": "GPL-3.0",
             "internal_units": "decimal_feet",
             "project_name": self.project_name,
@@ -2348,14 +2729,24 @@ class BimModelManager:
 
     def load_orlt_project(self, file_bytes_or_path: Any, filename: str = "Project.bimworks") -> Dict[str, Any]:
         """
-        Loads a BIMWorks hybrid container (.bimworks; legacy .orlt also accepted):
-        1. Reads and loads model.ifc as the geometric and spatial model of record.
-        2. Parses parametric.json and binds constraints, join policies, and type properties to GUIDs.
-        3. Stale overlay records (elements edited or removed externally) are gracefully ignored.
+        Loads a BIMWorks hybrid container (.bimworks; legacy .orlt also accepted).
 
-        The `filename` argument is decorative only — the payload is identified by its
-        zip members, so a mislabelled extension still loads. It is used for the
-        imported IFC's display name and log messages.
+        P2 load path — the overlay is authoritative:
+          1. Read `parametric.json` first; it holds the parametric definition.
+          2. Import `model.ifc` for the spatial structure (project, storeys, site)
+             and to learn which GUIDs the file actually contains.
+          3. Rebuild every element from the overlay with GUID preservation and
+             regenerate its geometry through the normal builders — never infer
+             geometry from tessellation.
+          4. Flag overlay records whose GUIDs are absent from the IFC as `stale`
+             and never apply them silently.
+
+        Containers from schema v2.1 have no parametric geometry in the overlay, so
+        they fall back to the legacy tessellation import (with the fidelity limits
+        that implies) and additionally receive their type properties.
+
+        The `filename` argument is decorative only — the payload is identified by
+        its zip members, so a mislabelled extension still loads.
         """
         if isinstance(file_bytes_or_path, (bytes, bytearray)):
             z_file = zipfile.ZipFile(io.BytesIO(file_bytes_or_path))
@@ -2377,42 +2768,91 @@ class BimModelManager:
                 stem = os.path.splitext(stem)[0]
         ifc_display_name = f"{stem}.ifc"
 
+        overlay: Dict[str, Any] = {}
+        schema_version: Any = None
+        meta_payload: Dict[str, Any] = {}
+
         with z_file as z:
             names = z.namelist()
             if "model.ifc" not in names:
                 raise ValueError("Project container missing required 'model.ifc'")
 
-            ifc_content = z.read("model.ifc").decode("utf-8", errors="replace")
-            load_res = self.load_ifc_content(ifc_content, ifc_display_name)
-
             if "parametric.json" in names:
                 try:
-                    param_data = json.loads(z.read("parametric.json").decode("utf-8"))
-                    self.constraints = param_data.get("constraints", {})
-                    self.join_policies = param_data.get("join_policies", {})
-                    elements_overlay = param_data.get("elements", {})
-                    for g, o_meta in elements_overlay.items():
-                        if g in self.element_meta:
-                            if "type_properties" in o_meta:
-                                self.element_meta[g].setdefault("type_properties", {}).update(o_meta["type_properties"])
+                    overlay = json.loads(z.read("parametric.json").decode("utf-8"))
+                    schema_version = overlay.get("schema_version")
                 except Exception as pe:
                     print(f"Notice loading parametric.json overlay: {pe}")
+                    overlay = {}
 
             if "meta.json" in names:
                 try:
-                    meta = json.loads(z.read("meta.json").decode("utf-8"))
-                    if "project_name" in meta:
-                        self.project_name = meta["project_name"]
+                    meta_payload = json.loads(z.read("meta.json").decode("utf-8"))
                 except Exception:
-                    pass
+                    meta_payload = {}
+
+            ifc_content = z.read("model.ifc").decode("utf-8", errors="replace")
+
+        # Import the IFC for spatial structure + the authoritative GUID list. This
+        # also populates element_meta via the legacy path, which the overlay
+        # rebuild then replaces wholesale when the schema supports it.
+        self.load_ifc_content(ifc_content, ifc_display_name)
+        # Every GUID the saved IFC actually contains. `element_meta` keys are the
+        # authoritative list (they are derived from the IFC's own products), and
+        # using the keys rather than `meta["entity"]` matters because some
+        # elements are metadata-only in a legacy file and must not be mistaken
+        # for stale just because they have no entity handle.
+        ifc_guids = sorted(self.element_meta.keys())
+
+        if meta_payload.get("project_name"):
+            self.project_name = meta_payload["project_name"]
+
+        is_v3 = schema_version == OVERLAY_SCHEMA_VERSION
+        load_report: Dict[str, Any]
+        if is_v3:
+            overlay["_ifc_guids"] = ifc_guids
+            load_report = self.rebuild_from_overlay(overlay)
+            load_report.pop("_ifc_guids", None)
+        else:
+            # Legacy container: no parametric geometry in the overlay. Keep the
+            # tessellation import and only re-attach metadata that is GUID-gated.
+            self.constraints = self._jsonable(overlay.get("constraints", {}) or {})
+            self.join_policies = self._jsonable(overlay.get("join_policies", {}) or {})
+            elements_overlay = overlay.get("elements", {}) or {}
+            applied, stale = [], []
+            for g, o_meta in elements_overlay.items():
+                if g in self.element_meta:
+                    if "type_properties" in o_meta:
+                        self.element_meta[g].setdefault("type_properties", {}).update(o_meta["type_properties"])
+                    applied.append(g)
+                else:
+                    stale.append(g)
+            load_report = {
+                "schema_version": schema_version,
+                "legacy": True,
+                "rebuilt": [],
+                "stale": [{"guid": g, "reason": "GUID not present in the container's model.ifc"} for g in stale],
+                "unparametrized": [],
+                "failed": [],
+                "metadata_applied": applied,
+                "elements_count": len(self.element_meta),
+                "note": (
+                    "schema v2.1 container: the overlay carries no parametric geometry, "
+                    "so geometry was reconstructed from the tessellated IFC (lossy for "
+                    "angled walls and non-rectangular polygons). Re-save to upgrade to v3."
+                ),
+            }
 
         return {
             "status": "loaded",
             "container_format": CONTAINER_FORMAT_ID,
             "project_name": self.project_name,
+            "schema_version": schema_version,
+            "overlay_authoritative": is_v3,
             "elements_count": len(self.element_meta),
             "constraints_count": len(self.constraints),
             "join_policies_count": len(self.join_policies),
+            "load_report": load_report,
         }
 
     def load_ifc_content(self, ifc_content: str, filename: str = "Imported.ifc") -> Dict[str, Any]:
@@ -2489,10 +2929,10 @@ class BimModelManager:
         unit_scale = unit_util.calculate_unit_scale(self.model) or 1.0
         seen_grid_tags = set()
         for grid in self.model.by_type("IfcGrid"):
-            guid = grid.GlobalId
+            grid_guid = grid.GlobalId
             grid_matrix = plc.get_local_placement(grid.ObjectPlacement) if grid.ObjectPlacement else None
             axes = list(grid.UAxes or []) + list(grid.VAxes or []) + list(getattr(grid, "WAxes", []) or [])
-            for axis in axes:
+            for axis_index, axis in enumerate(axes):
                 tag = axis.AxisTag or "1"
                 curve = axis.AxisCurve
                 if curve and curve.is_a("IfcPolyline") and len(curve.Points) >= 2:
@@ -2503,11 +2943,20 @@ class BimModelManager:
                         w_pts = [p[:2] for p in pts]
                     sp = [float(w_pts[0][0]), float(w_pts[0][1])]
                     ep = [float(w_pts[1][0]), float(w_pts[1][1])]
-                    sig = (tag, round(sp[0], 1), round(sp[1], 1), round(ep[0], 1), round(ep[1], 1))
+                    sig = (grid_guid, tag, round(sp[0], 1), round(sp[1], 1), round(ep[0], 1), round(ep[1], 1))
                     if sig in seen_grid_tags:
                         continue
                     seen_grid_tags.add(sig)
-                    axis_guid = f"{guid}_{tag}_{len(seen_grid_tags)}"
+                    # Address a grid by its real GlobalId. This used to mint
+                    # `f"{guid}_{tag}_{n}"`, which meant the overlay could never
+                    # match an imported grid back to its IFC entity — staleness
+                    # gating then discarded every grid on load (finding N15).
+                    # Only a grid with several axes needs a derived id, and then
+                    # it is derived from the axis's own identity.
+                    axis_guid = (
+                        grid_guid if len(axes) == 1
+                        else f"{grid_guid}_{tag}_{axis_index}"
+                    )
                     self.element_meta[axis_guid] = {
                         "entity": grid,
                         "guid": axis_guid,
