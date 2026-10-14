@@ -252,7 +252,7 @@ The workflow answer from principle 3.
 
 ### P5 — 2D views & HLR (README M3) — after P3/P4
 
-**Status: COMPLETE except the reviewer-facing visual check.** Verified by `scratch/test_mesh_hlr.py` (22 checks) and `scratch/test_hlr.py` (29 checks), plus the twelve other suites.
+**Status: all technical items COMPLETE; only the reviewer-facing visual check remains (the objective's own wording makes it a human judgement).** Verified by `scratch/test_mesh_hlr.py` (22 checks) and `scratch/test_hlr.py` (29 checks), plus the twelve other suites.
 
 **The renderer was replaced.** `slice_2d_vector_plan` now defaults to `renderer="mesh-hlr"`, an in-process hidden-line projector, with the ifcopenshell SVG serialiser and then the analytic slicer as fallbacks. The analytic path stays reachable via `renderer="analytic"` for comparison.
 
@@ -266,7 +266,9 @@ The workflow answer from principle 3.
 | Hidden lines separated | **MET** — an occluded wall yields hidden paths, and it is the occluded element that is hidden, not the occluder |
 | Section HLR correct on a multi-level model | **MET** — run 0–30 ft, height 0–20 ft across two storeys |
 | View range, view templates, lineweight tables | **MET** — `ViewRange`, `LineweightTable`, `ViewDefinition`; the 6-ft rule is applied in both renderers |
-| Plan visually matches a Revit plan to a reviewer's satisfaction | **NOT CLAIMED** — needs a human to look at the output |
+| Section/elevation views in the same contract | **MET** — `render_2d_view(view_type, cut_elevation, direction, view_range)` serves plan/section/elevation; a plan and a section cut, an elevation does not |
+| Openings voided, both kinds | **MET** — on a wall with a door at 8 ft and a window at 18 ft the cut runs are (0–4.57)(4.57–8) **8–11 gap** (11–16.25)(16.25–18) **18–22 gap** (22–25.43)(25.43–30) |
+| Plan visually matches a Revit plan to a reviewer's satisfaction | **AWAITING REVIEW** — a rendered plan reads correctly (heavy cut walls, door and window as gaps at their positions, swing panel + quarter arc), but the objective words this as a reviewer's judgement, which cannot be self-certified |
 
 **Two genuine geometry defects were found and fixed while doing this**, both P2 units-boundary bugs that affected far more than drawings:
 
