@@ -127,47 +127,98 @@ export function formatVolume(cubicFeet: number, system: UnitSystem = 'imperial_f
 }
 
 /**
- * Parses user input strings into decimal feet.
- * Examples accepted:
- * - "12' 6"" -> 12.5
- * - "12-6" -> 12.5
- * - "12.5" / "12.5'" -> 12.5
- * - "3800mm" -> ~12.467
- * - "3.8m" -> ~12.467
+ * Parses user input into decimal feet, or `null` when the text is not a length.
+ *
+ * UI-P0-2/UI-P1-5: the in-canvas editors used `parseFloat`, so in an
+ * imperial-fractional project (the default) typing what the app itself displays —
+ * `12'-6"` — produced NaN and the edit was silently discarded. Returning `null`
+ * rather than 0 for garbage also lets the caller keep the editor open and say so,
+ * which the old "0 means empty means fine" contract could not express.
+ *
+ * Accepted (all unambiguous, so a unit suffix is never guessed):
+ * - `12.5'` or `12.5 ft`  -> decimal feet
+ * - `12'-6"`, `12' 6"`, `12' 6 1/2"`, `12-6`  -> feet and inches
+ * - `30"`                 -> inches only
+ * - `3800 mm`, `3.8 m`    -> metric, converted
+ * - `12.5`                -> bare number is decimal feet (the internal unit)
+ */
+export function tryParseLength(input: string): number | null {
+  if (input == null) return null;
+  const str = String(input).trim().toLowerCase();
+  if (!str) return null;
+
+  // Metric, longest suffix first so "mm" is not read as "m".
+  const metric = str.match(/^([+-]?(?:\d+\.?\d*|\.\d+))\s*(mm|cm|m)\b/);
+  if (metric) {
+    const value = parseFloat(metric[1]);
+    if (!isFinite(value)) return null;
+    if (metric[2] === 'mm') return mmToFeet(value);
+    if (metric[2] === 'cm') return mmToFeet(value * 10);
+    return metersToFeet(value);
+  }
+
+  // Imperial with an explicit foot mark: HH'-II[ F/D]"
+  const feetInches = str.match(
+    /^([+-]?\d+(?:\.\d+)?)\s*'\s*(?:-\s*)?(?:(\d+(?:\.\d+)?)(?:\s+(\d+)\s*\/\s*(\d+))?\s*"?)?$/
+  );
+  if (feetInches) {
+    const feet = parseFloat(feetInches[1]);
+    const inches = feetInches[2] ? parseFloat(feetInches[2]) : 0;
+    const num = feetInches[3] ? parseFloat(feetInches[3]) : 0;
+    const den = feetInches[4] ? parseFloat(feetInches[4]) : 1;
+    if (!isFinite(feet) || !isFinite(inches) || den === 0) return null;
+    const sign = feet < 0 || str.startsWith('-') ? -1 : 1;
+    return sign * (Math.abs(feet) + (inches + (den ? num / den : 0)) / 12);
+  }
+
+  // A run of numbers separated by a dash or spaces, as Revit accepts: 12-6, 12 6, 12 6 1/2
+  const fraction = str.match(/^([+-]?\d+(?:\.\d+)?)(?:[\s-]+(\d+(?:\.\d+)?))?(?:[\s-]+(\d+)\s*\/\s*(\d+))?$/);
+  if (fraction && !str.includes("'") && !str.includes('"')) {
+    const whole = parseFloat(fraction[1]);
+    const inches = fraction[2] ? parseFloat(fraction[2]) : 0;
+    const num = fraction[3] ? parseFloat(fraction[3]) : 0;
+    const den = fraction[4] ? parseFloat(fraction[4]) : 1;
+    if (!isFinite(whole)) return null;
+    if (den === 0) return null;
+    // Two-part input with nothing after it is feet-inches ("12 6" = 12'-6").
+    if (fraction[2] !== undefined) {
+      const sign = whole < 0 ? -1 : 1;
+      return sign * (Math.abs(whole) + (inches + (num || 0) / den) / 12);
+    }
+    return whole;
+  }
+
+  // Inches only: 30"
+  const inchesOnly = str.match(/^([+-]?(?:\d+\.?\d*|\.\d+))\s*"$/);
+  if (inchesOnly) {
+    const value = parseFloat(inchesOnly[1]);
+    return isFinite(value) ? value / 12 : null;
+  }
+
+  // Explicit decimal feet: 12.5 ft
+  const feetOnly = str.match(/^([+-]?(?:\d+\.?\d*|\.\d+))\s*(?:ft|feet|')$/);
+  if (feetOnly) {
+    const value = parseFloat(feetOnly[1]);
+    return isFinite(value) ? value : null;
+  }
+
+  // Bare number: decimal feet, the internal unit.
+  if (/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(str)) {
+    const value = parseFloat(str);
+    return isFinite(value) ? value : null;
+  }
+
+  return null;
+}
+
+/**
+ * Convenience wrapper that keeps the legacy "always a number" contract.
+ *
+ * The engine's internal unit is decimal feet, so a bare number means decimal feet.
+ * Prefer `tryParseLength` in any new UI so invalid input can be reported rather
+ * than silently becoming zero.
  */
 export function parseLength(input: string): number {
-  if (!input) return 0;
-  const str = input.trim().toLowerCase();
-
-  // Metric mm
-  if (str.endsWith('mm')) {
-    const val = parseFloat(str.replace('mm', '').trim());
-    return isNaN(val) ? 0 : mmToFeet(val);
-  }
-
-  // Metric meters
-  if (str.endsWith('m') && !str.endsWith('mm')) {
-    const val = parseFloat(str.replace('m', '').trim());
-    return isNaN(val) ? 0 : metersToFeet(val);
-  }
-
-  // Decimal feet with apostrophe: "12.5'"
-  if (str.endsWith("'") && !str.includes('"') && !str.includes(' ')) {
-    const val = parseFloat(str.replace("'", ''));
-    return isNaN(val) ? 0 : val;
-  }
-
-  // Standard architectural: e.g. 12' 6 1/2" or 12'-6" or 12-6
-  const archMatch = str.match(/^([+-]?\d+)?(?:'|-)?\s*(?:([0-9.]+)(?:\s+([0-9]+)\/([0-9]+))?)?"?$/);
-  if (archMatch) {
-    const feet = archMatch[1] ? parseFloat(archMatch[1]) : 0;
-    const inches = archMatch[2] ? parseFloat(archMatch[2]) : 0;
-    const num = archMatch[3] ? parseFloat(archMatch[3]) : 0;
-    const den = archMatch[4] ? parseFloat(archMatch[4]) : 1;
-    const fracInches = den > 0 ? num / den : 0;
-    return feet + (inches + fracInches) / 12;
-  }
-
-  const num = parseFloat(str);
-  return isNaN(num) ? 0 : num;
+  const parsed = tryParseLength(input);
+  return parsed === null ? 0 : parsed;
 }

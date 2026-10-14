@@ -15,8 +15,7 @@ export const App: React.FC = () => {
     fetchGeometry,
     fetch2DSlice,
     handleKeyStroke,
-    selectedGuid,
-    deleteElement,
+    handleDeleteKey,
     exportIfc,
   } = useBimStore();
 
@@ -46,13 +45,12 @@ export const App: React.FC = () => {
         return;
       }
 
-      // Handle Delete key
+      // Handle Enter/Delete for the active sketch or selection. The sketch-vs-model
+      // decision lives in the store (UI-P0-9) so it cannot drift per component.
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedGuid) {
-          e.preventDefault();
-          deleteElement(selectedGuid);
-          return;
-        }
+        e.preventDefault();
+        handleDeleteKey();
+        return;
       }
 
       // Pass single character or Escape to hotkey engine
@@ -63,7 +61,7 @@ export const App: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleKeyStroke, selectedGuid, deleteElement, exportIfc]);
+  }, [handleKeyStroke, handleDeleteKey, exportIfc]);
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#1e1e1e] text-[#cccccc] font-sans">

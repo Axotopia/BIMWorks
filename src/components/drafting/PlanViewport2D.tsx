@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { useBimStore } from '../../store/useBimStore';
+import { useBimStore, ZOOM_EXTENTS_EVENT } from '../../store/useBimStore';
+import { formatLength, tryParseLength } from '../../utils/units';
 import { BimElement, MeshBufferData } from '../../types/bim';
 import { Maximize2, ZoomIn, ZoomOut, Lock, Equal, Check, X } from 'lucide-react';
 
@@ -136,6 +137,10 @@ export const PlanViewport2D: React.FC = () => {
     addSketchFromWall,
     selectSketchLine,
     deleteSelectedSketchLine,
+    interactionResetToken,
+    displayUnit,
+    setStatusMessage,
+    projectName,
   } = useBimStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -169,6 +174,18 @@ export const PlanViewport2D: React.FC = () => {
     [sketchSession]
   );
 
+  /** Set while a placement mousedown is completing, so the click that follows the
+   *  same gesture does not also re-select and re-derive a temporary dimension. */
+  const placementGuidRef = useRef<string | null>(null);
+
+  /**
+   * UI-P0-15: a placement click used to fall through to `setSelectedGuid`, so
+   * drawing a wall also re-selected something and recomputed a temporary
+   * dimension, and inserting a door both inserted and selected it. Placement and
+   * selection are different intents and must not run from one click.
+   */
+  const PLACEMENT_TOOLS = ['WA', 'DR', 'WN', 'RF', 'SB'];
+
   const handleElementClick = (guid: string) => {
     if (sketchSession) {
       if (sketchSession.drawTool === 'pick_walls') {
@@ -180,11 +197,22 @@ export const PlanViewport2D: React.FC = () => {
       return;
     }
 
+    // A click that completed a placement is consumed by the placement.
+    if (placementGuidRef.current === guid) {
+      placementGuidRef.current = null;
+      return;
+    }
+    if (PLACEMENT_TOOLS.includes(activeTool)) return;
+
     if (activeTool === 'AL') {
       if (!alignPickState.refGuid) {
         setAlignPickState({ step: 'pick_target', refGuid: guid });
-      } else {
+      } else if (alignPickState.refGuid !== guid) {
         createAlignConstraint(alignPickState.refGuid, guid, 'x', true);
+      } else {
+        // UI-P0-15: picking the reference element again used to create an
+        // align-to-itself constraint. Say so instead.
+        setStatusMessage('Pick a different element to align to the reference.');
       }
       return;
     }
@@ -206,14 +234,18 @@ export const PlanViewport2D: React.FC = () => {
   };
 
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 300, y: 300 });
-  const [scale, setScale] = useState<number>(38); // pixels per meter
+  // UI-P0-8: decimal feet, not metres — the engine's internal unit (spec §11.3).
+  const [scale, setScale] = useState<number>(38); // pixels per foot
   const isPanningRef = useRef<boolean>(false);
   const startMouseRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   const [editingDimValue, setEditingDimValue] = useState<string>('');
   const [isEditingDim, setIsEditingDim] = useState<boolean>(false);
 
-  // Convert client mouse coordinates to 2D model coordinates with 0.25m snapping
+  // Convert client mouse coordinates to 2D model coordinates on a 0.25 ft (3 in)
+  // grid. UI-P0-8: the comment said 0.25 m; the number was always feet. UI-P1-3
+  // replaces this blanket grid with a real SnapEngine (endpoint / midpoint /
+  // face / intersection), with the grid as one opt-in candidate type.
   const getModelCoords = useCallback(
     (clientX: number, clientY: number): [number, number] | null => {
       if (!containerRef.current) return null;
@@ -230,26 +262,27 @@ export const PlanViewport2D: React.FC = () => {
     [pan, scale]
   );
 
-  // Cancel tool on Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (activeTool !== 'select') {
-          setActiveTool('select');
-          setFirstPoint(null);
-          setCurrentPoint(null);
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTool, setActiveTool]);
-
-  // Reset points when active tool changes
+  /**
+   * UI-P0-10/UI-P0-11: this viewport used to run its own `Escape` listener in
+   * parallel with the store's hotkey engine. The two disagreed: with a sketch line
+   * selected, the store would only deselect the line (leaving the sketch session
+   * alive) while this listener saw `activeTool === 'sketch'` and set `'select'` —
+   * producing a live sketch session whose rubber band had frozen, because
+   * `handleMouseMove` gated its preview update on `activeTool !== 'select'`.
+   *
+   * The store is now the single cancel path: it bumps `interactionResetToken` for
+   * Escape, for a tool change and at the end of a sketch, and this is the only
+   * place that clears the viewport's own in-progress points. `sketchStartPoint` is
+   * included, which the old tool-change effect missed — a pending sketch point
+   * survived cancel/finish and re-entered the next session as a phantom segment.
+   */
   useEffect(() => {
     setFirstPoint(null);
     setCurrentPoint(null);
-  }, [activeTool]);
+    setSketchStartPoint(null);
+    setIsEditingDim(false);
+    isPanningRef.current = false;
+  }, [interactionResetToken, activeTool]);
 
   // Mouse interaction: Panning vs Geometry Authoring
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -337,17 +370,28 @@ export const PlanViewport2D: React.FC = () => {
         });
 
         if (nearestWallGuid) {
+          // UI-P0-15: remember which element this placement touched so the click
+          // that follows this same mouse gesture does not also select it.
+          placementGuidRef.current = nearestWallGuid;
           if (activeTool === 'DR') {
             createDoor(nearestWallGuid, hostOffset);
           } else {
             createWindow(nearestWallGuid, hostOffset);
           }
+        } else {
+          // The pick is silently dropped today; say why rather than doing nothing.
+          setStatusMessage('No wall within reach — click on or near a wall to host the element.');
         }
       }
     }
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
+    // UI-P0-13: a pan with no button held means the mouse-up was missed (released
+    // off-canvas). Without this the plan kept panning on bare hover.
+    if (isPanningRef.current && (e.buttons & 1) === 0 && (e.buttons & 4) === 0) {
+      isPanningRef.current = false;
+    }
     if (isPanningRef.current) {
       const dx = e.clientX - startMouseRef.current.x;
       const dy = e.clientY - startMouseRef.current.y;
@@ -365,11 +409,48 @@ export const PlanViewport2D: React.FC = () => {
     isPanningRef.current = false;
   };
 
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const factor = e.deltaY > 0 ? 0.9 : 1.1;
-    setScale((s) => Math.max(8, Math.min(250, s * factor)));
+  /** A pointer that left the viewport must not leave a pan latched. */
+  const handlePointerLeave = () => {
+    isPanningRef.current = false;
   };
+
+  /**
+   * UI-P1-7 (part of UI-P0-6's event unification): zoom about the cursor.
+   *
+   * The React `onWheel` handler had two problems: `preventDefault()` is not
+   * reliable from a React-attached wheel listener, so the page could scroll behind
+   * the plan; and `pan` was never adjusted, so zooming was anchored to the
+   * transform origin rather than to the point under the pointer. A native
+   * non-passive listener on the container fixes both. Full zoom-to-cursor (keeping
+   * the *model* point fixed) moves `pan` as well; see UI-P1-7.
+   */
+  const wheelScaleRef = useRef(scale);
+  wheelScaleRef.current = scale;
+  const panRef = useRef(pan);
+  panRef.current = pan;
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = container.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const cursorY = event.clientY - rect.top;
+      const factor = event.deltaY > 0 ? 0.9 : 1.1;
+      const previous = wheelScaleRef.current;
+      const next = Math.max(8, Math.min(250, previous * factor));
+      if (next === previous) return;
+      // Keep the model point under the cursor fixed.
+      const modelX = (cursorX - panRef.current.x) / previous;
+      const modelY = -(cursorY - panRef.current.y) / previous;
+      setScale(next);
+      setPan({ x: cursorX - modelX * next, y: cursorY + modelY * next });
+    };
+    container.addEventListener('wheel', onWheel, { passive: false });
+    return () => container.removeEventListener('wheel', onWheel);
+  }, []);
 
   const fit2DToExtents = useCallback(() => {
     if (!sliced2D) return;
@@ -421,17 +502,40 @@ export const PlanViewport2D: React.FC = () => {
 
   const resetView = fit2DToExtents;
 
+  // UI-P0-6/UI-P0-28: `ZE` dispatches one shared event, and both viewports listen —
+  // previously only the 3D viewport did, so Zoom Extents did nothing in a plan.
   useEffect(() => {
-    if (
+    const handleZoomExtents = () => fit2DToExtents();
+    window.addEventListener(ZOOM_EXTENTS_EVENT, handleZoomExtents);
+    return () => window.removeEventListener(ZOOM_EXTENTS_EVENT, handleZoomExtents);
+  }, [fit2DToExtents]);
+
+  /**
+   * UI-P0-6: fit once per project, not after every edit.
+   *
+   * This used to run on every `sliced2D` identity change, and
+   * `executeTransaction` refetches the slice after every commit — so drawing a
+   * single wall re-fitted the view and threw away the user's pan and zoom. That is
+   * the 2D half of the camera-reset bug the 3D viewport had (U34).
+   */
+  const planFitProjectRef = useRef<string | null>(null);
+  const planHadContentRef = useRef(false);
+  useEffect(() => {
+    const hasContent = Boolean(
       sliced2D &&
-      (sliced2D.cut_paths?.length ||
-        sliced2D.projection_paths?.length ||
-        sliced2D.roofs?.length ||
-        sliced2D.slabs?.length)
-    ) {
+        (sliced2D.cut_paths?.length ||
+          sliced2D.projection_paths?.length ||
+          sliced2D.roofs?.length ||
+          sliced2D.slabs?.length)
+    );
+    const projectChanged = planFitProjectRef.current !== projectName;
+    const becameNonEmpty = hasContent && !planHadContentRef.current;
+    if (hasContent && (projectChanged || becameNonEmpty)) {
       fit2DToExtents();
+      planFitProjectRef.current = projectName;
     }
-  }, [sliced2D, fit2DToExtents]);
+    planHadContentRef.current = hasContent;
+  }, [sliced2D, fit2DToExtents, projectName]);
 
   const isDrawing = activeTool !== 'select' && activeTool !== 'AL';
 
@@ -444,7 +548,7 @@ export const PlanViewport2D: React.FC = () => {
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onWheel={handleWheel}
+      onMouseLeave={handlePointerLeave}
       onDoubleClick={handleDoubleClick}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -1026,15 +1130,17 @@ export const PlanViewport2D: React.FC = () => {
                         stroke="#ffffff"
                         strokeWidth="0.08"
                       >
-                        {`${Math.hypot(
-                          currentPoint[0] - sketchStartPoint[0],
-                          currentPoint[1] - sketchStartPoint[1]
-                        ).toFixed(2)}' (${(
+                        {/* UI-P0-2: this printed the same length twice — once with
+                            a foot mark and once multiplied by 3.28084 and also
+                            marked as feet — so a 12'-6" line read "12.50' (41.0')".
+                            One value, in the user's display unit. */}
+                        {formatLength(
                           Math.hypot(
                             currentPoint[0] - sketchStartPoint[0],
                             currentPoint[1] - sketchStartPoint[1]
-                          ) * 3.28084
-                        ).toFixed(1)}')`}
+                          ),
+                          displayUnit
+                        )}
                       </text>
                     </>
                   )}
@@ -1151,9 +1257,11 @@ export const PlanViewport2D: React.FC = () => {
                     stroke="#ffffff"
                     strokeWidth="0.08"
                   >
-                    {`${Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]).toFixed(2)}' (${(
-                      Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]) * 3.28084
-                    ).toFixed(1)}')`}
+                    {/* UI-P0-2: one value, in the user's display unit. */}
+                    {formatLength(
+                      Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]),
+                      displayUnit
+                    )}
                   </text>
                 </>
               )}
@@ -1166,12 +1274,15 @@ export const PlanViewport2D: React.FC = () => {
       {(() => {
         const currentView = views.find((v) => v.id === activeViewId) || {
           name: 'Floor Plan: Level 1',
-          viewRange: { cut: 1.2 },
+          viewRange: { cut: 4.0 },
         };
         return (
           <div className="absolute top-3 left-3 flex items-center space-x-2 bg-white/90 backdrop-blur px-3 py-1.5 rounded shadow border border-slate-300 text-xs text-slate-800 z-10 font-sans">
             <span className="font-bold">
-              {currentView.name} (Cut Plane: {(currentView.viewRange.cut * 3.28084).toFixed(0)}'-0" / {currentView.viewRange.cut}m)
+              {/* UI-P0-2: the cut plane is decimal feet, so this rendered the value
+                  in feet AND converted it as if it were metres — "(4'-0" / 4m)"
+                  for a 4 ft cut. One number, one unit. */}
+              {currentView.name} (Cut Plane: {formatLength(currentView.viewRange.cut ?? 4.0, displayUnit)})
             </span>
             <span className="text-slate-400">|</span>
             <button
@@ -1194,24 +1305,37 @@ export const PlanViewport2D: React.FC = () => {
               type="text"
               autoFocus
               value={editingDimValue}
+              placeholder={'12\'-6"'}
               onChange={(e) => setEditingDimValue(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
-                  const val = parseFloat(editingDimValue);
-                  if (!isNaN(val) && val > 0) {
-                    applyTemporaryDimensionChange(val);
+                  // UI-P0-2/UI-P1-5: this used `parseFloat`, so in an
+                  // imperial-fractional project (the default) typing the value the
+                  // app itself displays — 12'-6" — produced NaN and the edit was
+                  // silently thrown away with the box closing as if it had worked.
+                  // The field is now prefilled in the *display* unit and parsed by
+                  // the units engine; invalid text keeps the editor open and says so.
+                  const feet = tryParseLength(editingDimValue);
+                  if (feet === null || feet <= 0) {
+                    setStatusMessage(`Not a length: "${editingDimValue}". Try 12'-6", 12.5', or 3800 mm.`);
+                    return;
                   }
+                  applyTemporaryDimensionChange(feet);
                   setIsEditingDim(false);
                 } else if (e.key === 'Escape') {
+                  e.stopPropagation();
                   setIsEditingDim(false);
                 }
               }}
-              className="w-20 px-1 py-0.5 bg-black/50 text-white rounded border border-white text-xs font-mono"
+              className="w-24 px-1 py-0.5 bg-black/50 text-white rounded border border-white text-xs font-mono"
             />
           ) : (
             <span
               onClick={() => {
-                setEditingDimValue(tempDimension.distance.toFixed(2));
+                // Prefill in the unit actually on screen, so what the user sees is
+                // what they edit. This used to be decimal feet while the label read
+                // feet-inches.
+                setEditingDimValue(formatLength(tempDimension.distance, displayUnit));
                 setIsEditingDim(true);
               }}
               className="underline cursor-pointer hover:text-yellow-200"

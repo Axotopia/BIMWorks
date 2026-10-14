@@ -2,6 +2,7 @@ import React, { useRef, useEffect } from 'react';
 import { AlertCircle, AppWindow, Box, Check, DoorClosed, Download, Equal, Eye, FileSpreadsheet, FileText, FolderOpen, Globe, Grid, Home, Layers, Lock, Maximize2, PenTool, RotateCcw, RotateCw, Ruler, Save, Scissors, Settings, SlidersHorizontal, Sparkles, Square, Tag, Trash2, Upload, X } from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
 import { ActiveTool } from '../../types/bim';
+import { isToolImplemented } from '../../interaction/toolCaptions';
 
 export const Ribbon: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -26,6 +27,9 @@ export const Ribbon: React.FC = () => {
     setActiveViewId,
     setActiveSheetId,
     keyBuffer,
+    chainTools,
+    setChainTools,
+    equalizeSouthWallWindows,
     sketchSession,
     startSketchMode,
     cancelSketchMode,
@@ -35,11 +39,19 @@ export const Ribbon: React.FC = () => {
     deleteSelectedSketchLine,
     selectedGuid,
     meshes,
+    views,
+    sheets,
   } = useBimStore();
 
   const selectedMesh = meshes.find((m) => m.guid === selectedGuid);
   const isSelectedSlab = selectedMesh?.ifc_class === 'IfcSlab' && !selectedMesh?.name.toLowerCase().includes('roof');
   const isSelectedRoof = selectedMesh?.ifc_class === 'IfcRoof' || selectedMesh?.name.toLowerCase().includes('roof');
+
+  // UI-P0-14: the View tab's Section/Sheet buttons target real project content
+  // rather than fixed prototype panel ids that may not exist.
+  const firstPlan = views.find((v) => v.type === 'floor_plan');
+  const firstSection = views.find((v) => v.type === 'section' || v.type === 'elevation');
+  const firstSheet = sheets[0];
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -73,26 +85,40 @@ export const Ribbon: React.FC = () => {
 
   const tabs = ['Architecture', 'Annotate', 'View', 'Manage'] as const;
 
+  /**
+   * UI-P0-14: a tool button whose tool no viewport implements is rendered
+   * disabled with the reason, instead of being clickable and then doing nothing
+   * while the status bar claims a placement is in progress. UI-P2 replaces this
+   * with per-command `isEnabled`/`rejectedViewRules` queries; until then this is
+   * the honest minimum.
+   */
   const renderToolButton = (
     tool: ActiveTool,
     label: string,
     shortcut: string,
     icon: React.ReactNode,
-    onClick?: () => void
+    onClick?: () => void,
+    disabledReason?: string
   ) => {
     const isActive = activeTool === tool;
+    const disabled = Boolean(disabledReason);
     return (
       <button
         onClick={() => {
+          if (disabled) return;
           if (onClick) onClick();
           else setActiveTool(tool);
         }}
+        disabled={disabled}
+        aria-disabled={disabled}
         className={`flex flex-col items-center justify-center px-3 py-1.5 rounded transition-all group relative border ${
-          isActive
+          disabled
+            ? 'border-transparent text-[#5a5a5a] cursor-not-allowed'
+            : isActive
             ? 'bg-[#094771] border-[#007acc] text-white shadow-sm'
             : 'border-transparent hover:bg-[#333333] hover:border-[#444444] text-[#cccccc]'
         }`}
-        title={`${label} (${shortcut})`}
+        title={disabled ? `${label} — ${disabledReason}` : `${label} (${shortcut})`}
       >
         <div className="w-6 h-6 flex items-center justify-center mb-1 group-hover:scale-105 transition-transform">
           {icon}
@@ -104,6 +130,10 @@ export const Ribbon: React.FC = () => {
       </button>
     );
   };
+
+  /** A tool that no viewport implements yet. See `TOOL_CAPTIONS`. */
+  const notYet = (tool: ActiveTool) =>
+    isToolImplemented(tool) ? undefined : 'Not available yet — see the UI plan (UI-P2)';
 
   return (
     <div className="flex flex-col bg-[#252526] border-b border-[#3c3c3c] select-none text-[#cccccc] shadow-md z-30">
@@ -414,18 +444,57 @@ export const Ribbon: React.FC = () => {
               {renderToolButton('RF', 'Roof', 'RF', <Square size={20} className="text-[#ec4899]" />, () =>
                 startSketchMode('roof')
               )}
+
+              {/* UI-P0-1: Revit keeps a placement tool armed so N walls come from
+                  N+1 clicks. This is the only Options-Bar-style control for now;
+                  UI-P3 replaces it with a schema-driven bar per active command. */}
+              <label
+                className="flex flex-col items-center justify-center px-2 py-1.5 rounded border border-transparent hover:border-[#444444] cursor-pointer text-[#cccccc]"
+                title="Keep the placement tool armed after each element, so you can draw several in a row (Revit behaviour)."
+              >
+                <input
+                  type="checkbox"
+                  checked={chainTools}
+                  onChange={(e) => setChainTools(e.target.checked)}
+                  className="mb-1 rounded bg-[#1e1e1e] border-[#555555] text-[#007acc] focus:ring-0"
+                />
+                <span className="text-[11px] font-medium leading-none">Chain</span>
+              </label>
             </div>
 
             {/* Datum Panel */}
             <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
-              {renderToolButton('GR', 'Grid', 'GR', <Grid size={20} className="text-[#eab308]" />)}
-              {renderToolButton('LL', 'Level', 'LL', <Maximize2 size={20} className="text-[#10b981]" />)}
+              {renderToolButton(
+                'GR',
+                'Grid',
+                'GR',
+                <Grid size={20} className="text-[#eab308]" />,
+                undefined,
+                notYet('GR')
+              )}
+              {renderToolButton(
+                'LL',
+                'Level',
+                'LL',
+                <Maximize2 size={20} className="text-[#10b981]" />,
+                undefined,
+                notYet('LL')
+              )}
             </div>
 
             {/* Constraints & Modify Panel */}
             <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
               {renderToolButton('AL', 'Align & Lock', 'AL', <Lock size={20} className="text-[#38bdf8]" />)}
-              {renderToolButton('EQ', 'Equalize', 'EQ', <Equal size={20} className="text-[#10b981]" />)}
+              {/* UI-P0-14: the ribbon button used to arm a tool nothing consumes
+                  while the EQ *hotkey* ran the command directly, so the button and
+                  the key did different things. Both now run the same action. */}
+              {renderToolButton(
+                'EQ',
+                'Equalize',
+                'EQ',
+                <Equal size={20} className="text-[#10b981]" />,
+                () => equalizeSouthWallWindows()
+              )}
 
               {/* Contextual Edit Boundary / Edit Footprint buttons for selected element */}
               {isSelectedSlab && selectedGuid && (
@@ -503,10 +572,13 @@ export const Ribbon: React.FC = () => {
 
         {activeRibbonTab === 'Annotate' && (
           <div className="flex items-center space-x-2">
-            {renderToolButton('DI', 'Aligned Dim', 'DI', <Ruler size={20} className="text-[#38bdf8]" />)}
-            {renderToolButton('DL', 'Detail Line', 'DL', <PenTool size={20} className="text-[#e2e8f0]" />)}
-            {renderToolButton('TG', 'Tag Category', 'TG', <Tag size={20} className="text-[#f59e0b]" />)}
-            {renderToolButton('TX', 'Text', 'TX', <FileText size={20} className="text-[#10b981]" />)}
+            {/* UI-P0-14: these four armed a tool neither viewport implements. They
+                are shown disabled with the reason rather than pretending to work;
+                they return when annotation has a bus command and a viewport path. */}
+            {renderToolButton('DI', 'Aligned Dim', 'DI', <Ruler size={20} className="text-[#38bdf8]" />, undefined, notYet('DI'))}
+            {renderToolButton('DL', 'Detail Line', 'DL', <PenTool size={20} className="text-[#e2e8f0]" />, undefined, notYet('DL'))}
+            {renderToolButton('TG', 'Tag Category', 'TG', <Tag size={20} className="text-[#f59e0b]" />, undefined, notYet('TG'))}
+            {renderToolButton('TX', 'Text', 'TX', <FileText size={20} className="text-[#10b981]" />, undefined, notYet('TX'))}
           </div>
         )}
 
@@ -515,30 +587,38 @@ export const Ribbon: React.FC = () => {
             {renderToolButton(
               'select',
               'Default 3D',
-              '{3D}',
+              '3D',
               <Home size={20} className="text-[#38bdf8]" />,
               () => setActiveViewId('view-3d')
             )}
+            {/* UI-P0-14: these two used to hardcode `view-level-1` / `view-section-1`
+                / `sheet-a101`. When those panel ids were absent from the loaded
+                project the button did nothing at all, with no explanation. They now
+                follow the real project contents and say so when there is nothing
+                to open. */}
             {renderToolButton(
               'select',
               'Floor Plan',
               'L1',
               <Layers size={20} className="text-[#a855f7]" />,
-              () => setActiveViewId('view-level-1')
+              () => firstPlan && setActiveViewId(firstPlan.id),
+              firstPlan ? undefined : 'No floor plan in this project'
             )}
             {renderToolButton(
               'SEC',
               'Section',
               'SEC',
               <Scissors size={20} className="text-[#f97316]" />,
-              () => setActiveViewId('view-section-1')
+              () => firstSection && setActiveViewId(firstSection.id),
+              firstSection ? undefined : 'No section view in this project'
             )}
             {renderToolButton(
               'SHT',
               'Sheet',
               'SHT',
               <FileSpreadsheet size={20} className="text-[#10b981]" />,
-              () => setActiveSheetId('sheet-a101')
+              () => firstSheet && setActiveSheetId(firstSheet.id),
+              firstSheet ? undefined : 'No sheet in this project'
             )}
             {renderToolButton('BX', 'Section Box', 'BX', <Scissors size={20} className="text-[#ec4899]" />, () =>
               toggleSectionBox()
@@ -559,7 +639,7 @@ export const Ribbon: React.FC = () => {
             <button
               onClick={() => setGeoreferenceModalOpen(true)}
               className="flex flex-col items-center justify-center px-3 py-1.5 rounded hover:bg-[#333333] border border-transparent hover:border-[#444444]"
-              title="IFC4 Georeferencing &amp; Map Conversion"
+              title="IFC4 Georeferencing and Map Conversion"
             >
               <Globe size={20} className="text-[#38bdf8] mb-1" />
               <span className="text-[11px] font-medium">Georeferencing</span>

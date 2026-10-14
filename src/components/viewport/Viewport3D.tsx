@@ -1,14 +1,102 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
-import { useBimStore } from '../../store/useBimStore';
+import { useBimStore, ZOOM_EXTENTS_EVENT } from '../../store/useBimStore';
+import { formatLength, tryParseLength } from '../../utils/units';
 import { Scissors, Maximize, RotateCw, Move, Lock } from 'lucide-react';
+
+/**
+ * UI-P0-13: pointer capture over a React synthetic mouse event.
+ *
+ * The handlers stay `onMouse*` because three.js raycasting is driven from
+ * `clientX`/`clientY` and nothing here needs pressure or pointer type. Pointer
+ * capture is still the only way to be told about a button release that happens
+ * outside the viewport, and the native event underneath carries the pointer id
+ * that the synthetic event does not expose.
+ */
+type CaptureTarget = HTMLElement & {
+  setPointerCapture?: (id: number) => void;
+  releasePointerCapture?: (id: number) => void;
+  hasPointerCapture?: (id: number) => boolean;
+};
+
+function pointerIdOf(e: React.MouseEvent): number {
+  const native = e.nativeEvent as MouseEvent & { pointerId?: number };
+  return typeof native.pointerId === 'number' ? native.pointerId : 1;
+}
+
+/**
+ * UI-P0-12: release the GPU buffers a three.js object owns.
+ *
+ * The mesh effect tears down and rebuilds every element's geometry, edge lines and
+ * materials whenever the model, selection, hover, visibility or visual style
+ * changes — so a single wall edit reallocated the whole model on the GPU. Nothing
+ * was ever disposed (the only `dispose()` in the file was `renderer.dispose()` on
+ * unmount), a steady leak that shows up as the app getting heavier the longer a
+ * session runs and eventually as a lost WebGL context.
+ *
+ * `shared` geometries/materials are skipped because three.js refcounts nothing:
+ * disposing something another mesh still uses would blank that mesh.
+ */
+function disposeObject(object: THREE.Object3D): void {
+  const maybeDispose = (resource: unknown) => {
+    const disposable = resource as { dispose?: () => void; userData?: { shared?: boolean } } | undefined;
+    if (disposable && typeof disposable.dispose === 'function' && !disposable.userData?.shared) {
+      disposable.dispose();
+    }
+  };
+  object.traverse((child) => {
+    const mesh = child as THREE.Mesh | THREE.LineSegments;
+    maybeDispose(mesh.geometry);
+    const material = (mesh as THREE.Mesh).material;
+    if (Array.isArray(material)) material.forEach(maybeDispose);
+    else maybeDispose(material);
+  });
+}
+
+/**
+ * Both wall classes the engine emits. The door/window host filter used to accept
+ * only `IfcWallStandardCase`, so a click on an `IfcWall` did nothing at all.
+ */
+const HOSTABLE_WALL_CLASSES = ['IfcWallStandardCase', 'IfcWall'];
+
+/**
+ * UI-P0-15: the distance along a wall's baseline, from its start point, of the
+ * point the user actually clicked.
+ *
+ * The old 3D behaviour was `Math.max(0.8, Math.hypot(hit.point.x, hit.point.y) *
+ * 0.4)` — a function of the hit point's distance from the *world origin*, clamped
+ * to a 0.8 ft minimum. It was unrelated to the wall's start, its length, or where
+ * the ray struck, so a door landed in an arbitrary place that changed if the model
+ * moved. This projects onto the real baseline instead, which is what the 2D
+ * viewport already did correctly.
+ */
+function offsetAlongBaseline(
+  host: { start?: [number, number, number]; end?: [number, number, number]; length?: number } | undefined,
+  point: THREE.Vector3
+): number {
+  if (!host?.start || !host?.end) return 0;
+  const [sx, sy] = host.start;
+  const [ex, ey] = host.end;
+  const length = Math.hypot(ex - sx, ey - sy);
+  if (length < 1e-6) return 0;
+  const ux = (ex - sx) / length;
+  const uy = (ey - sy) / length;
+  const projected = (point.x - sx) * ux + (point.y - sy) * uy;
+  // Keep the element on its host rather than hanging off an end.
+  return Math.max(0, Math.min(length, projected));
+}
 
 export const Viewport3D: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
+  /** Set while a placement mousedown is completing, so the click that follows the
+   *  same gesture does not also re-select the host. */
+  const placementGuidRef = useRef<string | null>(null);
+
   const {
     meshes,
+    elements,
     grids,
     levels,
     selectedGuid,
@@ -37,6 +125,9 @@ export const Viewport3D: React.FC = () => {
     startSketchMode,
     cancelSketchMode,
     finishSketchMode,
+    interactionResetToken,
+    setStatusMessage,
+    displayUnit,
   } = useBimStore();
 
   // Internal Three.js state
@@ -67,6 +158,39 @@ export const Viewport3D: React.FC = () => {
 
   const [editingDimValue, setEditingDimValue] = useState<string>('');
   const [isEditingDim, setIsEditingDim] = useState<boolean>(false);
+
+  /**
+   * UI-P0-10/UI-P0-11: discard every piece of in-progress interaction state.
+   *
+   * These live in the component, so the store cannot clear them itself; the store
+   * bumps `interactionResetToken` instead and this effect responds. It runs for
+   * Escape, for a tool change and at the end of a sketch — one cancel path rather
+   * than the two Escape listeners that used to disagree.
+   *
+   * This matters beyond tidiness: pressing WA, clicking once, pressing Escape and
+   * then clicking again used to complete a wall from the *pre-Escape* first point,
+   * producing geometry the user had explicitly cancelled. Switching RF→SB reused
+   * one shared box slot, so the floor inherited the roof's first corner.
+   */
+  useEffect(() => {
+    setWallStartPoint(null);
+    setWallCurrentPoint(null);
+    setBoxStartPoint(null);
+    setBoxCurrentPoint(null);
+    setIsEditingDim(false);
+    setEditingDimValue('');
+    isNavigatingRef.current.mode = null;
+    // `activeTool` is a belt-and-braces dependency: `setActiveTool` also bumps the
+    // token, but a tool armed by any route must clear a half-finished pick.
+  }, [interactionResetToken, activeTool]);
+
+  // UI-P0-12: a closed dimension editor must not survive its dimension.
+  useEffect(() => {
+    if (!tempDimension) {
+      setIsEditingDim(false);
+      setEditingDimValue('');
+    }
+  }, [tempDimension]);
 
   // Camera targets & orbit angles (Z-up coordinate system)
   const targetRef = useRef<THREE.Vector3>(new THREE.Vector3(6, 4.5, 1.5));
@@ -147,6 +271,24 @@ export const Viewport3D: React.FC = () => {
     gridHelper.rotation.x = Math.PI / 2; // Lie flat in XY plane
     scene.add(gridHelper);
 
+    // UI-P0-13: a wheel listener registered natively with `passive: false`.
+    // React attaches `wheel` passively at the root container, so the
+    // `e.preventDefault()` both viewports called could not reliably stop the page
+    // from scrolling behind the app while the camera zoomed. Capturing here and
+    // stopping propagation is what actually keeps the gesture inside the viewport.
+    const handleNativeWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const zoomFactor = event.deltaY > 0 ? 1.15 : 0.85;
+      sphericalRef.current.radius = Math.max(
+        0.5,
+        Math.min(10000, sphericalRef.current.radius * zoomFactor)
+      );
+      updateCameraPosition();
+    };
+    const wheelTarget = canvasRef.current;
+    wheelTarget?.addEventListener('wheel', handleNativeWheel, { passive: false });
+
     // Render loop
     let animationFrameId: number;
     const animate = () => {
@@ -177,7 +319,17 @@ export const Viewport3D: React.FC = () => {
     return () => {
       cancelAnimationFrame(animationFrameId);
       window.removeEventListener('resize', handleResize);
+      wheelTarget?.removeEventListener('wheel', handleNativeWheel);
       resizeObserver.disconnect();
+      // UI-P0-12: release the scene's own resources too, not just the renderer.
+      // The section-box wireframe previously outlived the viewport entirely.
+      if (sectionBoxMeshRef.current) {
+        disposeObject(sectionBoxMeshRef.current);
+        sectionBoxMeshRef.current = null;
+      }
+      gridHelper.geometry.dispose();
+      if (Array.isArray(gridHelper.material)) gridHelper.material.forEach((m) => m.dispose());
+      else gridHelper.material?.dispose();
       renderer.dispose();
     };
   }, [updateCameraPosition]);
@@ -202,10 +354,15 @@ export const Viewport3D: React.FC = () => {
 
       // Draw wireframe Section Box bounding box
       if (sectionBoxMeshRef.current) {
+        // UI-P0-12: disposing the previous wireframe's geometry/material, not just
+        // detaching it, was missing here and in every other replacement path.
+        disposeObject(sectionBoxMeshRef.current);
         sceneRef.current.remove(sectionBoxMeshRef.current);
       }
       const boxGeom = new THREE.BoxGeometry(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
       const edges = new THREE.EdgesGeometry(boxGeom);
+      // The BoxGeometry only exists to derive the wireframe edges.
+      boxGeom.dispose();
       const line = new THREE.LineSegments(
         edges,
         new THREE.LineBasicMaterial({ color: 0x38bdf8, linewidth: 2 })
@@ -221,6 +378,7 @@ export const Viewport3D: React.FC = () => {
       clippingPlanesRef.current = [];
       rendererRef.current.clippingPlanes = [];
       if (sectionBoxMeshRef.current && sceneRef.current) {
+        disposeObject(sectionBoxMeshRef.current);
         sceneRef.current.remove(sectionBoxMeshRef.current);
         sectionBoxMeshRef.current = null;
       }
@@ -232,8 +390,12 @@ export const Viewport3D: React.FC = () => {
     const scene = sceneRef.current;
     if (!scene) return;
 
-    // Clear previous elements
-    threeMeshesRef.current.forEach((mesh) => scene.remove(mesh));
+    // Clear previous elements. UI-P0-12: dispose, do not merely detach — this runs
+    // on every model/selection/hover/style change.
+    threeMeshesRef.current.forEach((mesh) => {
+      scene.remove(mesh);
+      disposeObject(mesh);
+    });
     threeMeshesRef.current.clear();
 
     meshes.forEach((mData) => {
@@ -326,6 +488,13 @@ export const Viewport3D: React.FC = () => {
   // - Wheel: Zoom
   // - Z+E: Zoom Extents
   const handleMouseDown = (e: React.MouseEvent) => {
+    // UI-P0-13: capture the pointer so a drag that leaves the viewport still ends
+    // here. Mouse-up used to be bound to this div only, with no capture and no
+    // mouse-leave, so releasing the button outside the canvas left the navigation
+    // mode latched and the model panned/orbited on every subsequent bare move.
+    const target = e.currentTarget as CaptureTarget;
+    target.setPointerCapture?.(pointerIdOf(e));
+
     // Determine navigation mode
     if (e.button === 1) {
       // Middle Mouse Button
@@ -358,7 +527,8 @@ export const Viewport3D: React.FC = () => {
         raycaster.ray.intersectPlane(groundPlane, intersectPt);
 
         if (!wallStartPoint) {
-          // First point: snap to nearest 0.5m
+          // First point: quantised to a 0.5 ft (6 in) grid. UI-P0-8: the comment
+          // said 0.5 m. UI-P1-3 replaces this with the shared SnapEngine.
           const x = Math.round(intersectPt.x * 2) / 2;
           const y = Math.round(intersectPt.y * 2) / 2;
           setWallStartPoint([x, y, 0]);
@@ -427,21 +597,28 @@ export const Viewport3D: React.FC = () => {
 
       // Tool: Door (DR) or Window (WN) placement
       if (activeTool === 'DR' || activeTool === 'WN') {
-        const wallMeshes = Array.from(threeMeshesRef.current.values()).filter(
-          (m) => m.userData.ifc_class === 'IfcWallStandardCase'
+        // UI-P0-15: the host filter only accepted `IfcWallStandardCase`, but the
+        // engine also emits `IfcWall`, so on those walls the click was silently
+        // swallowed. Both classes are hostable.
+        const wallMeshes = Array.from(threeMeshesRef.current.values()).filter((m) =>
+          HOSTABLE_WALL_CLASSES.includes(m.userData.ifc_class)
         );
         const intersects = raycaster.intersectObjects(wallMeshes, false);
         if (intersects.length > 0) {
           const hit = intersects[0];
           const hostWallGuid = hit.object.userData.guid;
-          // Approximate offset along wall baseline
-          const offset = Math.max(0.8, Math.hypot(hit.point.x, hit.point.y) * 0.4);
+          const host = elements[hostWallGuid];
+          const offset = offsetAlongBaseline(host, hit.point);
 
           if (activeTool === 'DR') {
             createDoor(hostWallGuid, offset);
           } else {
             createWindow(hostWallGuid, offset);
           }
+          // UI-P0-15: the click that placed the element must not also re-select it.
+          placementGuidRef.current = hostWallGuid;
+        } else {
+          setStatusMessage('Click on a wall to host the door or window.');
         }
         return;
       }
@@ -454,14 +631,28 @@ export const Viewport3D: React.FC = () => {
           const hitGuid = intersects[0].object.userData.guid;
           if (!alignPickState.refGuid) {
             setAlignPickState({ step: 'pick_target', refGuid: hitGuid });
-          } else {
+          } else if (alignPickState.refGuid !== hitGuid) {
             createAlignConstraint(alignPickState.refGuid, hitGuid, 'x', true);
+          } else {
+            // UI-P0-15: aligning an element to itself used to be a valid command.
+            setStatusMessage('Pick a different element to align to the reference.');
           }
+        } else {
+          setStatusMessage('Pick an element to align.');
         }
         return;
       }
 
-      // Tool: Select (default)
+      // Tool: Select (default). UI-P0-15: a click that just completed a placement
+      // is consumed by that placement, so drawing does not also re-select.
+      if (placementGuidRef.current) {
+        const consumed = placementGuidRef.current;
+        placementGuidRef.current = null;
+        const meshesList = Array.from(threeMeshesRef.current.values());
+        const intersects = raycaster.intersectObjects(meshesList, false);
+        if (intersects.length > 0 && intersects[0].object.userData.guid === consumed) return;
+      }
+
       const meshesList = Array.from(threeMeshesRef.current.values());
       const intersects = raycaster.intersectObjects(meshesList, false);
 
@@ -475,6 +666,13 @@ export const Viewport3D: React.FC = () => {
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
+    // UI-P0-13: a navigation mode with no button held means the gesture's mouse-up
+    // was missed (released off-canvas before capture existed, or a blink). Ending it
+    // here is what stops the "the model pans whenever I move the mouse" state.
+    if (isNavigatingRef.current.mode && (e.buttons & 4) === 0) {
+      isNavigatingRef.current.mode = null;
+    }
+
     // Navigation handling
     if (isNavigatingRef.current.mode) {
       const dx = e.clientX - isNavigatingRef.current.startX;
@@ -549,7 +747,18 @@ export const Viewport3D: React.FC = () => {
     }
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (e: React.MouseEvent) => {
+    isNavigatingRef.current.mode = null;
+    // UI-P0-13: release the capture taken on mousedown.
+    const target = e.currentTarget as CaptureTarget;
+    const id = pointerIdOf(e);
+    if (target.hasPointerCapture?.(id)) {
+      target.releasePointerCapture?.(id);
+    }
+  };
+
+  /** A pointer that left the viewport must not leave a gesture latched. */
+  const handlePointerLeave = () => {
     isNavigatingRef.current.mode = null;
   };
 
@@ -588,29 +797,35 @@ export const Viewport3D: React.FC = () => {
     }
   }, [meshes, updateCameraPosition]);
 
-  // Auto-fit extents when a new model is loaded
+  // Auto-fit extents when a new model is loaded.
+  //
+  // UI-P0-6: the original condition was
+  //   projectName changed OR meshes.length !== 0
+  // and the second clause is true whenever anything is loaded, so this refit on
+  // every `meshes` identity change — i.e. after every single edit — throwing away
+  // the camera the user had just positioned. `fitToExtents` also gets a new
+  // identity on every mesh update, which re-fired the effect. Fit once per project,
+  // and when the model goes from empty to non-empty.
   const prevProjectRef = useRef<string>(projectName);
+  const hadMeshesRef = useRef<boolean>(meshes.length > 0);
   useEffect(() => {
-    if (meshes.length > 0 && (prevProjectRef.current !== projectName || meshes.length !== 0)) {
+    const projectChanged = prevProjectRef.current !== projectName;
+    const becameNonEmpty = meshes.length > 0 && !hadMeshesRef.current;
+    if (meshes.length > 0 && (projectChanged || becameNonEmpty)) {
       fitToExtents();
       prevProjectRef.current = projectName;
     }
+    hadMeshesRef.current = meshes.length > 0;
   }, [projectName, meshes.length, fitToExtents]);
 
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const zoomFactor = e.deltaY > 0 ? 1.15 : 0.85;
-    sphericalRef.current.radius = Math.max(0.5, Math.min(10000, sphericalRef.current.radius * zoomFactor));
-    updateCameraPosition();
-  };
-
-  // Zoom Extents listener
+  // Zoom Extents listener. UI-P0-6: one shared event name, and the 2D viewport
+  // listens to the same one so `ZE` works in a plan view as well as in 3D.
   useEffect(() => {
     const handleZoomExtents = () => {
       fitToExtents();
     };
-    window.addEventListener('orlt-zoom-extents', handleZoomExtents);
-    return () => window.removeEventListener('orlt-zoom-extents', handleZoomExtents);
+    window.addEventListener(ZOOM_EXTENTS_EVENT, handleZoomExtents);
+    return () => window.removeEventListener(ZOOM_EXTENTS_EVENT, handleZoomExtents);
   }, [fitToExtents]);
 
   // Double-click to invoke Revit Sketch Mode on Floor or Roof
@@ -650,8 +865,8 @@ export const Viewport3D: React.FC = () => {
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
+      onMouseLeave={handlePointerLeave}
       onDoubleClick={handleDoubleClick}
-      onWheel={handleWheel}
       onContextMenu={(e) => e.preventDefault()}
     >
       <canvas ref={canvasRef} className="w-full h-full block" />
@@ -683,7 +898,7 @@ export const Viewport3D: React.FC = () => {
         <span className="font-semibold text-white">Default 3D View: {'{3D}'}</span>
         <span className="text-[#858585]">|</span>
         <button
-          onClick={() => window.dispatchEvent(new CustomEvent('orlt-zoom-extents'))}
+          onClick={() => window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT))}
           className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
           title="Zoom Extents (ZE or Double-Click MMB)"
         >
@@ -700,24 +915,31 @@ export const Viewport3D: React.FC = () => {
               type="text"
               autoFocus
               value={editingDimValue}
+              placeholder={'12\'-6"'}
               onChange={(e) => setEditingDimValue(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
-                  const val = parseFloat(editingDimValue);
-                  if (!isNaN(val) && val > 0) {
-                    applyTemporaryDimensionChange(val);
+                  // UI-P0-2/UI-P1-5: same defect as the plan viewport — `parseFloat`
+                  // rejected the app's own imperial-fractional display, so typing
+                  // 12'-6" did nothing and the editor closed as if it had committed.
+                  const feet = tryParseLength(editingDimValue);
+                  if (feet === null || feet <= 0) {
+                    setStatusMessage(`Not a length: "${editingDimValue}". Try 12'-6", 12.5', or 3800 mm.`);
+                    return;
                   }
+                  applyTemporaryDimensionChange(feet);
                   setIsEditingDim(false);
                 } else if (e.key === 'Escape') {
+                  e.stopPropagation();
                   setIsEditingDim(false);
                 }
               }}
-              className="w-20 px-1 py-0.5 bg-black/50 text-white rounded border border-white text-xs font-mono"
+              className="w-24 px-1 py-0.5 bg-black/50 text-white rounded border border-white text-xs font-mono"
             />
           ) : (
             <span
               onClick={() => {
-                setEditingDimValue(tempDimension.distance.toFixed(2));
+                setEditingDimValue(formatLength(tempDimension.distance, displayUnit));
                 setIsEditingDim(true);
               }}
               className="underline cursor-pointer hover:text-yellow-200"
@@ -736,18 +958,22 @@ export const Viewport3D: React.FC = () => {
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
           <span>
             {wallStartPoint
-              ? `Click endpoint to complete wall (${(
+              ? `Click endpoint to complete wall (${formatLength(
                   Math.hypot(
                     (wallCurrentPoint?.[0] || 0) - wallStartPoint[0],
                     (wallCurrentPoint?.[1] || 0) - wallStartPoint[1]
-                  )
-                ).toFixed(2)} m)`
+                  ),
+                  displayUnit
+                )})`
               : 'Click start point for wall baseline'}
           </span>
           <button
             onClick={() => {
+              // UI-P0-11: clear both points, not just the start. The original left
+              // `wallCurrentPoint` behind, so the banner kept showing a stale length.
               setActiveTool('select');
               setWallStartPoint(null);
+              setWallCurrentPoint(null);
             }}
             className="px-2 py-0.5 bg-[#3c3c3c] hover:bg-[#4a4a4a] rounded text-[10px]"
           >
@@ -762,7 +988,10 @@ export const Viewport3D: React.FC = () => {
           <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
           <span>
             {boxStartPoint
-              ? `Click opposite corner to complete roof (${Math.abs((boxCurrentPoint?.[0] || 0) - boxStartPoint[0]).toFixed(1)}' × ${Math.abs((boxCurrentPoint?.[1] || 0) - boxStartPoint[1]).toFixed(1)}')`
+              ? `Click opposite corner to complete roof (${formatLength(
+                  Math.abs((boxCurrentPoint?.[0] || 0) - boxStartPoint[0]),
+                  displayUnit
+                )} × ${formatLength(Math.abs((boxCurrentPoint?.[1] || 0) - boxStartPoint[1]), displayUnit)})`
               : 'Click 1st corner for roof boundary footprint'}
           </span>
           <button
@@ -784,7 +1013,10 @@ export const Viewport3D: React.FC = () => {
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
           <span>
             {boxStartPoint
-              ? `Click opposite corner to complete floor slab (${Math.abs((boxCurrentPoint?.[0] || 0) - boxStartPoint[0]).toFixed(1)}' × ${Math.abs((boxCurrentPoint?.[1] || 0) - boxStartPoint[1]).toFixed(1)}')`
+              ? `Click opposite corner to complete floor slab (${formatLength(
+                  Math.abs((boxCurrentPoint?.[0] || 0) - boxStartPoint[0]),
+                  displayUnit
+                )} × ${formatLength(Math.abs((boxCurrentPoint?.[1] || 0) - boxStartPoint[1]), displayUnit)})`
               : 'Click 1st corner for floor slab boundary'}
           </span>
           <button

@@ -19,9 +19,71 @@ import {
   SketchLine,
   SketchDrawTool,
 } from '../types/bim';
-import { UnitSystem } from '../utils/units';
+import { UnitSystem, formatLength } from '../utils/units';
 
 const API_BASE = '/api';
+
+/**
+ * UI-P0-6: the single name for the cross-viewport Zoom Extents request. It was
+ * spelled `orlt-zoom-extents` — the pre-rename prototype name — in three places,
+ * and only the 3D viewport listened, so `ZE` silently did nothing in a plan view.
+ */
+export const ZOOM_EXTENTS_EVENT = 'bimworks-zoom-extents';
+
+/**
+ * UI-P0-10/UI-P0-11: interaction state that lives inside a viewport component
+ * (an in-progress wall start point, a first box corner, a pending sketch point,
+ * an open dimension editor) cannot be reset by the store directly. Instead the
+ * store bumps a counter and every viewport clears its own in-progress state when
+ * it changes. One cancel path, no duplicate Escape listeners.
+ *
+ * `reason` is carried for debugging only — the viewports clear everything either
+ * way, because a half-cleared editor is how a stale first point ends up
+ * completing a wall the user thought they had cancelled.
+ */
+export type InteractionResetReason = 'escape' | 'tool-change' | 'sketch-cancel' | 'sketch-finish';
+
+/**
+ * UI-P0-3: every mutation wrapper used to be `catch (e) { console.error(...) }`,
+ * so a rejected command was invisible: the click did nothing and the status bar
+ * still said "Ready". A user cannot tell a validation refusal from a bug from a
+ * dead button. This reports the engine's own message (FastAPI puts the reason in
+ * `detail`) into the status bar and returns it for callers that want to react.
+ */
+function failureMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error) return error;
+  return 'Command failed';
+}
+
+/**
+ * Turns an HTTP error body from the FastAPI sidecar into one readable line.
+ * Handles both shapes it actually produces: a plain string, and a Pydantic
+ * `detail` list of `{ loc, msg }` objects. Returns a non-empty string always.
+ */
+function describeApiError(detail: unknown): string {
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail.map((item) => {
+      if (typeof item === 'string') return item;
+      if (item && typeof item === 'object') {
+        const rec = item as { loc?: unknown[]; msg?: string; type?: string };
+        const field = Array.isArray(rec.loc) ? rec.loc.filter((p) => p !== 'body').join('.') : '';
+        const msg = rec.msg || rec.type || 'invalid';
+        return field ? `${field}: ${msg}` : msg;
+      }
+      return String(item);
+    });
+    if (parts.length) return parts.join('; ');
+  }
+  if (detail && typeof detail === 'object') {
+    const rec = detail as { msg?: string; message?: string };
+    if (rec.msg) return rec.msg;
+    if (rec.message) return rec.message;
+  }
+  return 'Transaction failed';
+}
+
 
 /**
  * P1 — every editing action the UI can perform maps to a typed CommandBus
@@ -207,6 +269,29 @@ interface BimStoreState {
   activeTool: ActiveTool;
   keyBuffer: string;
   keyBufferTimeout: any;
+  /**
+   * Bumped whenever in-progress interaction state held inside a viewport must be
+   * discarded (Escape, a tool change, or ending a sketch session). See
+   * `InteractionResetReason`.
+   */
+  interactionResetToken: number;
+  interactionResetReason: InteractionResetReason | null;
+  resetInteraction: (reason: InteractionResetReason) => void;
+  /**
+   * UI-P0-1: Revit keeps a placement tool armed until you cancel it, so you draw
+   * N walls from N+1 clicks. BIMWorks ended every placement by switching back to
+   * `select`, making a room cost one ribbon click per wall. `chainTools` defaults
+   * to that Revit behaviour; the Options Bar (UI-P3) will expose it per command.
+   */
+  chainTools: boolean;
+  setChainTools: (enabled: boolean) => void;
+  /** Applied after a placement completes; honours `chainTools` (UI-P0-1). */
+  completePlacement: () => void;
+  /**
+   * UI-P0-9: the Delete/Backspace key. Lives here rather than in `App.tsx` so the
+   * sketch-vs-model decision is in one place and is unit-testable.
+   */
+  handleDeleteKey: () => void;
 
   // Views & Sheets
   views: ViewDefinition[];
@@ -269,7 +354,7 @@ interface BimStoreState {
 
   // Actions
   setActiveRibbonTab: (tab: BimStoreState['activeRibbonTab']) => void;
-  setActiveTool: (tool: ActiveTool) => void;
+  setActiveTool: (tool: ActiveTool, ribbonTab?: BimStoreState['activeRibbonTab']) => void;
   handleKeyStroke: (key: string) => void;
   clearKeyBuffer: () => void;
 
@@ -395,11 +480,24 @@ interface BimStoreState {
   setSketchParam: (key: 'elevation' | 'thickness' | 'pitch' | 'defaultDefinesSlope' | 'defaultSlopeAngle' | 'defaultOverhang', value: any) => void;
 }
 
+// UI-P0-5: view-range offsets are DECIMAL FEET, which is what the engine, the
+// `/api/slice/2d` route (default 4.0) and the View Range dialog all use. The seeds
+// here were the old metre numbers (2.3 / 1.2 / 0) left over from before the units
+// boundary landed, so the app's own default plan cut 1.2 ft above the floor —
+// below the 6 ft not-cut rule, i.e. below every door head — while the dialog and
+// the backend both said 4 ft. One number, three components, and the lowest won.
+const DEFAULT_VIEW_RANGE = { top: 8.0, cut: 4.0, bottom: 0.0, viewDepth: 0.0 } as const;
+const ROOF_VIEW_RANGE = { top: 30.0, cut: 20.0, bottom: 0.0, viewDepth: 0.0 } as const;
+
 export const useBimStore = create<BimStoreState>((set, get) => ({
   activeRibbonTab: 'Architecture',
   activeTool: 'select',
   keyBuffer: '',
   keyBufferTimeout: null,
+  interactionResetToken: 0,
+  interactionResetReason: null,
+  chainTools: true,
+  setChainTools: (enabled) => set({ chainTools: enabled }),
 
   projectName: 'BIMWorks Architectural Project',
   levels: [
@@ -415,7 +513,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       scale: '1/8" = 1\'-0"',
       detailLevel: 'medium',
       visualStyle: 'consistent_colors',
-      viewRange: { top: 2.3, cut: 1.2, bottom: 0.0, viewDepth: 0.0 },
+      viewRange: { ...DEFAULT_VIEW_RANGE },
       sectionBox: { enabled: false, min: [-2, -2, -0.5], max: [14, 11, 4.0] },
     },
     {
@@ -426,7 +524,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       scale: '1/4" = 1\'-0"',
       detailLevel: 'medium',
       visualStyle: 'hidden_line',
-      viewRange: { top: 2.3, cut: 1.2, bottom: 0.0, viewDepth: 0.0 },
+      viewRange: { ...DEFAULT_VIEW_RANGE },
     },
     {
       id: 'view-level-2',
@@ -436,7 +534,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       scale: '1/4" = 1\'-0"',
       detailLevel: 'medium',
       visualStyle: 'hidden_line',
-      viewRange: { top: 2.3, cut: 1.2, bottom: 0.0, viewDepth: 0.0 },
+      viewRange: { ...DEFAULT_VIEW_RANGE },
     },
     {
       id: 'view-roof-plan',
@@ -446,7 +544,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       scale: '1/4" = 1\'-0"',
       detailLevel: 'medium',
       visualStyle: 'hidden_line',
-      viewRange: { top: 15.0, cut: 8.0, bottom: 0.0, viewDepth: 0.0 },
+      viewRange: { ...ROOF_VIEW_RANGE },
     },
     {
       id: 'view-section-1',
@@ -455,7 +553,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       scale: '1/4" = 1\'-0"',
       detailLevel: 'fine',
       visualStyle: 'hidden_line',
-      viewRange: { top: 6.0, cut: 1.2, bottom: 0.0, viewDepth: 0.0 },
+      viewRange: { ...DEFAULT_VIEW_RANGE },
     },
   ],
   activeViewId: 'view-3d',
@@ -515,12 +613,17 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   isolatedGuids: [],
   tempDimension: null,
 
+  // UI-P0-7: UNSET, and it means it. These were a real NAD83 / Washington North
+  // survey position (~1,275,432 E, 234,568 N), so the Georeferencing dialog opened
+  // pre-filled with coordinates belonging to nobody and a save could write them
+  // into the file's IfcMapConversion. An empty `projected_crs` is the "not set"
+  // state; the backend writes no georeferencing until the user chooses one.
   georeference: {
-    projected_crs: 'EPSG:2285 - NAD83 / Washington North',
-    eastings: 1275432.10,
-    northings: 234567.89,
-    elevation: 45.0,
-    true_north: 12.5,
+    projected_crs: '',
+    eastings: 0.0,
+    northings: 0.0,
+    elevation: 0.0,
+    true_north: 0.0,
     scale: 1.0,
   },
 
@@ -552,13 +655,25 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   // Actions
   setActiveRibbonTab: (tab) => set({ activeRibbonTab: tab }),
-  setActiveTool: (tool) => {
+  setActiveTool: (tool, ribbonTab) => {
+    const previous = get().activeTool;
+    const base = ribbonTab ? { activeRibbonTab: ribbonTab } : {};
     if (tool === 'AL') {
-      set({ activeTool: 'AL', alignPickState: { step: 'pick_ref', refGuid: null } });
+      set({ ...base, activeTool: 'AL', alignPickState: { step: 'pick_ref', refGuid: null } });
     } else {
-      set({ activeTool: tool, alignPickState: { step: null, refGuid: null } });
+      set({ ...base, activeTool: tool, alignPickState: { step: null, refGuid: null } });
     }
+    // UI-P0-11: switching tools discards any half-finished pick from the previous
+    // tool. Without this, `boxStartPoint` was shared by Roof and Floor, so clicking
+    // "Slab" after starting a roof silently reused the roof's first corner.
+    if (previous !== tool) get().resetInteraction('tool-change');
   },
+
+  resetInteraction: (reason) =>
+    set((state) => ({
+      interactionResetToken: state.interactionResetToken + 1,
+      interactionResetReason: reason,
+    })),
 
   // Revit Two-Letter Non-Modifier Hotkey Engine (1000ms debounce)
   handleKeyStroke: (key) => {
@@ -582,6 +697,11 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         tempDimension: null,
         alignPickState: { step: null, refGuid: null },
       });
+      // UI-P0-10: this is the *only* Escape path now. It must also discard
+      // in-progress viewport state (a first wall point, a first box corner, a
+      // pending sketch point, an open dimension editor), which previously survived
+      // the cancel and let the next click complete geometry from a stale point.
+      get().resetInteraction('escape');
       return;
     }
 
@@ -591,11 +711,19 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       return;
     }
 
-    // Hotkey lookup table
+    // Hotkey lookup table.
+    //
+    // UI-P0-14: only tools that a viewport actually implements are bound here.
+    // GR/LL/DI/DL/TG/TX/SEC/SHT used to be listed, but they only set `activeTool`
+    // to a value neither viewport consumes — the tool armed, the cursor turned into
+    // a crosshair, and the status bar said "Click in viewport to place" while
+    // nothing could happen. They come back with the command registry (UI-P2) and
+    // the Options Bar (UI-P3). EQ has a real bus command today, so its key keeps
+    // working and now matches what the ribbon button does.
     const hotkeys: Record<string, () => void> = {
-      WA: () => set({ activeTool: 'WA', activeRibbonTab: 'Architecture' }),
-      DR: () => set({ activeTool: 'DR', activeRibbonTab: 'Architecture' }),
-      WN: () => set({ activeTool: 'WN', activeRibbonTab: 'Architecture' }),
+      WA: () => get().setActiveTool('WA', 'Architecture'),
+      DR: () => get().setActiveTool('DR', 'Architecture'),
+      WN: () => get().setActiveTool('WN', 'Architecture'),
       SB: () => get().startSketchMode('floor'),
       RF: () => get().startSketchMode('roof'),
       LI: () => {
@@ -607,28 +735,17 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       PW: () => {
         if (get().sketchSession) get().setSketchDrawTool('pick_walls');
       },
-      GR: () => set({ activeTool: 'GR', activeRibbonTab: 'Architecture' }),
-      LL: () => set({ activeTool: 'LL', activeRibbonTab: 'Architecture' }),
-      DI: () => set({ activeTool: 'DI', activeRibbonTab: 'Annotate' }),
-      DL: () => set({ activeTool: 'DL', activeRibbonTab: 'Annotate' }),
-      TG: () => set({ activeTool: 'TG', activeRibbonTab: 'Annotate' }),
-      TX: () => set({ activeTool: 'TX', activeRibbonTab: 'Annotate' }),
-      SEC: () => set({ activeTool: 'SEC', activeRibbonTab: 'View' }),
-      SHT: () => set({ activeTool: 'SHT', activeRibbonTab: 'View' }),
       BX: () => get().toggleSectionBox(),
       AL: () =>
-        set({
-          activeTool: 'AL',
-          activeRibbonTab: 'Architecture',
-          alignPickState: { step: 'pick_ref', refGuid: null },
-        }),
+        // Routed through setActiveTool so the previous tool's in-progress pick is
+        // discarded (UI-P0-11) — the raw `set` this used to do skipped that.
+        get().setActiveTool('AL'),
       EQ: () => get().equalizeSouthWallWindows(),
       HH: () => get().tempHideSelected(),
       HR: () => get().resetTempVisibility(),
       HI: () => get().tempIsolateSelected(),
       ZE: () => {
-        // Trigger zoom extents event
-        window.dispatchEvent(new CustomEvent('orlt-zoom-extents'));
+        window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT));
       },
     };
 
@@ -716,9 +833,12 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         return;
       }
 
-      const feet = Math.floor(nearestDist * 3.28084);
-      const inches = Math.round((nearestDist * 3.28084 - feet) * 12);
-      const display = `${feet}'-${inches}"`;
+      // UI-P0-2: `nearestDist` is ALREADY decimal feet — the internal unit — so
+      // multiplying by 3.28084 here (as this did) rendered every temporary
+      // dimension 3.28x too large and then labelled the inflated number with a foot
+      // mark. `formatLength` honours the user's display unit, exactly as the
+      // Properties palette already does.
+      const display = formatLength(nearestDist, get().displayUnit);
 
       // Measure along the dominant axis of the witness pair, not a fixed 'x',
       // so the pill and its edit gesture match the direction being measured.
@@ -847,6 +967,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       );
       set({ alignPickState: { step: null, refGuid: null }, activeTool: 'select' });
     } catch (e) {
+      set({ statusMessage: `Create align constraint failed: ${failureMessage(e)}` });
       console.error('Failed to create align constraint', e);
     }
   },
@@ -859,6 +980,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         isLocked ? 'Lock constraint' : 'Unlock constraint'
       );
     } catch (e) {
+      set({ statusMessage: `Toggle constraint lock failed: ${failureMessage(e)}` });
       console.error('Failed to toggle constraint lock', e);
     }
   },
@@ -877,6 +999,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Lock dimension'
       );
     } catch (e) {
+      set({ statusMessage: `Lock dimension failed: ${failureMessage(e)}` });
       console.error('Failed to lock dimension', e);
     }
   },
@@ -899,6 +1022,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Equalize spacing (EQ)'
       );
     } catch (e) {
+      set({ statusMessage: `Equalize span failed: ${failureMessage(e)}` });
       console.error('Failed to equalize span', e);
     }
   },
@@ -911,6 +1035,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Delete constraint'
       );
     } catch (e) {
+      set({ statusMessage: `Delete constraint failed: ${failureMessage(e)}` });
       console.error('Failed to delete constraint', e);
     }
   },
@@ -1069,6 +1194,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         });
       }
     } catch (e) {
+      set({ statusMessage: `Load sample building failed: ${failureMessage(e)}` });
       console.error('Failed to load sample building', e);
       set({ isLoadingFile: false, statusMessage: 'Failed to load sample building' });
     }
@@ -1105,6 +1231,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         return false;
       }
     } catch (e: any) {
+      set({ statusMessage: `Load IFC content failed: ${failureMessage(e)}` });
       console.error('Failed to load IFC content', e);
       set({
         isLoadingFile: false,
@@ -1136,6 +1263,50 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     });
   },
 
+  /**
+   * UI-P0-1: what happens after one placement completes.
+   *
+   * Revit leaves the tool armed, so the next click starts the next element. The
+   * original code unconditionally ran `set({ activeTool: 'select' })` here, which
+   * is why drawing a four-wall room needed four separate ribbon clicks — and why
+   * the project's own "corner chain of 8 walls" acceptance criterion had no UI
+   * path to exercise it.
+   *
+   * With chaining on (the default) the tool stays armed and only the viewport's
+   * own in-progress points are cleared, which the viewport does as part of
+   * completing the element. With chaining off we reproduce the old single-shot
+   * behaviour, including the reset that discards the completed interaction's state.
+   */
+  completePlacement: () => {
+    if (get().chainTools) return;
+    set({ activeTool: 'select' });
+    get().resetInteraction('tool-change');
+  },
+
+  handleDeleteKey: () => {
+    const state = get();
+    // While a sketch is open, Delete belongs to the sketch. The store used to have
+    // no Delete handling at all, so `App.tsx` fell straight through to
+    // `deleteElement(selectedGuid)` — and because `startSketchMode` deliberately
+    // leaves the host element selected (the sketch seeds its boundary from that
+    // element), pressing Delete while editing a floor DELETED THE FLOOR. The
+    // viewport's own `deleteSelectedSketchLine` was destructured and never called,
+    // so there was also no way to remove a sketch line at all.
+    if (state.sketchSession) {
+      if (state.sketchSession.selectedLineId) {
+        get().deleteSelectedSketchLine();
+        return;
+      }
+      set((s) => ({
+        sketchSession: s.sketchSession
+          ? { ...s.sketchSession, validationError: 'Select a boundary line to delete it.' }
+          : null,
+      }));
+      return;
+    }
+    if (state.selectedGuid) get().deleteElement(state.selectedGuid);
+  },
+
   createWall: async (start, end, name = 'Basic Wall : Exterior - 10" CMU') => {
     try {
       await get().dispatchTransaction(
@@ -1143,8 +1314,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         { start, end, height: 10.0, thickness: 0.8333, name },
         `Create wall "${name}"`
       );
-      set({ activeTool: 'select' });
+      get().completePlacement();
     } catch (e) {
+      set({ statusMessage: `Create wall failed: ${failureMessage(e)}` });
       console.error('Failed to create wall', e);
     }
   },
@@ -1156,8 +1328,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         { host_wall_guid: hostWallGuid, offset_along_wall: offset, name },
         'Insert door'
       );
-      set({ activeTool: 'select' });
+      get().completePlacement();
     } catch (e) {
+      set({ statusMessage: `Insert door failed: ${failureMessage(e)}` });
       console.error('Failed to insert door', e);
     }
   },
@@ -1176,8 +1349,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         },
         'Insert window'
       );
-      set({ activeTool: 'select' });
+      get().completePlacement();
     } catch (e) {
+      set({ statusMessage: `Insert window failed: ${failureMessage(e)}` });
       console.error('Failed to insert window', e);
     }
   },
@@ -1189,8 +1363,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         { polygon, thickness, elevation, pitch_degrees, name },
         'Create roof'
       );
-      set({ activeTool: 'select' });
+      get().completePlacement();
     } catch (e) {
+      set({ statusMessage: `Create roof failed: ${failureMessage(e)}` });
       console.error('Failed to create roof', e);
     }
   },
@@ -1202,8 +1377,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         { polygon, thickness, elevation, name },
         'Create slab'
       );
-      set({ activeTool: 'select' });
+      get().completePlacement();
     } catch (e) {
+      set({ statusMessage: `Create slab failed: ${failureMessage(e)}` });
       console.error('Failed to create slab', e);
     }
   },
@@ -1216,6 +1392,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Edit element geometry'
       );
     } catch (e) {
+      set({ statusMessage: `Update element failed: ${failureMessage(e)}` });
       console.error('Failed to update element', e);
     }
   },
@@ -1225,6 +1402,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       await get().dispatchTransaction('deleteElement', { guid }, 'Delete element');
       set({ selectedGuid: null, tempDimension: null });
     } catch (e) {
+      set({ statusMessage: `Delete element failed: ${failureMessage(e)}` });
       console.error('Failed to delete element', e);
     }
   },
@@ -1233,6 +1411,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     try {
       await get().dispatchTransaction('translateElement', { guid, dx, dy, dz }, 'Move element');
     } catch (e) {
+      set({ statusMessage: `Translate element failed: ${failureMessage(e)}` });
       console.error('Failed to translate element', e);
     }
   },
@@ -1248,6 +1427,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         set({ georeference: data });
       }
     } catch (e) {
+      set({ statusMessage: `Update georeferencing failed: ${failureMessage(e)}` });
       console.error('Failed to update georeferencing', e);
     }
   },
@@ -1298,6 +1478,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         window.URL.revokeObjectURL(url);
       }
     } catch (e) {
+      set({ statusMessage: `Export vector sheet PDF failed: ${failureMessage(e)}` });
       console.error('Failed to export vector sheet PDF', e);
     }
   },
@@ -1318,6 +1499,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         window.URL.revokeObjectURL(url);
       }
     } catch (e) {
+      set({ statusMessage: `Export IFC failed: ${failureMessage(e)}` });
       console.error('Failed to export IFC', e);
     }
   },
@@ -1344,6 +1526,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         set({ statusMessage: `Exported ${pName}.bimworks (Project Container)` });
       }
     } catch (e) {
+      set({ statusMessage: `Export .bimworks project failed: ${failureMessage(e)}` });
       console.error('Failed to export .bimworks project', e);
       set({ statusMessage: 'Error exporting .bimworks project' });
     }
@@ -1416,6 +1599,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Sketch: add curve'
       );
     } catch (e) {
+      set({ statusMessage: `Add sketch curve failed: ${failureMessage(e)}` });
       console.error('Failed to add sketch curve', e);
     }
   },
@@ -1428,6 +1612,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Sketch: drag vertex'
       );
     } catch (e) {
+      set({ statusMessage: `Move sketch vertex failed: ${failureMessage(e)}` });
       console.error('Failed to move sketch vertex', e);
     }
   },
@@ -1440,6 +1625,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Sketch: drag edge'
       );
     } catch (e) {
+      set({ statusMessage: `Move sketch edge failed: ${failureMessage(e)}` });
       console.error('Failed to move sketch edge', e);
     }
   },
@@ -1457,6 +1643,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Sketch: define slope'
       );
     } catch (e) {
+      set({ statusMessage: `Set sketch slope failed: ${failureMessage(e)}` });
       console.error('Failed to set sketch slope', e);
     }
   },
@@ -1465,6 +1652,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     try {
       await get().dispatchTransaction('copyElement', { guid, dx, dy, dz }, 'Copy element');
     } catch (e) {
+      set({ statusMessage: `Copy element failed: ${failureMessage(e)}` });
       console.error('Failed to copy element', e);
     }
   },
@@ -1477,6 +1665,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Rotate element'
       );
     } catch (e) {
+      set({ statusMessage: `Rotate element failed: ${failureMessage(e)}` });
       console.error('Failed to rotate element', e);
     }
   },
@@ -1489,6 +1678,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Offset element'
       );
     } catch (e) {
+      set({ statusMessage: `Offset element failed: ${failureMessage(e)}` });
       console.error('Failed to offset element', e);
     }
   },
@@ -1501,6 +1691,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Trim/Extend wall'
       );
     } catch (e) {
+      set({ statusMessage: `Trim/extend wall failed: ${failureMessage(e)}` });
       console.error('Failed to trim/extend wall', e);
     }
   },
@@ -1509,6 +1700,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     try {
       await get().dispatchTransaction('splitWall', { guid, at_offset: atOffset }, 'Split wall');
     } catch (e) {
+      set({ statusMessage: `Split wall failed: ${failureMessage(e)}` });
       console.error('Failed to split wall', e);
     }
   },
@@ -1521,6 +1713,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Move level'
       );
     } catch (e) {
+      set({ statusMessage: `Move level failed: ${failureMessage(e)}` });
       console.error('Failed to move level', e);
     }
   },
@@ -1538,6 +1731,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         'Change wall join'
       );
     } catch (e) {
+      set({ statusMessage: `Set wall join failed: ${failureMessage(e)}` });
       console.error('Failed to set wall join', e);
     }
   },
@@ -1556,7 +1750,11 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Transaction error' }));
-        throw new Error(err.detail || 'Transaction failed');
+        // UI-P0-3: FastAPI returns a *list* of objects in `detail` for a Pydantic
+        // validation failure, and `new Error(list)` stringifies that to
+        // "[object Object],[object Object]". Flatten it to field + reason so the
+        // status bar can say something true about a rejected command.
+        throw new Error(describeApiError(err.detail));
       }
 
       const data = await res.json();
@@ -1823,6 +2021,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         statusMessage: `Committed AI Transaction: ${plan.intentSummary}`,
       });
     } catch (e) {
+      set({ statusMessage: `Commit AI Plan: failed: ${failureMessage(e)}` });
       console.error('Failed to commit AI Plan:', e);
       set({
         statusMessage: `Error executing AI Plan: ${e instanceof Error ? e.message : 'Transaction failed'}`,
@@ -1917,6 +2116,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       activeTool: 'select',
       statusMessage: 'Canceled sketch mode',
     });
+    // Discard the pending sketch point and any open dimension editor, so the next
+    // sketch cannot start with the previous one's half-drawn segment (UI-P0-11).
+    get().resetInteraction('sketch-cancel');
   },
 
   finishSketchMode: async () => {
@@ -1981,10 +2183,12 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         sketchSession: null,
         activeTool: 'select',
       });
+      get().resetInteraction('sketch-finish');
       await get().fetchGeometry();
       await get().fetch2DSlice();
       return true;
     } catch (e: any) {
+      set({ statusMessage: `Finish sketch: failed: ${failureMessage(e)}` });
       console.error('Failed to finish sketch:', e);
       set((s) => ({
         sketchSession: s.sketchSession

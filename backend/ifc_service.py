@@ -233,13 +233,17 @@ class BimModelManager:
         # therefore suppressed during the replay and recomputed once at the end.
         self._suppress_join_recompute = False
 
-        # Default Georeferencing (EPSG:2285 - NAD83 / Washington North)
+        # UI-P0-7: georeferencing starts UNSET. It used to be seeded with a real
+        # EPSG:2285 / NAD83 Washington North position, which meant a new project
+        # could be saved carrying survey coordinates that belong to nobody. The
+        # user sets a CRS explicitly through /api/georeference (the dialog shows
+        # "Not set" until they do).
         self.georeference_data = {
-            "projected_crs": "EPSG:2285 - NAD83 / Washington North",
-            "eastings": 1275432.10,
-            "northings": 234567.89,
-            "elevation": 45.0,
-            "true_north": 12.5,  # degrees
+            "projected_crs": "",
+            "eastings": 0.0,
+            "northings": 0.0,
+            "elevation": 0.0,
+            "true_north": 0.0,  # degrees
             "scale": 1.0,
         }
         self.apply_georeferencing()
@@ -944,17 +948,33 @@ class BimModelManager:
         }
 
     def apply_georeferencing(self):
-        """Applies buildingSMART IFC4 IfcProjectedCRS and IfcMapConversion."""
+        """Applies buildingSMART IFC4 IfcProjectedCRS and IfcMapConversion.
+
+        UI-P0-7: an unset CRS is a real state, not an empty string, and this method
+        used to run unconditionally against a *seeded* EPSG:2285 / NAD83 Washington
+        North coordinate operation (~1,275,432 E, 234,568 N) — so a brand-new model
+        could carry a real survey position belonging to nobody. If the user has not
+        chosen a CRS we write no georeferencing at all, and clear anything a
+        previous value left behind rather than leaving a stale conversion in the file.
+        """
+        crs = (self.georeference_data.get("projected_crs") or "").strip()
+        if not crs:
+            for entity in list(self.model.by_type("IfcMapConversion")) + list(self.model.by_type("IfcProjectedCRS")):
+                try:
+                    self.model.remove(entity)
+                except Exception as e:
+                    print(f"Notice clearing georeference: {e}")
+            return
         try:
             angle_rad = math.radians(self.georeference_data["true_north"])
             cos_a = math.cos(angle_rad)
             sin_a = math.sin(angle_rad)
 
-            ifcopenshell.api.run("georeference.add_georeferencing", self.model, name=self.georeference_data["projected_crs"])
+            ifcopenshell.api.run("georeference.add_georeferencing", self.model, name=crs)
             ifcopenshell.api.run(
                 "georeference.edit_georeferencing",
                 self.model,
-                projected_crs={"Name": self.georeference_data["projected_crs"]},
+                projected_crs={"Name": crs},
                 coordinate_operation={
                     "Eastings": float(self.georeference_data["eastings"]),
                     "Northings": float(self.georeference_data["northings"]),

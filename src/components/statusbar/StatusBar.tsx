@@ -10,6 +10,7 @@ import {
   SlidersHorizontal,
 } from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
+import { toolCaption, toolPrompt } from '../../interaction/toolCaptions';
 
 export const StatusBar: React.FC = () => {
   const {
@@ -32,6 +33,7 @@ export const StatusBar: React.FC = () => {
     isLoadingFile,
     displayUnit,
     setDisplayUnit,
+    georeference,
   } = useBimStore();
 
   const isTempActive = hiddenGuids.length > 0 || isolatedGuids.length > 0;
@@ -147,11 +149,15 @@ export const StatusBar: React.FC = () => {
             <span>{statusMessage}</span>
           </span>
         ) : activeTool !== 'select' ? (
-          <span className="text-[#38bdf8] font-semibold animate-pulse">
-            Active Command: {activeTool} — Click in viewport to place. Press Esc to exit.
+          <span className="text-[#38bdf8] font-semibold">
+            {/* UI-P0-14: say the command's name, not its tool code, and never claim a
+                placement is in progress for a tool no viewport implements. */}
+            {toolCaption(activeTool)} — {toolPrompt(activeTool)}
           </span>
         ) : selectedGuid ? (
-          <span>Selected element: {selectedGuid}. Spacebar to flip orientation, Delete to remove.</span>
+          // UI-P0-18: this used to promise "Spacebar to flip orientation", which was
+          // never bound to anything. Delete is real; the hint only mentions what works.
+          <span>Selected element: {selectedGuid}. Delete removes it; Escape clears the selection.</span>
         ) : (
           <span className="text-[#94a3b8]">{statusMessage}</span>
         )}
@@ -164,7 +170,13 @@ export const StatusBar: React.FC = () => {
             [{keyBuffer}_]
           </div>
         )}
-        <div className="font-mono text-[10px] text-[#71717a]">EPSG:2285 NAD83</div>
+        {/* UI-P0-7: this was a hardcoded "EPSG:2285 NAD83" label regardless of the
+            project, while the real value lives in the store and can be unset. */}
+        <div className="font-mono text-[10px] text-[#71717a]" title="Projected coordinate reference system">
+          {georeference.projected_crs
+            ? georeference.projected_crs.split(' - ')[0]
+            : <span className="text-[#5a5a5a]">No CRS</span>}
+        </div>
       </div>
     </div>
   );

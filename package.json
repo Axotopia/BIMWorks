@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check:bus": "node scripts/check-bus-parity.mjs",
-    "check": "npm run check:bus && tsc --noEmit",
+    "check:ui": "node scripts/check-ui-p0.mjs",
+    "check": "npm run check:bus && npm run check:ui && tsc --noEmit",
     "diagnose": "node scripts/diagnose-blank-page.mjs"
   },
   "bugs": {
