@@ -251,7 +251,37 @@ The workflow answer from principle 3.
 **Remaining P4 follow-up (tracked):** the in-viewport drag gesture in the UI — the commands and the model are complete and covered, but binding a mouse drag to `SketchCurveMoveVertex` in the plan/3D viewport is UI work on top of an already-tested path.
 
 ### P5 — 2D views & HLR (README M3) — after P3/P4
-Unchanged from spec §4.1 (in-process OCCT `HLRBRep` pipeline replacing the analytic-slice renderer), with one reordering consequence: the analytic slicer built in the 10-13 session is the *fallback* renderer until P5, and should not receive further investment beyond bug fixes.
+
+**Status: PARTIAL — exit criteria NOT met. Do not mark M3 done.**
+
+Attempted 2026-10-14. What was built, what was verified, and the specific blocker.
+
+**What was done**
+
+- `backend/hlr_renderer.py`: a view engine driving ifcopenshell's SVG serializer (which runs OCCT hidden-line removal), parsing its output into `section` / `projection` partitions, with `ViewDefinition`, `ViewRange`, `LineweightTable` view templates, an element-attribution step (the serializer gives GUIDs only to projection sub-views, so cut geometry is matched to elements by footprint), and `apply_view_range` implementing the drafting rule that a wall under 6 ft is never cut.
+- The plan contract gained `renderer` and `partitions` keys, and three defects in the shared plan path were fixed: `setdefault` was silently keeping an HLR-supplied *empty* slab/roof list (dropping every slab and roof from the plan), the door-swing symbol was extracted into a shared `_door_swing_paths` so both renderers emit it, and the 6-ft view-range rule was made an explicit, testable engine rather than inline slicing logic.
+
+**What was verified** (`scratch/test_hlr.py`, 22 checks)
+
+- The serializer does perform OCCT hidden-line removal and does emit genuinely partitioned `section`/`projection` geometry.
+- Cut geometry can be attributed to real element GUIDs.
+- The view-range engine behaves correctly (tall wall cut, 4 ft wall projected and not cut).
+- Annotation (slabs, grids, swing arcs) stays in exact model coordinates; analytic remains the default.
+
+**The blocker (measured, not assumed)**
+
+The M3 gate needs plan/section/elevation views whose geometry is in model coordinates. On this ifcopenshell build that could not be achieved:
+
+- `serializer.addDrawing(...)` — the documented way to specify a drawing plane — is **absent**; the serializer exposes only `setFile`/`write`/`finalize`.
+- With `auto-section`, the emitted `ifc:plane` maps world Y into the plane's local Z, i.e. the serializer produces a **vertical section, not a horizontal plan**. Measured on an L-shaped plan: the wall at model x=30 reads as x≈30.3 and the wall at x=0 as x≈−0.2, while all three walls share a single Y band of ≈4.8–14.8 — a height band. That is an elevation.
+- Inverting `matrix3` algebraically yields mirrored/offset drawings; calibrating the rendered content box against the model's plan bounds only works when the serializer's plane really is the world XY plane, which here it is not.
+- No `hidden` partition is emitted in any tested configuration (the serializer removes occluded edges rather than separating them), so `hidden_paths` is empty and the layout does not claim otherwise.
+
+Consequently `slice_2d_vector_plan(renderer=...)` defaults to `"analytic"`; HLR is opt-in via `renderer="hlr"` and is documented as unverified. `test_hlr.py` pins the limitation: if a future build gains `addDrawing`, that test **fails loudly** so the coordinate mapping gets revisited rather than the limitation silently persisting.
+
+**What would unblock it:** an ifcopenshell build exposing `addDrawing` (or a serialiser whose storey plane is genuinely horizontal), which turns the calibration step into the only remaining work. Re-evaluate HLR as the default at that point.
+
+**Still outstanding from the M3 feature list** and not attempted here: view templates as saved, selectable presets; temporary hide/isolate; and the reviewer-facing visual comparison against a Revit plan (which needs the coordinate mapping first).
 
 ### P6 — Sheets, PDF, validation (README M4); P7 — AI driver layer (README M5)
 Unchanged in content from the spec; entry criterion for P7 is now strictly gated on the P1 parity audit having been green since P1 (the AI plans against the same bus the UI uses — any residual raw-REST path would poison it). The regex prompt-planner is explicitly a placeholder until then.

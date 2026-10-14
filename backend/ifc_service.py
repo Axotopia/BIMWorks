@@ -3048,14 +3048,37 @@ class BimModelManager:
     # 2D VECTOR SLICING & HIDDEN LINE REMOVAL (HLR) PIPELINE
     # =========================================================================
 
-    def slice_2d_vector_plan(self, cut_elevation: float = FEET_4) -> Dict[str, Any]:
+    def slice_2d_vector_plan(
+        self, cut_elevation: float = FEET_4, renderer: str = "analytic"
+    ) -> Dict[str, Any]:
         """
-        Slices the BIM model at a specified cut elevation (e.g. 4'-0" / 1.2m above storey).
-        Generates 2D SVG vector paths decorated with semantic CSS classes:
-        - .cut: Intersected wall and column solids with hatch patterns
-        - .projection: Low walls, sills, and floor outlines
-        - .overhead: Overhead headers and door swings
+        Produces the 2D plan as vector paths in the frontend's existing contract.
+
+        Two renderers are available and the choice is explicit:
+
+        * `"analytic"` (default) intersects stored metadata with the cut plane. Its
+          coordinates are exact model feet, which is what the viewport draws
+          annotations against, but it cannot produce hidden lines.
+        * `"hlr"` drives OCCT hidden-line removal through ifcopenshell's SVG
+          serializer and reads its cut/projection partitions. The partitioning is
+          genuine, but on the ifcopenshell build in use the serializer places its
+          drawing plane in a frame that could not be reliably mapped back to model
+          coordinates (see `hlr_renderer` for the measurements), so it is opt-in and
+          unverified rather than the default.
+
+        Annotation that has no B-rep — grid lines, dimension strings, swing arcs,
+        slab/roof references — is read from metadata in both renderers, because
+        those are datums and drawings rather than geometry.
         """
+        if renderer == "hlr":
+            try:
+                contract = self._hlr_plan_contract(cut_elevation)
+                if contract is not None:
+                    # Annotation drives are merged in below, from metadata.
+                    return self._finish_plan_contract(contract, cut_elevation)
+            except Exception as e:
+                print(f"Notice: HLR renderer unavailable ({e}); using the analytic slicer")
+
         svg_cut_paths = []
         svg_projection_paths = []
         svg_swing_paths = []
@@ -3343,7 +3366,155 @@ class BimModelManager:
             "roofs": roofs_svg,
             "grids": grids_svg,
             "dimensions": deduped_dims,
+            "renderer": "analytic",
+            "partitions": {
+                "cut": len(svg_cut_paths),
+                "projection": len(svg_projection_paths),
+            },
         }
+
+    # -- P5: HLR-backed plan ------------------------------------------------
+    def _hlr_plan_contract(self, cut_elevation: float) -> Optional[Dict[str, Any]]:
+        """
+        Renders the current level's plan through OCCT HLR, or None when the
+        pipeline is unavailable (so the caller can fall back).
+        """
+        from hlr_renderer import HlrRenderer, ViewDefinition, ViewRange
+
+        if not HlrRenderer.available():
+            return None
+        level_id = None
+        # The view range's cut height is what the user asked for; map it onto the
+        # storey whose plan that cut belongs to.
+        for lid, lv in self.levels.items():
+            if float(lv.get("elevation", 0.0)) <= float(cut_elevation):
+                if level_id is None or float(lv["elevation"]) > float(self.levels[level_id]["elevation"]):
+                    level_id = lid
+        view = ViewDefinition(
+            id=f"plan-{level_id or 'l1'}",
+            name="Floor Plan",
+            view_type="floor_plan",
+            level_id=level_id,
+            view_range=ViewRange(cut=float(cut_elevation)),
+        )
+        contract = HlrRenderer(self).render_to_contract(view, cut_elevation)
+        contract["cut_elevation"] = float(cut_elevation)
+        return contract
+
+    def _door_swing_paths(self, op_meta: Dict[str, Any], host_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Builds the plan door-swing symbol (panel line + 90-degree arc) for one
+        opening, in model coordinates.
+
+        Shared by both renderers. Hidden-line removal cannot produce this: a swing
+        arc is a drafting symbol, not geometry, so it is generated from the door's
+        parameters regardless of which engine drew the building linework.
+        """
+        sp = host_meta.get("start")
+        ang = float(host_meta.get("angle", 0.0))
+        offset = float(op_meta.get("offset_along_wall", 0.0) or 0.0)
+        w = float(op_meta.get("width", 3.0) or 3.0)
+        if not sp or w <= 0:
+            return []
+
+        op_pt = (sp[0] + math.cos(ang) * offset, sp[1] + math.sin(ang) * offset)
+        op_end_pt = (sp[0] + math.cos(ang) * (offset + w), sp[1] + math.sin(ang) * (offset + w))
+        name = (op_meta.get("name") or "").lower()
+        is_sliding = "slide" in name or "pocket" in name
+        is_overhead = "garage" in name or "overhead" in name or w > FEET_8
+
+        if is_sliding or is_overhead:
+            # Drawn along the opening centreline, no arc.
+            return [{
+                "guid": op_meta.get("guid"),
+                "class": "IfcDoor sliding-panel",
+                "d": f"M {op_pt[0]:.3f} {op_pt[1]:.3f} L {op_end_pt[0]:.3f} {op_end_pt[1]:.3f}",
+            }]
+
+        swing_flip = bool(op_meta.get("swing_flipped", False))
+        swing_sign = -1.0 if swing_flip else 1.0
+        panel_end = (
+            op_pt[0] - math.sin(ang) * w * swing_sign,
+            op_pt[1] + math.cos(ang) * w * swing_sign,
+        )
+        sweep = 0 if swing_flip else 1
+        return [
+            {
+                "guid": op_meta.get("guid"),
+                "class": "IfcDoor swing-panel",
+                "d": f"M {op_pt[0]:.3f} {op_pt[1]:.3f} L {panel_end[0]:.3f} {panel_end[1]:.3f}",
+            },
+            {
+                "guid": op_meta.get("guid"),
+                "class": "IfcDoor swing",
+                "d": (f"M {panel_end[0]:.3f} {panel_end[1]:.3f} "
+                      f"A {w:.3f} {w:.3f} 0 0 {sweep} {op_end_pt[0]:.3f} {op_end_pt[1]:.3f}"),
+            },
+        ]
+
+    def _finish_plan_contract(self, contract: Dict[str, Any], cut_elevation: float) -> Dict[str, Any]:
+        """
+        Adds the annotation drives that HLR cannot supply (datums, dimensions,
+        swing arcs, slab/roof references) to an HLR-rendered plan.
+
+        These are not modelled geometry, so there is nothing for hidden-line
+        removal to compute; they stay metadata-driven in both renderers.
+        """
+        import math as _math
+
+        grids_svg = []
+        for guid, meta in self.element_meta.items():
+            if meta.get("ifc_class") != "IfcGrid":
+                continue
+            start, end = meta.get("start"), meta.get("end")
+            if not start or not end:
+                continue
+            grids_svg.append({
+                "guid": guid,
+                "name": meta.get("name", "Grid"),
+                "d": f"M {start[0]:.3f} {start[1]:.3f} L {end[0]:.3f} {end[1]:.3f}",
+                "class": "grid-line",
+            })
+
+        swing_paths = []
+        for guid, meta in self.element_meta.items():
+            if meta.get("ifc_class") != "IfcDoor":
+                continue
+            host = self.element_meta.get(meta.get("host_wall_guid"))
+            if not host:
+                continue
+            try:
+                swing_paths.extend(self._door_swing_paths(meta, host))
+            except Exception as e:
+                print(f"Notice: swing symbol for {guid} failed: {e}")
+
+        slabs_svg = []
+        for guid, meta in self.element_meta.items():
+            if meta.get("ifc_class") != "IfcSlab" or not meta.get("polygon"):
+                continue
+            poly = meta["polygon"]
+            d = "M " + " L ".join(f"{p[0]:.3f} {p[1]:.3f}" for p in poly) + " Z"
+            slabs_svg.append({"guid": guid, "d": d, "class": "IfcSlab projection"})
+
+        roofs_svg = []
+        for guid, meta in self.element_meta.items():
+            if meta.get("ifc_class") != "IfcRoof" or not meta.get("polygon"):
+                continue
+            poly = meta["polygon"]
+            d = "M " + " L ".join(f"{p[0]:.3f} {p[1]:.3f}" for p in poly) + " Z"
+            roofs_svg.append({"guid": guid, "d": d, "class": "IfcRoof projection",
+                              "pitch": meta.get("pitch", 0.0)})
+
+        # Assign, don't setdefault: the HLR contract already carries these keys as
+        # empty lists, so setdefault would silently keep the empty one. (That bug
+        # dropped every slab and roof from the plan.)
+        contract["slabs"] = slabs_svg
+        contract["roofs"] = roofs_svg
+        contract["grids"] = grids_svg
+        contract["swing_paths"] = swing_paths
+        contract.setdefault("dimensions", [])
+        contract["cut_elevation"] = float(cut_elevation)
+        return contract
 
     # =========================================================================
     # VECTOR PDF COMPILATION & SHEET ENGINE
