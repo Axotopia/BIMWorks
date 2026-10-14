@@ -1243,6 +1243,12 @@ class BimModelManager:
         }
         self.element_meta[door_guid] = door_meta
         wall_meta["hosted_openings"].append(door_guid)
+        # The host wall's tessellation is now stale: the IFC void subtracts the
+        # opening from the wall solid, but the cached mesh was built before the void
+        # existed. Without this the wall renders (and slices) as an unvoided box even
+        # though the IFC has the opening, which is a "looks right but is wrong"
+        # failure: the plan showed no door at all.
+        self._invalidate_geometry_cache(host_wall_guid)
         return door_meta
 
     def add_window(
@@ -2556,6 +2562,21 @@ class BimModelManager:
         ifcopenshell.api.run(
             "geometry.edit_object_placement", self.model, product=wall, matrix=matrix, is_si=False
         )
+
+    def _invalidate_geometry_cache(self, *guids: str) -> None:
+        """
+        Drops cached tessellation for the given elements so it is rebuilt on demand.
+
+        Necessary because openings are modelled as IFC voids: adding a door changes
+        the HOST wall's solid, so the host's cached mesh must be discarded or it keeps
+        showing the pre-void geometry.
+        """
+        for guid in guids:
+            meta = self.element_meta.get(guid)
+            if not meta:
+                continue
+            for key in ("cached_verts", "cached_faces"):
+                meta.pop(key, None)
 
     def _rebuild_wall_representation(self, guid):
         """Rebuilds the wall's Body representation as an extruded arbitrary
