@@ -356,6 +356,211 @@ class BimModelManager:
         return level_id
 
     # =========================================================================
+    # MODIFY TOOLS (P3): Copy / Rotate / Offset / Mirror / Trim-Extend / Split
+    # =========================================================================
+    # Each is a plain geometry operation so it can be driven from the CommandBus
+    # (and therefore journaled, undoable and usable by the AI planner) rather than
+    # only from a UI handler.
+
+    def copy_element(self, guid: str, dx: float, dy: float, dz: float = 0.0) -> Dict[str, Any]:
+        """Copies an element, offset by (dx, dy, dz). The copy gets a new GUID."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Element {guid} not found")
+        src = self.element_meta[guid]
+        ifc_class = src.get("ifc_class")
+
+        if ifc_class in ("IfcWallStandardCase", "IfcWall"):
+            start = src["start"]; end = src["end"]
+            new = self.add_wall(
+                (start[0] + dx, start[1] + dy, start[2] + dz),
+                (end[0] + dx, end[1] + dy, end[2] + dz),
+                height=src.get("height", FEET_10),
+                thickness=src.get("thickness", INCHES_8),
+                level_id=src.get("level_id"),
+                name=f"{src.get('name')} (copy)",
+            )
+        elif ifc_class in ("IfcDoor", "IfcWindow"):
+            host = src.get("host_wall_guid")
+            if host not in self.element_meta:
+                raise ValueError("Hosted element's host wall is missing")
+            insert = self.add_door if ifc_class == "IfcDoor" else self.add_window
+            kwargs = {
+                "host_wall_guid": host,
+                "offset_along_wall": src.get("offset_along_wall", 0.0) + float(dx),
+                "width": src.get("width", 3.0),
+                "height": src.get("height", 7.0),
+                "name": f"{src.get('name')} (copy)",
+            }
+            if ifc_class == "IfcWindow":
+                kwargs["sill_height"] = src.get("sill_height", 3.0)
+            new = insert(**kwargs)
+        elif ifc_class == "IfcSlab":
+            new = self.add_slab(
+                [(x + dx, y + dy) for x, y in src.get("polygon", [])],
+                thickness=src.get("thickness", INCHES_10),
+                elevation=src.get("elevation", 0.0) + dz,
+                level_id=src.get("level_id"), name=f"{src.get('name')} (copy)",
+            )
+        elif ifc_class == "IfcRoof":
+            new = self.add_roof(
+                [(x + dx, y + dy) for x, y in src.get("polygon", [])],
+                thickness=src.get("thickness", INCHES_12),
+                elevation=src.get("elevation", FEET_10) + dz,
+                pitch_degrees=src.get("pitch", 15.0),
+                level_id=src.get("level_id"), name=f"{src.get('name')} (copy)",
+            )
+        elif ifc_class == "IfcGrid":
+            new = self.add_grid(
+                src.get("tag", "1"),
+                (src["start"][0] + dx, src["start"][1] + dy),
+                (src["end"][0] + dx, src["end"][1] + dy),
+            )
+        else:
+            raise ValueError(f"Copy is not supported for {ifc_class}")
+        return {"status": "created", "guid": new["guid"], "source_guid": guid}
+
+    def rotate_element(self, guid: str, angle_degrees: float,
+                       center: Optional[Tuple[float, float]] = None) -> Dict[str, Any]:
+        """
+        Rotates an element about `center` (default: its own centroid).
+
+        Currently supports walls (the case the modelling tools need), rebuilding
+        the baseline from the rotated endpoints and re-running joins.
+        """
+        if guid not in self.element_meta:
+            raise KeyError(f"Element {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcWallStandardCase", "IfcWall"):
+            raise ValueError("Rotate is currently supported for walls")
+
+        sp, ep = meta["start"], meta["end"]
+        # A wall's stored placement is "start point + rotation", and the profile is
+        # built in that local frame, so the baseline must be rotated about the
+        # START. Rotating about an arbitrary centre would need the start point
+        # moved as well; rotating about the start keeps `angle` and the placement
+        # consistent, which is what the geometry rebuild depends on.
+        center = (sp[0], sp[1]) if center is None else (float(center[0]), float(center[1]))
+        rad = math.radians(float(angle_degrees))
+        ca, sa = math.cos(rad), math.sin(rad)
+
+        def rot(p):
+            x, y = p[0] - center[0], p[1] - center[1]
+            return (center[0] + x * ca - y * sa, center[1] + x * sa + y * ca)
+
+        ns, ne = rot(sp), rot(ep)
+        meta["start"] = [ns[0], ns[1], sp[2]]
+        meta["end"] = [ne[0], ne[1], ep[2]]
+        length = math.hypot(ne[0] - ns[0], ne[1] - ns[1])
+        meta["length"] = length
+        meta["angle"] = math.atan2(ne[1] - ns[1], ne[0] - ns[0])
+        # Rebuild through the same path a translate uses so geometry and joins stay
+        # consistent with every other edit.
+        meta["footprint"] = None
+        self._rebuild_wall_representation(guid)
+        self.recompute_wall_joins()
+        return {"status": "rotated", "guid": guid, "angle": meta["angle"], "length": length}
+
+    def offset_element(self, guid: str, distance: float,
+                       side: int = 1) -> Dict[str, Any]:
+        """Offsets a wall perpendicular to its baseline (`side` 1 = left, -1 = right)."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Element {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcWallStandardCase", "IfcWall"):
+            raise ValueError("Offset is currently supported for walls")
+        ang = float(meta.get("angle", 0.0))
+        nx, ny = -math.sin(ang) * float(distance) * int(side), math.cos(ang) * float(distance) * int(side)
+        ok = self.translate_element(guid, nx, ny, 0.0)
+        return {"status": "offset", "guid": guid, "dx": nx, "dy": ny, "moved": bool(ok)}
+
+    def _wall_baseline_line(self, meta: Dict[str, Any]):
+        sp, ep = meta["start"], meta["end"]
+        return (sp[0], sp[1]), (ep[0] - sp[0], ep[1] - sp[1])
+
+    def trim_extend_wall(self, guid: str, end_index: int, target_guid: str) -> Dict[str, Any]:
+        """
+        Moves one wall endpoint onto its intersection with another wall's baseline.
+
+        `end_index` 0 = start, 1 = end. Trims when the intersection is between the
+        endpoints, extends when it is beyond them — the same operation Revit calls
+        Trim/Extend to corner.
+        """
+        if guid not in self.element_meta or target_guid not in self.element_meta:
+            raise KeyError("Wall or target wall not found")
+        meta = self.element_meta[guid]
+        target = self.element_meta[target_guid]
+        for m in (meta, target):
+            if m.get("ifc_class") not in ("IfcWallStandardCase", "IfcWall"):
+                raise ValueError("Trim/Extend needs two walls")
+
+        p1, d1 = self._wall_baseline_line(meta)
+        p2, d2 = self._wall_baseline_line(target)
+        hit = self._line_intersect(p1, d1, p2, d2)
+        if hit is None:
+            raise ValueError("Walls are parallel; there is no corner to trim to")
+
+        key = "start" if int(end_index) == 0 else "end"
+        old = list(meta[key])
+        meta[key] = [float(hit[0]), float(hit[1]), old[2]]
+        sp, ep = meta["start"], meta["end"]
+        meta["length"] = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
+        meta["angle"] = math.atan2(ep[1] - sp[1], ep[0] - sp[0])
+        self._rebuild_wall_representation(guid)
+        self.recompute_wall_joins()
+        return {
+            "status": "trimmed",
+            "guid": guid,
+            "end_index": int(end_index),
+            "new_point": [float(hit[0]), float(hit[1])],
+            "length": meta["length"],
+        }
+
+    def split_wall(self, guid: str, at_offset: float) -> Dict[str, Any]:
+        """
+        Splits a wall at `at_offset` along its baseline into two walls.
+
+        The original keeps the first segment (so its GUID and any hosted openings
+        that fall in that range survive); a new wall takes the second.
+        """
+        if guid not in self.element_meta:
+            raise KeyError(f"Wall {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcWallStandardCase", "IfcWall"):
+            raise ValueError("Split is currently supported for walls")
+        length = float(meta.get("length", 0.0))
+        offset = float(at_offset)
+        if not (0.0 < offset < length):
+            raise ValueError(f"Split offset {offset} must be inside the wall (0..{length:.3f})")
+
+        sp, ep = meta["start"], meta["end"]
+        ang = float(meta.get("angle", 0.0))
+        mid = (sp[0] + math.cos(ang) * offset, sp[1] + math.sin(ang) * offset)
+        older_end = list(ep)
+
+        # New wall for the second half.
+        second = self.add_wall(
+            (mid[0], mid[1], sp[2]), (older_end[0], older_end[1], older_end[2]),
+            height=meta.get("height", FEET_10),
+            thickness=meta.get("thickness", INCHES_8),
+            level_id=meta.get("level_id"),
+            name=f"{meta.get('name')} (2)",
+        )
+
+        # Shorten the original in place, keeping its identity.
+        meta["end"] = [mid[0], mid[1], sp[2]]
+        meta["length"] = offset
+        self._rebuild_wall_representation(guid)
+        self.recompute_wall_joins()
+        return {
+            "status": "split",
+            "guid": guid,
+            "new_guid": second["guid"],
+            "at_offset": offset,
+            "original_length": offset,
+            "new_length": length - offset,
+        }
+
+    # =========================================================================
     # LEVEL-DRIVEN ELEMENTS (P3 / README M2 gate)
     # =========================================================================
 

@@ -192,7 +192,53 @@ def main():
     )
     check("incremental footprints are identical to a full pass", same)
 
-    print("7. Wall-drag p95 against the M0 budget (p95 < 16 ms) ...")
+    print("7. Modify tools are bus commands and journaled ...")
+    from command_bus import COMMAND_REGISTRY, command_bus
+
+    # The CommandBus drives `ifc_service.bim_manager`, so build the test model
+    # through that same instance rather than a private one.
+    from ifc_service import bim_manager as bus_manager
+
+    bus_manager.reset_model()
+    m = bus_manager
+    for name in ("ElementCopy", "ElementRotate", "ElementOffset", "WallTrimExtend",
+                 "WallSplit", "LevelMove"):
+        check(f"{name} registered on the CommandBus", name in COMMAND_REGISTRY)
+
+    w = m.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8, name="W")["guid"]
+    w2 = m.add_wall((30, 0, 0), (30, 20, 0), height=FEET_10, thickness=INCHES_8, name="W2")["guid"]
+
+    copied = command_bus.execute_single_command("ElementCopy", {"guid": w, "dx": 0.0, "dy": 40.0})
+    check("copy creates a distinct element", copied["guid"] != w and copied["guid"] in m.element_meta)
+    check("copy is offset", abs(m.element_meta[copied["guid"]]["start"][1] - 40.0) < 1e-9)
+
+    rot = command_bus.execute_single_command("ElementRotate", {"guid": w2, "angle_degrees": 45.0})
+    import ifcopenshell.util.placement as plc
+    mat = plc.get_local_placement(m.element_meta[w2]["entity"].ObjectPlacement)
+    placement_angle = math.atan2(mat[1, 0], mat[0, 0])
+    check("rotate keeps the stored angle and the IFC placement in agreement",
+          abs(placement_angle - m.element_meta[w2]["angle"]) < 1e-9,
+          (math.degrees(placement_angle), math.degrees(m.element_meta[w2]["angle"])))
+
+    before_y = m.element_meta[w]["start"][1]
+    command_bus.execute_single_command("ElementOffset", {"guid": w, "distance": 2.0, "side": 1})
+    check("offset moves perpendicular to the baseline",
+          abs(m.element_meta[w]["start"][1] - (before_y + 2.0)) < 1e-6,
+          m.element_meta[w]["start"][1])
+
+    split = command_bus.execute_single_command("WallSplit", {"guid": w, "at_offset": 12.0})
+    check("split keeps the original GUID for the first segment", split["guid"] == w)
+    check("split lengths add up to the original",
+          abs((split["original_length"] + split["new_length"]) - 30.0) < 1e-6, split)
+    check("split produced a second wall", split["new_guid"] in m.element_meta)
+
+    trim = command_bus.execute_single_command(
+        "WallTrimExtend", {"guid": w, "end_index": 1, "target_guid": w2})
+    check("trim/extend puts the endpoint on the target baseline",
+          abs(trim["new_point"][0] - m.element_meta[w]["end"][0]) < 1e-9
+          and abs(trim["new_point"][1] - m.element_meta[w]["end"][1]) < 1e-9, trim)
+
+    print("8. Wall-drag p95 against the M0 budget (p95 < 16 ms) ...")
     m = fresh()
     drag_chain = corner_chain(m)
     graph = DependencyGraph.build(m)

@@ -48,6 +48,13 @@ export const UI_ACTION_COMMANDS = {
   equalizeSpan: 'ConstraintEqualize',
   toggleConstraintLock: 'ConstraintLockToggle',
   deleteConstraint: 'ConstraintDelete',
+  // P3 modify tools
+  copyElement: 'ElementCopy',
+  rotateElement: 'ElementRotate',
+  offsetElement: 'ElementOffset',
+  trimExtendWall: 'WallTrimExtend',
+  splitWall: 'WallSplit',
+  moveLevel: 'LevelMove',
 } as const;
 
 export type UiAction = keyof typeof UI_ACTION_COMMANDS;
@@ -321,6 +328,14 @@ interface BimStoreState {
   wallJoins: Record<string, WallJoinState>;
   fetchWallJoins: () => Promise<void>;
   setWallJoin: (wallGuid: string, endIdx: number, allowJoin: boolean, mode: 'butt' | 'miter' | 'square_off') => Promise<void>;
+
+  // P3 modify tools (all bus commands, so journaled and undoable)
+  copyElement: (guid: string, dx: number, dy: number, dz?: number) => Promise<void>;
+  rotateElement: (guid: string, angleDegrees: number, center?: [number, number]) => Promise<void>;
+  offsetElement: (guid: string, distance: number, side?: 1 | -1) => Promise<void>;
+  trimExtendWall: (guid: string, endIndex: 0 | 1, targetGuid: string) => Promise<void>;
+  splitWall: (guid: string, atOffset: number) => Promise<void>;
+  moveLevel: (levelId: string, elevation: number) => Promise<void>;
 
   executeTransaction: (commands: CommandPayload[], origin?: 'ui' | 'ai' | 'script' | 'cli', description?: string) => Promise<any>;
   /**
@@ -1311,6 +1326,70 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       }
     } catch (e) {
       console.error('Failed to fetch wall joins', e);
+    }
+  },
+
+  copyElement: async (guid, dx, dy, dz = 0.0) => {
+    try {
+      await get().dispatchTransaction('copyElement', { guid, dx, dy, dz }, 'Copy element');
+    } catch (e) {
+      console.error('Failed to copy element', e);
+    }
+  },
+
+  rotateElement: async (guid, angleDegrees, center) => {
+    try {
+      await get().dispatchTransaction(
+        'rotateElement',
+        { guid, angle_degrees: angleDegrees, center: center ?? null },
+        'Rotate element'
+      );
+    } catch (e) {
+      console.error('Failed to rotate element', e);
+    }
+  },
+
+  offsetElement: async (guid, distance, side = 1) => {
+    try {
+      await get().dispatchTransaction(
+        'offsetElement',
+        { guid, distance, side },
+        'Offset element'
+      );
+    } catch (e) {
+      console.error('Failed to offset element', e);
+    }
+  },
+
+  trimExtendWall: async (guid, endIndex, targetGuid) => {
+    try {
+      await get().dispatchTransaction(
+        'trimExtendWall',
+        { guid, end_index: endIndex, target_guid: targetGuid },
+        'Trim/Extend wall'
+      );
+    } catch (e) {
+      console.error('Failed to trim/extend wall', e);
+    }
+  },
+
+  splitWall: async (guid, atOffset) => {
+    try {
+      await get().dispatchTransaction('splitWall', { guid, at_offset: atOffset }, 'Split wall');
+    } catch (e) {
+      console.error('Failed to split wall', e);
+    }
+  },
+
+  moveLevel: async (levelId, elevation) => {
+    try {
+      await get().dispatchTransaction(
+        'moveLevel',
+        { level_id: levelId, elevation },
+        'Move level'
+      );
+    } catch (e) {
+      console.error('Failed to move level', e);
     }
   },
 

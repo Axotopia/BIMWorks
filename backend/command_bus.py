@@ -117,6 +117,36 @@ class ElementUpdateParams(BaseModel):
     updates: Dict[str, Any] = Field(..., description="Element property updates (polygon, thickness, elevation, pitch, etc.)")
 
 
+class ElementCopyParams(BaseModel):
+    guid: str = Field(..., description="Element to copy")
+    dx: float = Field(default=0.0, description="Offset X in internal feet")
+    dy: float = Field(default=0.0, description="Offset Y in internal feet")
+    dz: float = Field(default=0.0, description="Offset Z in internal feet")
+
+
+class ElementRotateParams(BaseModel):
+    guid: str = Field(..., description="Element to rotate")
+    angle_degrees: float = Field(..., description="Rotation angle, counter-clockwise")
+    center: Optional[List[float]] = Field(default=None, description="Centre [x, y]; default is the element centroid")
+
+
+class ElementOffsetParams(BaseModel):
+    guid: str = Field(..., description="Wall to offset")
+    distance: float = Field(..., description="Perpendicular distance in internal feet")
+    side: int = Field(default=1, description="1 offsets to the left of the baseline, -1 to the right")
+
+
+class WallTrimExtendParams(BaseModel):
+    guid: str = Field(..., description="Wall whose end moves")
+    end_index: int = Field(..., description="0 for the start point, 1 for the end point")
+    target_guid: str = Field(..., description="Wall whose baseline defines the corner")
+
+
+class WallSplitParams(BaseModel):
+    guid: str = Field(..., description="Wall to split")
+    at_offset: float = Field(..., description="Distance along the baseline from the wall start")
+
+
 class LevelMoveParams(BaseModel):
     level_id: str = Field(..., description="Storey GUID to move")
     elevation: float = Field(..., description="New storey elevation in decimal feet")
@@ -146,6 +176,11 @@ COMMAND_REGISTRY = {
     "ConstraintAlign": ConstraintAlignParams,
     "ConstraintLockDim": ConstraintLockDimParams,
     "ConstraintEqualize": ConstraintEqualizeParams,
+    "ElementCopy": ElementCopyParams,
+    "ElementRotate": ElementRotateParams,
+    "ElementOffset": ElementOffsetParams,
+    "WallTrimExtend": WallTrimExtendParams,
+    "WallSplit": WallSplitParams,
     "LevelMove": LevelMoveParams,
     "ConstraintLockToggle": ConstraintLockToggleParams,
     "ConstraintDelete": ConstraintDeleteParams,
@@ -314,6 +349,27 @@ class CommandBusEngine:
             p: ConstraintEqualizeParams = validated
             c = self.manager.equalize_span(p.span_start_guid, p.span_end_guid, p.interior_guids, p.axis)
             return {"status": "equalized", "constraint": c}
+
+        elif cmd_name == "ElementCopy":
+            p: ElementCopyParams = validated
+            return self.manager.copy_element(p.guid, p.dx, p.dy, p.dz)
+
+        elif cmd_name == "ElementRotate":
+            p: ElementRotateParams = validated
+            centre = tuple(p.center) if p.center else None
+            return self.manager.rotate_element(p.guid, p.angle_degrees, centre)
+
+        elif cmd_name == "ElementOffset":
+            p: ElementOffsetParams = validated
+            return self.manager.offset_element(p.guid, p.distance, p.side)
+
+        elif cmd_name == "WallTrimExtend":
+            p: WallTrimExtendParams = validated
+            return self.manager.trim_extend_wall(p.guid, p.end_index, p.target_guid)
+
+        elif cmd_name == "WallSplit":
+            p: WallSplitParams = validated
+            return self.manager.split_wall(p.guid, p.at_offset)
 
         elif cmd_name == "LevelMove":
             p: LevelMoveParams = validated

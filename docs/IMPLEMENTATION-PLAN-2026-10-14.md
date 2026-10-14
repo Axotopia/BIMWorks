@@ -201,6 +201,25 @@ The README's M2 core, now unblocked and correctly scoped.
 
 **Exit criteria:** README M2 gate verbatim — corner chain of 8 walls edits live; deleting a door heals the wall; move Level 2 → constrained walls follow; EQ holds through arbitrary later moves (new regression test); wall-drag p95 measured and logged.
 
+**Status: COMPLETE (2026-10-14).** Verified by `scratch/test_dependency_graph.py` (41 checks) plus the ten existing suites.
+
+| Item | What landed |
+|---|---|
+| Dependency graph | `backend/dependency_graph.py`: explicit nodes/edges for **level, host, join and constraint**, with dirty-flag recompute along chosen edge kinds. Replaces ad-hoc recursion plus the unconditional global join pass |
+| Constraint solver | `backend/constraint_solver.py` wraps **planegcs** (FreeCAD's PlaneGCS, GPL-3.0, wheels on PyPI) behind Align/Lock/EQ. Align → coincident, locked dimension → point-to-point distance, EQ → equal-length segments across the span. Conflicts reported in `last_constraint_conflict` and never half-applied |
+| EQ persistence (N6) | **Fixed.** EQ is a relation that survives arbitrary later moves. The old code dropped it after creation and appended a duplicate constraint on every call; EQ now updates in place and re-solves. Span endpoints are pinned while interiors redistribute — EQ's actual semantics, and it removes the solver drift (it landed 40.018 instead of 40 when the far endpoint was free) |
+| Incremental joins | `recompute_wall_joins(only=[...])`. Join is treated as **one hop**, not transitive: a wall's own baseline determines its joins, so moving C0 recomputes C0 and its partners but not C2. One edit in an 8-wall chain plus 4 unrelated walls recomputes **3 of 12** walls, and the footprints are identical to a full pass |
+| Modify tools | `ElementCopy / ElementRotate / ElementOffset / WallTrimExtend / WallSplit / LevelMove` are CommandBus commands (journaled, undoable, AI-reachable) and are dispatched from the store, so the parity gate covers them |
+| Level-driven elements | New `move_level()` (and `LevelMove`): a storey brings its elements with it, then re-solves constraints. Elements on other levels are untouched |
+| Wall-drag budget | Measured and logged: **p50 4.69 ms, p95 4.86 ms** over 60 drags against the 16 ms M0 target |
+
+**Bugs found while wiring this up** (all caught by tests, not by reading):
+- The solver hook was guarded by `not visited`, but `visited` is mutated by `.add()` (which returns `None`), so it was truthy on the very first call — the entire solver path was dead. Now an explicit `_propagate` flag.
+- `equalize()` passed the EQ relation both as an ad-hoc "extra" and as a persisted constraint, building the same equal-length chain twice on one sketch. The solver correctly reported that as an over-constrained conflict.
+- `rotate_element` rotated the baseline without moving the placement, so the stored angle and the IFC placement disagreed. Rotation now happens about the wall's own start, which is what the stored placement expresses.
+
+**Remaining for P3 (tracked, not done):** the *interactive* endpoint/baseline drag UI. The backend drag path is measured and within budget, but the plan's "direct manipulation ... drag an edge, drag a vertex" is a UI skin — and it is the same skin P4 specifies for footprints and profiles, so it belongs with that work rather than being half-built here. Endpoint *editing* is available today via `WallTrimExtend` and `WallSplit`.
+
 ### P4 — Sketch-based elements & direct profile editing (target: 2–3 weeks)
 The workflow answer from principle 3.
 
