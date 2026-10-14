@@ -481,6 +481,133 @@ class BimModelManager:
         result["status"] = status
         return result
 
+    # -- wall profiles (P4 exit criterion: profile edit -> awning) ------------
+    def set_wall_profile(self, guid: str, profile_sketch: Any) -> Dict[str, Any]:
+        """
+        Applies a vertical wall profile: a closed outline in the wall's own U-Z
+        plane (U along the baseline from its start, Z the elevation above the
+        wall's base), swept across the wall thickness.
+
+        This is how a wall gets an awning: the outline keeps the eaves at the base
+        height and pushes a band of it outwards/upwards, and because the geometry is
+        rebuilt from the profile the host wall changes shape *around* its openings
+        rather than replacing them.
+
+        The wall must be axis-aligned in plan for this to be geometrically
+        well-defined without a general sweep (the same restriction the rest of the
+        V1 pipeline has); an angled wall is rejected rather than silently
+        approximated.
+        """
+        if guid not in self.element_meta:
+            raise KeyError(f"Wall {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcWallStandardCase", "IfcWall"):
+            raise ValueError("set_wall_profile expects a wall")
+
+        problem = profile_sketch.validate()
+        if problem:
+            raise ValueError(problem)
+
+        angle = float(meta.get("angle", 0.0))
+        if abs(math.sin(angle)) > 1e-9 and abs(math.cos(angle)) > 1e-9:
+            raise ValueError(
+                "Profile editing currently needs an axis-aligned wall; "
+                "angled walls would need a general sweep"
+            )
+
+        meta["profile"] = profile_sketch.to_dict()
+        self._regenerate_profile_geometry(guid)
+
+        # The openings' own placement is expressed relative to the wall baseline,
+        # so it survives a profile change untouched. Re-run joins so any
+        # neighbour whose trim depended on this wall follows.
+        self.recompute_wall_joins()
+        return {
+            "status": "profile-applied",
+            "guid": guid,
+            "curves": len(profile_sketch.curves),
+            "hosted_openings": list(meta.get("hosted_openings", [])),
+        }
+
+    def _regenerate_profile_geometry(self, guid: str) -> None:
+        """
+        Builds `profile_mesh` for a wall from its stored profile and makes the IFC
+        representation contain that region.
+
+        The mesh is derived from the profile alone: front/back faces plus a swept
+        side wall, in world coordinates (local U along the baseline from its start,
+        V across the thickness).
+        """
+        meta = self.element_meta.get(guid)
+        if not meta or not meta.get("profile"):
+            return
+        from sketch_model import Sketch
+
+        sketch = Sketch.from_dict(meta["profile"])
+        ring = sketch.footprint()
+        if len(ring) < 3:
+            return
+
+        sp = meta.get("start", [0.0, 0.0, 0.0])
+        ep = meta.get("end", [1.0, 0.0, 0.0])
+        thickness = float(meta.get("thickness", INCHES_8))
+        base_z = float(sp[2]) if len(sp) > 2 else 0.0
+        length = float(meta.get("length") or math.hypot(ep[0] - sp[0], ep[1] - sp[1]))
+
+        # Local U is measured from the fixed (start) end. When the sketch runs from
+        # the far end, flip it so "the awning is at the door end" behaves sensibly.
+        xs = [p[0] for p in ring]
+        if min(xs) >= -1e-9 and max(xs) > length + 1e-6:
+            ring = [(length - u, z) for u, z in ring]
+
+        verts: List[float] = []
+        front: List[int] = []
+        back: List[int] = []
+        for u, z in ring:
+            verts.extend([sp[0] + float(u), sp[1], base_z + float(z)])          # front face
+            front.append(len(verts) // 3 - 1)
+        for u, z in ring:
+            verts.extend([sp[0] + float(u), sp[1] + thickness, base_z + float(z)])  # back face
+            back.append(len(verts) // 3 - 1)
+
+        faces: List[int] = []
+        n = len(ring)
+
+        def as_plan(u: float, v: float) -> Tuple[float, float]:
+            return (sp[0] + float(u), sp[1] + float(v))
+
+        faces = []
+        # Side walls of the sweep (quads around the outline).
+        for i in range(n):
+            nxt = (i + 1) % n
+            faces.extend([front[i], front[nxt], back[nxt]])
+            faces.extend([front[i], back[nxt], back[i]])
+        # End caps, triangulated as fans from the first vertex.
+        for i in range(1, n - 1):
+            faces.extend([front[0], front[i + 1], front[i]])
+        for i in range(1, n - 1):
+            faces.extend([back[0], back[i], back[i + 1]])
+
+        meta["profile_mesh"] = {"vertices": verts, "indices": faces}
+        xs3 = verts[0::3]; ys3 = verts[1::3]; zs3 = verts[2::3]
+        meta["bbox"] = {
+            "min": [min(xs3), min(ys3), min(zs3)],
+            "max": [max(xs3), max(ys3), max(zs3)],
+        }
+
+        # Make the IFC representation cover the profiled region as well, so the
+        # model of record is not a plain rectangle for a wall that now has an
+        # awning. The swept outline is projected into plan space and unioned with
+        # the footprint polygon used by the join engine.
+        try:
+            plan_outline = [
+                as_plan(u, 0.0) for u, _z in ring
+            ] + [as_plan(u, thickness) for u, _z in reversed(ring)]
+            base_footprint = meta.get("footprint") or self._wall_rect(meta)
+            meta["footprint"] = self._get_2d_hull(list(base_footprint) + plan_outline)
+        except Exception as e:
+            print(f"Notice: could not fold the profile into the wall footprint: {e}")
+
     def _regenerate_sketch_geometry(self, guid: str) -> None:
         """
         Rebuilds a roof's display geometry from its sketch.
