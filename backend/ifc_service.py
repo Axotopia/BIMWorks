@@ -2890,6 +2890,77 @@ class BimModelManager:
         return self.load_ifc_file(temp_path, filename)
 
     @staticmethod
+    def _extruded_profile(p) -> Optional[Dict[str, Any]]:
+        """
+        Reads a product's extruded-solid parameters without assuming a wall.
+
+        Returns the profile outline in the product's local frame, the extrusion's
+        placement matrix and its depth, or None when the product has no extruded
+        area solid. Shared by wall baselines and slab/roof outlines.
+        """
+        try:
+            representation = getattr(p, "Representation", None)
+            if not representation:
+                return None
+            item = None
+            for r in getattr(representation, "Representations", []) or []:
+                ident = (getattr(r, "RepresentationIdentifier", "") or "").lower()
+                if ident in ("body", "model", ""):
+                    for candidate in getattr(r, "Items", []) or []:
+                        if candidate.is_a("IfcExtrudedAreaSolid"):
+                            item = candidate
+                            break
+                if item is not None:
+                    break
+            if item is None:
+                return None
+
+            profile = getattr(item, "SweptArea", None)
+            position = getattr(item, "Position", None)
+            if profile is None or position is None:
+                return None
+
+            coords: List[Tuple[float, float]] = []
+            if profile.is_a("IfcArbitraryClosedProfileDef"):
+                curve = getattr(profile, "OuterCurve", None)
+                for pt in (getattr(curve, "Points", None) or []):
+                    # Three shapes are observed in the wild: an IfcCartesianPoint
+                    # entity, a coordinate tuple, or a nested sequence of points.
+                    c = getattr(pt, "Coordinates", pt)
+                    if c is not None and len(c) and isinstance(c[0], (tuple, list)):
+                        for inner in c:
+                            if len(inner) >= 2:
+                                coords.append((float(inner[0]), float(inner[1])))
+                    elif c is not None and len(c) >= 2:
+                        coords.append((float(c[0]), float(c[1])))
+            elif profile.is_a("IfcRectangleProfileDef"):
+                hx = float(getattr(profile, "XDim", 0.0)) / 2.0
+                hy = float(getattr(profile, "YDim", 0.0)) / 2.0
+                coords = [(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)]
+            else:
+                return None
+
+            if len(coords) < 3:
+                return None
+            return {
+                "coords": coords,
+                "local_matrix": plc.get_axis2placement(position),
+                "depth": float(getattr(item, "Depth", 0.0) or 0.0),
+            }
+        except Exception:
+            return None
+
+    @staticmethod
+    def _product_translation(p) -> np.ndarray:
+        """World translation of a product's own placement (zeros if none)."""
+        try:
+            if getattr(p, "ObjectPlacement", None) is None:
+                return np.zeros(3)
+            return plc.get_local_placement(p.ObjectPlacement)[:3, 3]
+        except Exception:
+            return np.zeros(3)
+
+    @staticmethod
     def _wall_from_extruded_profile(p, unit_scale: float, fallback_z: float) -> Optional[Dict[str, Any]]:
         """
         Reconstructs a wall baseline from its extruded-solid parameters.
@@ -3248,36 +3319,66 @@ class BimModelManager:
                     "swing_flipped": False,
                 })
 
-            elif ifc_class == "IfcSlab":
-                pts_2d = [(raw_verts[i], raw_verts[i+1]) for i in range(0, len(raw_verts), 3)] if raw_verts else []
-                hull = self._get_2d_hull(pts_2d) if len(pts_2d) >= 3 else [
-                    [min_x, min_y],
-                    [max_x, min_y],
-                    [max_x, max_y],
-                    [min_x, max_y],
-                ]
-                meta.update({
-                    "thickness": max(dz, 0.1),
-                    "elevation": min_z,
-                    "polygon": hull,
-                })
+            elif ifc_class in ("IfcSlab", "IfcRoof"):
+                # Prefer the real profile over a tessellation hull: a hull of the
+                # triangulation loses concavity and any interior boundary, so a
+                # non-rectangular floor came back as its outline rectangle.
+                profile_data = self._extruded_profile(p)
+                footprint: Optional[List[List[float]]] = None
+                profile_thickness_2d: Optional[float] = None
+                if profile_data is not None:
+                    lm = profile_data["local_matrix"]
+                    translation = self._product_translation(p)
+                    # The extrusion is expressed in the product's frame. Recover
+                    # world coordinates exactly when the product placement is a
+                    # pure translation (what exporters emit for a level-based
+                    # slab); if the product is rotated, the profile is rotated too
+                    # and this falls back to the hull rather than guessing.
+                    rot = lm[:2, :2]
+                    is_axis_aligned = (
+                        abs(rot[0][1]) < 1e-9 and abs(rot[1][0]) < 1e-9
+                    )
+                    if is_axis_aligned:
+                        lx = float(lm[0, 3]) * unit_scale
+                        ly = float(lm[1, 3]) * unit_scale
+                        footprint = [
+                            [
+                                float(cx) * unit_scale + lx + float(translation[0]) * unit_scale,
+                                float(cy) * unit_scale + ly + float(translation[1]) * unit_scale,
+                            ]
+                            for cx, cy in profile_data["coords"]
+                        ]
+                        profile_thickness_2d = profile_data["depth"] * unit_scale or None
 
-            elif ifc_class == "IfcRoof":
-                pts_2d = [(raw_verts[i], raw_verts[i+1]) for i in range(0, len(raw_verts), 3)] if raw_verts else []
-                hull = self._get_2d_hull(pts_2d) if len(pts_2d) >= 3 else [
-                    [min_x, min_y],
-                    [max_x, min_y],
-                    [max_x, max_y],
-                    [min_x, max_y],
-                ]
-                span = min(dx, dy) / 2.0 if min(dx, dy) > 0.1 else 1.0
-                est_pitch = math.degrees(math.atan2(dz, span)) if dz > 0.4 else 0.0
-                meta.update({
-                    "thickness": max(min(dz, 0.4), 0.2),
-                    "elevation": min_z,
-                    "pitch": round(est_pitch, 1),
-                    "polygon": hull,
-                })
+                if footprint is None:
+                    pts_2d = [(raw_verts[i], raw_verts[i + 1]) for i in range(0, len(raw_verts), 3)] if raw_verts else []
+                    footprint = self._get_2d_hull(pts_2d) if len(pts_2d) >= 3 else [
+                        [min_x, min_y],
+                        [max_x, min_y],
+                        [max_x, max_y],
+                        [min_x, max_y],
+                    ]
+                    meta["parametrized"] = False
+                    meta["parametrized_note"] = (
+                        "profile could not be read in world coordinates; footprint is a "
+                        "hull of the tessellation"
+                    )
+
+                if ifc_class == "IfcSlab":
+                    meta.update({
+                        "thickness": profile_thickness_2d or max(dz, 0.1),
+                        "elevation": min_z,
+                        "polygon": footprint,
+                    })
+                else:
+                    span = min(dx, dy) / 2.0 if min(dx, dy) > 0.1 else 1.0
+                    est_pitch = math.degrees(math.atan2(dz, span)) if dz > 0.4 else 0.0
+                    meta.update({
+                        "thickness": profile_thickness_2d or max(min(dz, 0.4), 0.2),
+                        "elevation": min_z,
+                        "pitch": round(est_pitch, 1),
+                        "polygon": footprint,
+                    })
 
             self.element_meta[guid] = meta
 

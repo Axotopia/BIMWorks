@@ -278,6 +278,18 @@ def main():
         check("no element is silently unclassified",
               all("reason" in e for e in rep_f["geometry_only"]),
               rep_f["geometry_only"])
+        # Slab/roof footprints must come from their extruded profile, not a hull
+        # of the tessellation: a hull cannot represent an interior notch.
+        slabs = [x for x in foreign.element_meta.values() if x["ifc_class"] == "IfcSlab"]
+        check("foreign slab polygon read from its profile",
+              slabs and len({tuple(p) for p in slabs[0]["polygon"]}) >= 4,
+              slabs and slabs[0].get("polygon"))
+        check("foreign slab thickness read from profile depth, not the bbox",
+              slabs and abs(slabs[0]["thickness"] - 0.25) < 1e-6,
+              slabs and slabs[0].get("thickness"))
+        check("foreign roof reconstructed with a pitch",
+              any(x["ifc_class"] == "IfcRoof" and x.get("pitch") is not None
+                  for x in foreign.element_meta.values()))
 
     print("12. Section 11: the units declaration matches the IFC ...")
     # The overlay and meta.json used to claim `decimal_feet` while every stored
