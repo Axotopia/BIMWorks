@@ -7,6 +7,7 @@ import { EditTypeModal } from './components/modals/EditTypeModal';
 import { ViewRangeModal } from './components/modals/ViewRangeModal';
 import { PromptBar } from './components/ai/PromptBar';
 import { useBimStore } from './store/useBimStore';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 
 export const App: React.FC = () => {
   const {
@@ -70,7 +71,9 @@ export const App: React.FC = () => {
       <Ribbon />
 
       {/* 2. Dockview MDI Workspace (Browser, Palettes, 3D/2D Viewports, Sheets) */}
-      <Workspace />
+      <ErrorBoundary>
+        <Workspace />
+      </ErrorBoundary>
 
       {/* 3. Tier-1 In-App Prompt Bar ("Ask/Do" Bar) */}
       <PromptBar />

@@ -43,6 +43,9 @@ export const Viewport3D: React.FC = () => {
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  // Set when WebGL is unavailable, so the panel can explain itself instead of taking
+  // the whole application down with it.
+  const [webglError, setWebglError] = useState<string | null>(null);
   const threeMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map());
   const clippingPlanesRef = useRef<THREE.Plane[]>([]);
   const sectionBoxMeshRef = useRef<THREE.LineSegments | null>(null);
@@ -106,11 +109,22 @@ export const Viewport3D: React.FC = () => {
     cameraRef.current = camera;
     updateCameraPosition();
 
-    const renderer = new THREE.WebGLRenderer({
-      canvas: canvasRef.current,
-      antialias: true,
-      stencil: true, // For real-time section box solid capping
-    });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        canvas: canvasRef.current,
+        antialias: true,
+        stencil: true, // For real-time section box solid capping
+      });
+    } catch (e) {
+      // A machine without a usable WebGL context (no GPU, headless, remote session,
+      // blocklisted driver) throws here. Reporting it keeps the 2D plan, browser and
+      // properties panels usable; throwing blanked the entire application before.
+      const detail = e instanceof Error ? e.message : String(e);
+      console.error('WebGL unavailable:', detail);
+      setWebglError(detail);
+      return;
+    }
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.localClippingEnabled = true;
@@ -641,6 +655,28 @@ export const Viewport3D: React.FC = () => {
       onContextMenu={(e) => e.preventDefault()}
     >
       <canvas ref={canvasRef} className="w-full h-full block" />
+
+      {/* WebGL unavailable: explain it rather than showing an empty dark panel. The
+          other panels (2D plan, browser, properties) keep working. */}
+      {webglError && (
+        <div className="absolute inset-0 flex items-center justify-center p-6 z-20">
+          <div className="max-w-md space-y-3 text-center">
+            <h3 className="text-sm font-semibold text-amber-400">3D view unavailable</h3>
+            <p className="text-xs text-[#a0a0a0] leading-relaxed">
+              This machine could not create a WebGL context, so the 3D viewport cannot
+              draw. The rest of the application still works — switch to the{' '}
+              <span className="text-[#d4d4d4]">2D plan</span> view to keep working.
+            </p>
+            <p className="text-[10px] text-[#707070]">
+              Usually a missing or blocklisted GPU driver, or a remote/headless session
+              without hardware acceleration.
+            </p>
+            <pre className="text-[10px] whitespace-pre-wrap break-words bg-[#252526] border border-[#3c3c3c] rounded p-2 text-[#e0a0a0] text-left">
+              {webglError}
+            </pre>
+          </div>
+        </div>
+      )}
 
       {/* Viewport Top Controls Overlay */}
       <div className="absolute top-3 left-3 flex items-center space-x-2 bg-[#1e1e1e]/85 backdrop-blur px-2.5 py-1.5 rounded border border-[#3c3c3c] text-xs z-10">
