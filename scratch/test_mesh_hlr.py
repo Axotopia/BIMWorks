@@ -197,6 +197,39 @@ def main():
           all(v.get("renderer") == "mesh-hlr" and "view_range" in v
               for v in (plan, sec, elev)))
 
+    print("8. View range is honoured, not merely reported ...")
+    # `view_depth` was carried in the contract but never applied, so a wall 200 ft
+    # away still appeared in a view whose depth was 30 ft. It now filters.
+    mr = fresh()
+    lvr = [i for i, l in mr.levels.items() if l["name"] == "Level 1"][0]
+    near = mr.add_wall((0, 0, 0), (40, 0, 0), height=FEET_10, thickness=INCHES_8,
+                       name="Near", level_id=lvr)["guid"]
+    mid = mr.add_wall((0, 20, 0), (40, 20, 0), height=FEET_10, thickness=INCHES_8,
+                      name="Mid", level_id=lvr)["guid"]
+    far = mr.add_wall((0, 200, 0), (40, 200, 0), height=FEET_10, thickness=INCHES_8,
+                      name="Distant", level_id=lvr)["guid"]
+    unlimited = mr.render_2d_view(view_type="floor_plan", cut_elevation=4.0)
+    limited = mr.render_2d_view(view_type="floor_plan", cut_elevation=4.0,
+                                view_range={"cut": 4.0, "view_depth": 30.0})
+    ucut = {p.get("guid") for p in unlimited["cut_paths"]}
+    lcut = {p.get("guid") for p in limited["cut_paths"]}
+    check("without a view range every wall is drawn",
+          {near, mid, far} <= ucut, sorted(ucut))
+    check("a 30 ft view depth drops the wall 180 ft beyond it", far not in lcut,
+          sorted(lcut))
+    check("...while keeping the walls inside it", near in lcut and mid in lcut,
+          sorted(lcut))
+
+    print("9. Lineweight table is applied to the output ...")
+    check("cut entries carry a style",
+          all("style" in e for e in limited["cut_paths"]), limited["cut_paths"][:1])
+    check("the contract carries the whole lineweight table",
+          "lineweights" in limited and "cut" in limited["lineweights"])
+    check("cut is styled heavier than projection",
+          limited["lineweights"]["cut"]["weight_mm"]
+          > limited["lineweights"]["projection"]["weight_mm"],
+          limited.get("lineweights"))
+
     print(f"\nRESULT: {CHECKS['passed']} passed, {CHECKS['failed']} failed")
     if CHECKS["failed"]:
         return 1

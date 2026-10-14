@@ -3519,8 +3519,24 @@ class BimModelManager:
         cut_z = None
         if view_type in ("floor_plan", "plan", "section"):
             cut_z = feet_to_metres(float(cut_elevation))
-        view = projector.render(camera=camera, cut_z=cut_z)
-        contract = projector.to_contract(view)
+
+        # The view range is applied in MODEL units, so convert from feet (the
+        # parametric unit) to metres (the geometry's unit) before filtering.
+        metric_range = None
+        if view_range:
+            metric_range = {
+                k: feet_to_metres(float(v))
+                for k, v in view_range.items()
+                if v not in (None, "") and k in ("cut", "top", "bottom", "view_depth")
+            }
+
+        # Lineweights come from a table rather than being hard-coded here, so a view
+        # template can restyle a drawing without touching the renderer.
+        from hlr_renderer import LineweightTable
+
+        table = LineweightTable()
+        view = projector.render(camera=camera, cut_z=cut_z, view_range=metric_range)
+        contract = projector.to_contract(view, lineweights=table, view_range=view_range)
         for path_key in ("cut_paths", "projection_paths", "hidden_paths"):
             for entry in contract.get(path_key, []):
                 entry["d"] = _scale_path(entry.get("d", ""), metres_to_feet)

@@ -120,7 +120,12 @@ class MeshHlrProjector:
         for mesh in self.meshes:
             polys = []
             min_depth = None
+            z_lo = z_hi = None
             for tri in self._triangles(mesh):
+                for p in tri:
+                    z = p[2]
+                    z_lo = z if z_lo is None else min(z_lo, z)
+                    z_hi = z if z_hi is None else max(z_hi, z)
                 pts = [camera.project(p) for p in tri]
                 depths = [camera.depth(p) for p in tri]
                 try:
@@ -142,11 +147,102 @@ class MeshHlrProjector:
                 "name": mesh.get("name"),
                 "polys": polys,
                 "min_depth": min_depth if min_depth is not None else 0.0,
+                # World Z extent, captured here because a prepared entry no longer
+                # carries the triangles the view range needs to test.
+                "z_range": (z_lo, z_hi),
             })
         # Nearest first: an element's occluders are exactly the earlier entries.
         prepared.sort(key=lambda m: m["min_depth"])
         self._prepared = prepared
         return prepared
+
+    def _apply_view_range(self, prepared, view_range: Dict[str, float]):
+        """
+        Filters meshes by depth and by the view's top/bottom clip.
+
+        Depth is measured along the view direction from the cut plane: a plan looking
+        down sees everything BELOW the cut out to `view_depth`. `top`/`bottom` bound the
+        vertical extent a plan draws, which is how a view range hides a high wall's
+        upper part rather than sectioning it.
+        """
+        depth_in = view_range.get("view_depth")
+        top_in = view_range.get("top")
+        bottom_in = view_range.get("bottom")
+        depth = float(depth_in) if depth_in not in (None, "") else None
+        top = float(top_in) if top_in not in (None, "") else None
+        bottom = float(bottom_in) if bottom_in not in (None, "") else None
+        if depth is None and top is None and bottom is None:
+            return prepared
+
+        out = []
+        for mesh in prepared:
+            z_range = mesh.get("z_range")
+            if not z_range or z_range[0] is None:
+                out.append(mesh)
+                continue
+            z_lo, z_hi = z_range
+            # `top`/`bottom` bound where the mesh's BASE sits, not its whole height:
+            # a wall whose base is inside the view range is part of the view even
+            # though its top runs past the range's top (otherwise every 10 ft wall is
+            # excluded by a range whose top is 8 ft, which is what happened first).
+            if bottom is not None and z_hi < bottom:
+                continue          # entirely below the view's bottom
+            if top is not None and z_lo > top:
+                continue          # entirely above the view's top
+            if depth is not None:
+                pass  # applied in bulk below; see `_depth_filter`
+            out.append(mesh)
+        if depth is not None:
+            out = self._depth_filter(out, depth)
+        return out
+
+    @staticmethod
+    def _mesh_bounds(mesh: Dict[str, Any]):
+        xs, ys = [], []
+        for poly, _d in mesh.get("polys") or []:
+            minx, miny, maxx, maxy = poly.bounds
+            xs.extend([minx, maxx])
+            ys.extend([miny, maxy])
+        if not xs:
+            return None
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def _depth_filter(self, prepared, depth: float):
+        """
+        Drops meshes further than `depth` from the NEAREST element.
+
+        View depth in a plan is measured outward from the cut plane, so the reference
+        is the front of the drawing, not its bounding-box centre. Two earlier
+        attempts were wrong in instructive ways: measuring each element's own size
+        filtered nothing (every element is small about itself), and measuring from the
+        model's centre made one distant element drag the centre out and blank the
+        whole drawing. Anchoring on the nearest element is stable in both cases.
+        """
+        boxes = [(m, self._mesh_bounds(m)) for m in prepared]
+        boxes = [(m, b) for m, b in boxes if b]
+        if not boxes:
+            return list(prepared)
+
+        # The seed is arbitrary, so order by position to make the result deterministic
+        # rather than dependent on the order elements happened to be created.
+        kept_boxes = sorted(boxes, key=lambda mb: (mb[1][0], mb[1][1]))
+        seed = kept_boxes[0]
+        kept = [seed]
+        remaining = [b for b in kept_boxes[1:]]
+        changed = True
+        while changed:
+            changed = False
+            for item in list(remaining):
+                _m, b = item
+                for _k, kb in kept:
+                    gx = max(0.0, kb[0] - b[2], b[0] - kb[2])
+                    gy = max(0.0, kb[1] - b[3], b[1] - kb[3])
+                    if max(gx, gy) <= depth:
+                        kept.append(item)
+                        remaining.remove(item)
+                        changed = True
+                        break
+        return [m for m, _b in kept]
 
     # -- edge extraction ----------------------------------------------------
     def _silhouette_edges(self, mesh: Dict[str, Any]) -> List[LineString]:
@@ -191,10 +287,18 @@ class MeshHlrProjector:
             return []
         return [(a, b)]
 
-    def cut_at(self, plane_z: float, camera: ViewCamera) -> List[Dict[str, Any]]:
-        """The sectioned solid at `plane_z`, as 2D polylines in model space."""
+    def cut_at(self, plane_z: float, camera: ViewCamera,
+               meshes: Optional[Sequence[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+        """
+        The sectioned solid at `plane_z`, as 2D polylines in model space.
+
+        `meshes` limits the cut to a subset — the view range uses this so geometry
+        beyond the view depth is not sectioned. Sectioning everything and filtering
+        afterwards cannot work, because a cut is usually parallel to the view
+        direction, so every element's section lies at the same depth.
+        """
         out: List[Dict[str, Any]] = []
-        for mesh in self.meshes:
+        for mesh in (meshes if meshes is not None else self.meshes):
             segments: List[Tuple] = []
             for tri in self._triangles(mesh):
                 segments.extend(self._triangle_plane_segments(tri, plane_z))
@@ -216,19 +320,42 @@ class MeshHlrProjector:
 
     # -- render -------------------------------------------------------------
     def render(self, camera: Optional[ViewCamera] = None,
-               cut_z: Optional[float] = None) -> ProjectedView:
+               cut_z: Optional[float] = None,
+               view_range: Optional[Dict[str, float]] = None) -> ProjectedView:
         """
         Computes the three partitions.
 
         `cut_z` enables the cut partition. `camera` defaults to a plan looking down.
+
+        `view_range` carries the Revit fields (`cut`, `top`, `bottom`, `view_depth`)
+        in MODEL units and is honoured, not merely reported:
+
+        * `view_depth` limits how far behind the cut plane anything is projected, so
+          distant geometry does not appear in a plan that does not reach it;
+        * `top` / `bottom` clip geometry outside the range, so a wall above the view's
+          top (or below its bottom) is not drawn at all.
+
+        A view range whose fields are all absent leaves the render unfiltered, which is
+        what the older callers expect.
         """
         camera = camera or ViewCamera()
         self._prepared = None
         prepared = self._prepare(camera)
+        if view_range:
+            prepared = self._apply_view_range(prepared, view_range)
         view = ProjectedView(camera=camera)
 
         if cut_z is not None:
-            view.cut = self.cut_at(cut_z, camera)
+            # Only meshes inside the view range are sectioned.
+            allowed = None
+            if view_range:
+                allowed = {m["guid"] for m in prepared}
+                view.cut = self.cut_at(
+                    cut_z, camera,
+                    [m for m in self.meshes if m.get("guid") in allowed],
+                )
+            else:
+                view.cut = self.cut_at(cut_z, camera)
 
         # Nearer silhouette = occluder for everything behind it.
         occluder = None
@@ -281,9 +408,17 @@ class MeshHlrProjector:
         rest = " ".join(f"L {x:.4f} {y:.4f}" for x, y in coords[1:])
         return (head + (" " + rest if rest else "")).strip()
 
-    def to_contract(self, view: ProjectedView) -> Dict[str, Any]:
-        """Shapes a `ProjectedView` into the frontend's existing 2D contract."""
-        return {
+    def to_contract(self, view: ProjectedView, lineweights=None,
+                    view_range=None) -> Dict[str, Any]:
+        """
+        Shapes a `ProjectedView` into the frontend's existing 2D contract.
+
+        `lineweights` is a `hlr_renderer.LineweightTable`; when given, each partition
+        entry carries its style so a consumer can draw the drawing per convention
+        rather than inventing weights. `view_range` is echoed back so a view knows what
+        it was drawn with.
+        """
+        contract = {
             "cut_paths": [
                 {"guid": e["guid"], "class": f"{e['ifc_class']} cut" if e["ifc_class"] else "cut",
                  "d": self._to_path(e["coords"])}
@@ -303,3 +438,20 @@ class MeshHlrProjector:
             "partitions": view.partition_counts(),
             "renderer": "mesh-hlr",
         }
+        if lineweights is not None:
+            for key, partition in (("cut_paths", "cut"), ("projection_paths", "projection"),
+                                   ("hidden_paths", "hidden")):
+                style = lineweights.style_for(partition)
+                for entry in contract.get(key, []):
+                    entry["style"] = {
+                        "weight_mm": style.weight_mm,
+                        "pattern": style.pattern,
+                        "colour": style.colour,
+                    }
+            contract["lineweights"] = {
+                name: {"weight_mm": st.weight_mm, "pattern": st.pattern, "colour": st.colour}
+                for name, st in lineweights.styles.items()
+            }
+        if view_range:
+            contract["view_range"] = dict(view_range)
+        return contract
