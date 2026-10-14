@@ -285,15 +285,19 @@ class MeshHlrProjector:
         """Shapes a `ProjectedView` into the frontend's existing 2D contract."""
         return {
             "cut_paths": [
-                {"guid": e["guid"], "class": e["ifc_class"] or "cut", "d": self._to_path(e["coords"])}
+                {"guid": e["guid"], "class": f"{e['ifc_class']} cut" if e["ifc_class"] else "cut",
+                 "d": self._to_path(e["coords"])}
                 for e in view.cut if e["coords"]
             ],
             "projection_paths": [
-                {"guid": e["guid"], "class": e["ifc_class"] or "projection", "d": self._to_path(e["coords"])}
+                {"guid": e["guid"],
+                 "class": f"{e['ifc_class']} projection" if e["ifc_class"] else "projection",
+                 "d": self._to_path(e["coords"])}
                 for e in view.projection if e["coords"]
             ],
             "hidden_paths": [
-                {"guid": e["guid"], "class": e["ifc_class"] or "hidden", "d": self._to_path(e["coords"])}
+                {"guid": e["guid"], "class": f"{e['ifc_class']} hidden" if e["ifc_class"] else "hidden",
+                 "d": self._to_path(e["coords"])}
                 for e in view.hidden if e["coords"]
             ],
             "partitions": view.partition_counts(),

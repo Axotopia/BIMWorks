@@ -197,9 +197,9 @@ def main():
           and any("A " in s["d"] for s in door_swings),
           [(s["class"], s["d"][:40]) for s in door_swings])
     check("contract reports which renderer produced it",
-          plane.get("renderer") in ("analytic", "hlr"), plane.get("renderer"))
-    check("analytic is the default renderer (HLR coordinates unverified)",
-          plane.get("renderer") == "analytic", plane.get("renderer"))
+          plane.get("renderer") in ("analytic", "hlr", "mesh-hlr"), plane.get("renderer"))
+    check("the default plan renderer is the in-process geometric HLR",
+          plane.get("renderer") == "mesh-hlr", plane.get("renderer"))
 
     print("5. View definitions and lineweight tables ...")
     lw = LineweightTable()

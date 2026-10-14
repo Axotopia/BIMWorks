@@ -83,6 +83,10 @@ def main():
 
     print("4. Frontend contract ...")
     contract = plan_projector(m).to_contract(view)
+    check("class labels identify the partition (as the analytic renderer did)",
+          all("cut" in e["class"] for e in contract["cut_paths"])
+          and all("projection" in e["class"] for e in contract["projection_paths"]),
+          contract["cut_paths"][:1])
     check("contract exposes cut/projection/hidden paths",
           set(("cut_paths", "projection_paths", "hidden_paths")) <= set(contract))
     check("paths are SVG 'd' strings",
@@ -114,6 +118,22 @@ def main():
           abs((off[2] + off[3]) / 2.0 - 3.048) < 0.02, off)
     check("a 20 ft wall on y spans 0..6.096 m",
           abs(east[2]) < 0.15 and abs(east[3] - 6.096) < 0.01, east)
+
+    print("5b. The projector is the DEFAULT plan renderer ...")
+    # The objective is to REPLACE the analytic slicer, so the plan entry point must
+    # route through here by default.
+    mplan = fresh()
+    mplan.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8, name="South")
+    mplan.add_wall((30, 0, 0), (30, 20, 0), height=FEET_10, thickness=INCHES_8, name="East")
+    plane = mplan.slice_2d_vector_plan(cut_elevation=4.0)
+    check("slice_2d_vector_plan defaults to the geometric HLR renderer",
+          plane.get("renderer") == "mesh-hlr", plane.get("renderer"))
+    check("...and reports a cut partition", plane["partitions"].get("cut", 0) > 0,
+          plane.get("partitions"))
+    # The analytic renderer must remain reachable for comparison and fallback.
+    analytic = mplan.slice_2d_vector_plan(cut_elevation=4.0, renderer="analytic")
+    check("the analytic slicer is still available for comparison",
+          analytic.get("renderer") == "analytic", analytic.get("renderer"))
 
     print("6. EXIT CRITERION: openings are voided in the cut ...")
     # The door void is modelled as an IfcOpeningElement subtracted from the wall. It
@@ -156,8 +176,8 @@ def main():
     print(f"\nRESULT: {CHECKS['passed']} passed, {CHECKS['failed']} failed")
     if CHECKS["failed"]:
         return 1
-    print("mesh HLR: cut partition, model-space coordinates and hidden-line "
-          "separation verified; opening subtraction is the open item")
+    print("mesh HLR is the default plan renderer; cut partition, openings voided "
+          "and hidden-line separation all verified")
     return 0
 
 

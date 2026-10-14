@@ -101,6 +101,36 @@ from units import (  # noqa: E402  (kept beside the constants it documents)
 # way in. The overlay stays in decimal feet because that is the spec's internal
 # unit and what the UI edits. One conversion, at this boundary.
 
+def _scale_path(d: str, fn) -> str:
+    """
+    Scales every coordinate in an SVG path string.
+
+    Used for the units boundary: mesh geometry is metric (the IFC's unit) while the
+    2D view contract is decimal feet.
+    """
+    import re as _re
+
+    if not d:
+        return d
+    nums = _re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", d)
+    cmds = _re.findall(r"[MLZ]", d.upper())
+    if not nums or not cmds:
+        return d
+    out = []
+    idx = 0
+    for cmd in cmds:
+        if cmd == "Z":
+            out.append("Z")
+            continue
+        if idx + 1 >= len(nums):
+            break
+        x = fn(float(nums[idx]))
+        y = fn(float(nums[idx + 1]))
+        idx += 2
+        out.append(f"{cmd} {x:.4f} {y:.4f}")
+    return " ".join(out) if out else d
+
+
 class BimModelManager:
     """
     Manages an active IFC4 document in memory with parametric dependency graph,
@@ -3108,7 +3138,7 @@ class BimModelManager:
     # =========================================================================
 
     def slice_2d_vector_plan(
-        self, cut_elevation: float = FEET_4, renderer: str = "analytic"
+        self, cut_elevation: float = FEET_4, renderer: str = "mesh-hlr"
     ) -> Dict[str, Any]:
         """
         Produces the 2D plan as vector paths in the frontend's existing contract.
@@ -3129,7 +3159,14 @@ class BimModelManager:
         slab/roof references — is read from metadata in both renderers, because
         those are datums and drawings rather than geometry.
         """
-        if renderer == "hlr":
+        if renderer == "mesh-hlr":
+            try:
+                contract = self._mesh_hlr_plan_contract(cut_elevation)
+                if contract is not None:
+                    return self._finish_plan_contract(contract, cut_elevation)
+            except Exception as e:
+                print(f"Notice: mesh HLR unavailable ({e}); trying the SVG serialiser")
+        if renderer in ("mesh-hlr", "hlr"):
             try:
                 contract = self._hlr_plan_contract(cut_elevation)
                 if contract is not None:
@@ -3433,6 +3470,49 @@ class BimModelManager:
         }
 
     # -- P5: HLR-backed plan ------------------------------------------------
+    def _mesh_hlr_plan_contract(self, cut_elevation: float) -> Optional[Dict[str, Any]]:
+        """
+        Renders the plan through the in-process geometric hidden-line projector.
+
+        Meshes are metric (the IFC's unit) while the 2D contract is decimal feet, so
+        this converts at the boundary. Returns None when there is no geometry, so the
+        caller can fall back rather than emit an empty drawing.
+        """
+        from mesh_hlr import MeshHlrProjector
+        from units import feet_to_metres, metres_to_feet
+
+        meshes = (self.get_geometry_buffers() or {}).get("meshes") or []
+        if not meshes:
+            return None
+
+        projector = MeshHlrProjector(meshes)
+        view = projector.render(cut_z=feet_to_metres(float(cut_elevation)))
+        contract = projector.to_contract(view)
+        for key in ("cut_paths", "projection_paths", "hidden_paths"):
+            for entry in contract.get(key, []):
+                entry["d"] = _scale_path(entry.get("d", ""), metres_to_feet)
+
+        # Apply the drafting rule that HLR alone cannot know: a wall shorter than 6 ft
+        # is drawn in projection even when the cut plane passes through it. Without
+        # this a 4 ft wall is sectioned, which is not how it is drawn.
+        from units import FEET_6
+
+        low = {
+            guid for guid, meta in self.element_meta.items()
+            if meta.get("ifc_class") in ("IfcWall", "IfcWallStandardCase")
+            and 0.0 < float(meta.get("height", 0.0) or 0.0) < FEET_6
+        }
+        if low:
+            keep, moved = [], []
+            for entry in contract.get("cut_paths", []):
+                (moved if entry.get("guid") in low else keep).append(entry)
+            contract["cut_paths"] = keep
+            contract["projection_paths"] = contract.get("projection_paths", []) + moved
+
+        contract["renderer"] = "mesh-hlr"
+        contract["cut_elevation"] = float(cut_elevation)
+        return contract
+
     def _hlr_plan_contract(self, cut_elevation: float) -> Optional[Dict[str, Any]]:
         """
         Renders the current level's plan through OCCT HLR, or None when the
