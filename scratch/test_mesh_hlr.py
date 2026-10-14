@@ -220,7 +220,48 @@ def main():
     check("...while keeping the walls inside it", near in lcut and mid in lcut,
           sorted(lcut))
 
-    print("9. Lineweight table is applied to the output ...")
+    print("9. Drafting symbols and dimensions are produced ...")
+    # A window drawn as a bare wall gap is not how a plan shows a window; the glazing
+    # symbol is annotation, like the door swing, so it cannot come from HLR.
+    ms = fresh()
+    lvs = [i for i, l in ms.levels.items() if l["name"] == "Level 1"][0]
+    ws = ms.add_wall((0, 0, 0), (40, 0, 0), height=FEET_10, thickness=INCHES_8,
+                     name="South", level_id=lvs)["guid"]
+    ms.add_window(ws, offset_along_wall=20.0, width=6.0, height=4.0, sill_height=3.0)
+    planw = ms.slice_2d_vector_plan(cut_elevation=4.0)
+    wins = planw.get("window_paths") or []
+    check("a window contributes a symbol, not just a gap", len(wins) >= 3, len(wins))
+    check("the symbol includes jambs", any("jamb" in e["class"] for e in wins))
+    check("the symbol includes glazing", any("glazing" in e["class"] for e in wins))
+    # The glazing must span the opening (20..26 ft) and the jambs sit at its ends.
+    import re as _re
+
+    glaz_xs = []
+    for e in wins:
+        nums = [float(v) for v in _re.findall(r"-?\d+\.?\d*", e["d"])]
+        if "glazing" in e["class"]:
+            glaz_xs += nums[0::2]
+    check("glazing spans the 6 ft opening at 20..26 ft",
+          glaz_xs and abs(min(glaz_xs) - 20.0) < 0.2 and abs(max(glaz_xs) - 26.0) < 0.2,
+          (min(glaz_xs), max(glaz_xs)) if glaz_xs else None)
+
+    check("overall dimensions are produced", len(planw.get("dimensions") or []) >= 1,
+          planw.get("dimensions"))
+    # Dimension text must be architectural. This model is a single 40 ft wall, so its
+    # "depth" is the wall's own thickness and is under a foot — and `format_feet_inches`
+    # deliberately drops the feet part below 1 ft (Revit convention: `8"`, not `0'-8"`).
+    # Asserting an apostrophe would therefore be asserting the wrong thing.
+    import re as _re2
+
+    for d in planw.get("dimensions") or []:
+        text = d.get("text") or ""
+        architectural = bool(_re2.fullmatch(r"\d+'-\d+(?: \d+/\d+)?\"", text)) or bool(
+            _re2.fullmatch(r'\d+(?: \d+/\d+)?"', text)
+        )
+        check(f"dimension {d.get('kind')} is labelled architecturally ({text!r})",
+              architectural, text)
+
+    print("10. Lineweight table is applied to the output ...")
     check("cut entries carry a style",
           all("style" in e for e in limited["cut_paths"]), limited["cut_paths"][:1])
     check("the contract carries the whole lineweight table",

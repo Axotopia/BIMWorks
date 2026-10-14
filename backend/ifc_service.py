@@ -3589,6 +3589,8 @@ class BimModelManager:
 
         contract["renderer"] = "mesh-hlr"
         contract["cut_elevation"] = float(cut_elevation)
+        # Overall dimensions come from the drawing's own extents (see the method).
+        contract["dimensions"] = self._overall_dimensions(contract)
         return contract
 
     def _hlr_plan_contract(self, cut_elevation: float) -> Optional[Dict[str, Any]]:
@@ -3617,6 +3619,60 @@ class BimModelManager:
         contract = HlrRenderer(self).render_to_contract(view, cut_elevation)
         contract["cut_elevation"] = float(cut_elevation)
         return contract
+
+    def _window_symbol_paths(self, op_meta: Dict[str, Any],
+                             host_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Builds the plan window symbol: the glazing line(s) across the opening plus its
+        jamb lines.
+
+        Like the door swing, this is a drafting symbol rather than geometry — hidden
+        line removal cannot produce it, because the symbol represents the window's
+        construction in a way the solid does not. Without it a window is just a gap in
+        the wall, which is not how a plan shows a window.
+
+        Drawn in the host wall's own frame: `u` runs along the wall, `n` across it.
+        """
+        sp = host_meta.get("start")
+        if not sp:
+            return []
+        ang = float(host_meta.get("angle", 0.0))
+        offset = float(op_meta.get("offset_along_wall", 0.0) or 0.0)
+        width = float(op_meta.get("width", 3.0) or 3.0)
+        thickness = float(host_meta.get("thickness", INCHES_8) or INCHES_8)
+        if width <= 0:
+            return []
+
+        ux, uy = math.cos(ang), math.sin(ang)
+        nx, ny = -uy, ux
+        # The window sits in the middle of the wall's thickness.
+        half = thickness / 2.0
+
+        def point(u: float, across: float):
+            return (sp[0] + ux * u + nx * across, sp[1] + uy * u + ny * across)
+
+        def line(u0: float, a0: float, u1: float, a1: float, cls: str) -> Dict[str, Any]:
+            p0 = point(u0, a0)
+            p1 = point(u1, a1)
+            return {
+                "guid": op_meta.get("guid"),
+                "class": cls,
+                "d": f"M {p0[0]:.3f} {p0[1]:.3f} L {p1[0]:.3f} {p1[1]:.3f}",
+            }
+
+        end = offset + width
+        out = [
+            # Four jamb lines closing the opening's reveal.
+            line(offset, -half, offset, half, "IfcWindow jamb"),
+            line(end, -half, end, half, "IfcWindow jamb"),
+            # The glazing: a line across the middle of the opening, in plan.
+            line(offset, 0.0, end, 0.0, "IfcWindow glazing"),
+        ]
+        # A second glazing line, offset across the wall, reads as a double-glazed
+        # unit and is the common convention for a plan window symbol.
+        out.append(line(offset, -half / 2.0, end, -half / 2.0, "IfcWindow glazing"))
+        out.append(line(offset, half / 2.0, end, half / 2.0, "IfcWindow glazing"))
+        return out
 
     def _door_swing_paths(self, op_meta: Dict[str, Any], host_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -3669,6 +3725,56 @@ class BimModelManager:
             },
         ]
 
+    def _overall_dimensions(self, contract: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Overall width and depth dimensions for a plan, in decimal feet.
+
+        Dimension strings are a renderer's output, not model data: the same plan at a
+        different scale would carry the same dimensions, but a renderer that is not
+        dimensioning should not have to suppress them. This is therefore produced here
+        from the drawing's own extents rather than stored on the elements.
+
+        Values are formatted with `format_feet_inches`, the same formatter the type
+        parameters use, so a drawing and a properties palette agree.
+        """
+        import re as _re
+
+        from units import format_feet_inches
+
+        xs: List[float] = []
+        ys: List[float] = []
+        for key in ("cut_paths", "projection_paths"):
+            for entry in contract.get(key, []) or []:
+                nums = [float(v) for v in _re.findall(r"-?\d+\.?\d*", entry.get("d", ""))]
+                xs.extend(nums[0::2])
+                ys.extend(nums[1::2])
+        if not xs or not ys:
+            return []
+
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        width, depth = x1 - x0, y1 - y0
+        if width <= 0 and depth <= 0:
+            return []
+        return [
+            {
+                "guid": None,
+                "kind": "overall_width",
+                "start": [x0, y0], "end": [x1, y0],
+                "length": width,
+                "text": format_feet_inches(width),
+                "offset": -1.5,
+            },
+            {
+                "guid": None,
+                "kind": "overall_depth",
+                "start": [x0, y0], "end": [x0, y1],
+                "length": depth,
+                "text": format_feet_inches(depth),
+                "offset": -1.5,
+            },
+        ]
+
     def _finish_plan_contract(self, contract: Dict[str, Any], cut_elevation: float) -> Dict[str, Any]:
         """
         Adds the annotation drives that HLR cannot supply (datums, dimensions,
@@ -3694,16 +3800,20 @@ class BimModelManager:
             })
 
         swing_paths = []
+        window_paths = []
         for guid, meta in self.element_meta.items():
-            if meta.get("ifc_class") != "IfcDoor":
+            if meta.get("ifc_class") not in ("IfcDoor", "IfcWindow"):
                 continue
             host = self.element_meta.get(meta.get("host_wall_guid"))
             if not host:
                 continue
             try:
-                swing_paths.extend(self._door_swing_paths(meta, host))
+                if meta.get("ifc_class") == "IfcWindow":
+                    window_paths.extend(self._window_symbol_paths(meta, host))
+                else:
+                    swing_paths.extend(self._door_swing_paths(meta, host))
             except Exception as e:
-                print(f"Notice: swing symbol for {guid} failed: {e}")
+                print(f"Notice: opening symbol for {guid} failed: {e}")
 
         slabs_svg = []
         for guid, meta in self.element_meta.items():
@@ -3729,6 +3839,9 @@ class BimModelManager:
         contract["roofs"] = roofs_svg
         contract["grids"] = grids_svg
         contract["swing_paths"] = swing_paths
+        # Window symbols are a separate drive so a consumer can style them apart from
+        # door swings (both are annotation, neither is geometry).
+        contract["window_paths"] = window_paths
         contract.setdefault("dimensions", [])
         contract["cut_elevation"] = float(cut_elevation)
         return contract
