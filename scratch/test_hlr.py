@@ -118,6 +118,30 @@ def main():
     check("the engine reports how many paths it moved",
           apply_view_range.__doc__ is not None)
 
+    print("2c. Attribution is clean when a hosted opening is present ...")
+    # The doorless test above hid a real bug: the serializer emits IfcOpeningElement
+    # and storey container groups, neither of which is a model element. Stamping
+    # their GUIDs on geometry produced paths attributed to a GUID belonging to
+    # nothing. This case is the regression test for that.
+    md = fresh()
+    lvld = [i for i, l in md.levels.items() if l["name"] == "Level 1"][0]
+    wd = md.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8,
+                     name="South", level_id=lvld)["guid"]
+    dd = md.add_door(wd, offset_along_wall=10.0)["guid"]
+    ed = md.add_wall((30, 0, 0), (30, 20, 0), height=FEET_10, thickness=INCHES_8,
+                     name="East", level_id=lvld)["guid"]
+    rd = HlrRenderer(md).render(
+        ViewDefinition(id="d", name="D", view_type="floor_plan", level_id=lvld,
+                       view_range=ViewRange(cut=4.0)))
+    valid = set(md.element_meta)
+    seen = {e.get("guid") for ps in rd.partitions.values() for e in ps}
+    stray = {g for g in seen if g and g not in valid}
+    check("no path carries a GUID that is not a model element", not stray,
+          sorted(str(g)[:8] for g in stray))
+    check("the wall and the door both receive geometry",
+          wd in seen and dd in seen,
+          sorted(str(g)[:8] for g in seen if g))
+
     print("3b. Section HLR is correct on a MULTI-LEVEL model ...")
     # M3: "section HLR correct on multi-level model". Two 10 ft storeys must give a
     # section spanning 0..20 ft in height and the walls' run in the other axis.

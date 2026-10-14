@@ -29,22 +29,18 @@ East and West resolve to their real GUIDs; South resolves for its main run.
 
 REMAINING GAPS before this can be the default
 ---------------------------------------------
-1. Attribution has an UNRESOLVED case. Calibration is now exact (measured: 0.000 ft
-   error on a single wall and on a three-wall L-plan, because the transform is solved
-   from the content box to the model bounds). Hosted openings and storey frames are
-   correctly excluded as correlation candidates, and East/West/South resolve to their
-   real GUIDs in the tests.
+1. Attribution: SOLVED (calibration exact, no stray GUIDs). The bug was that the
+   serializer emits groups that are NOT model elements — the storey container (the
+   plane itself) and the IfcOpeningElement (the void owned by the wall) — and their
+   GUIDs were being stamped on geometry. Downstream that surfaced as paths attributed
+   to a GUID belonging to no element. Both are now excluded from GUID stamping and
+   from correlation candidates, and correlation is restricted to GUIDs present in
+   `element_meta`. Verified on a wall + door + wall plan: zero stray GUIDs, zero
+   unattributed paths, and both the wall and the door receive geometry.
 
-   However, in a plan containing a wall plus a door, 10 of the wall's paths are
-   attributed to a GUID that is NOT the wall's and NOT any model element's — printed
-   as `unknown 01A5CnSDv30RaobYEC1QYf` against a wall GUID of
-   `2U8H5oG6j22QQrgF$sgnh2`. The source of that identifier has not been traced. It
-   cannot come from the wall's element group (whose extents capture correctly under
-   the model GUID), so something else in the pipeline is synthesising it. Until that
-   is understood, attribution is NOT trustworthy and this is the concrete blocker.
-
-   The earlier "~0.3 ft sub-foot drift" note is obsolete: it was measured before the
-   plane-selection fix and no longer reproduces.
+   Calibration is exact: 0.000 ft error against ground truth on a single wall and on
+   a three-wall L-plan. The earlier "~0.3 ft sub-foot drift" note was measured before
+   the plane-selection fix and no longer reproduces.
 2. No `hidden` partition is emitted in any configuration (occluded edges are removed
    rather than separated), so `hidden_paths` is always empty and the M3 wording
    "hidden lines separated" is not satisfied.
@@ -278,6 +274,7 @@ def parse_hlr_svg(
     svg: str,
     raw: bool = False,
     want_plane=None,
+    model_guids=None,
 ) -> Tuple[
     Dict[str, List[Dict[str, Any]]],
     Optional[List[List[float]]],
@@ -309,6 +306,7 @@ def parse_hlr_svg(
     #: (guid, name). Planes put element groups and geometry as *siblings*, so the
     #: element's own extent is the only way to correlate them.
     element_extents: Dict[Tuple[Optional[str], Optional[str]], List[float]] = {}
+    model_guids = set(model_guids or ())
 
     # Track nesting: each frame is (class, guid, matrix, is_plane_group, in_wanted)
     stack: List[Dict[str, Any]] = []
@@ -382,7 +380,13 @@ def parse_hlr_svg(
             cls = frame["class"]
             if partition is None and cls in PARTITION_NAMES:
                 partition = cls
-            elif ifc_class is None and cls.startswith("Ifc"):
+            elif (ifc_class is None and cls.startswith("Ifc")
+                  and cls not in ("IfcBuildingStorey", "IfcOpeningElement")):
+                # The storey group is a *plane* container and the opening group is a
+                # void owned by the wall; neither is the element a path belongs to, so
+                # neither GUID may be stamped on geometry. Leaving them on made paths
+                # carry a GUID that is not a model element, which surfaced downstream
+                # as an unattributable identifier.
                 ifc_class = cls
                 guid = frame["guid"]
                 element_name = frame.get("name")
@@ -406,7 +410,13 @@ def parse_hlr_svg(
             # the stack, not the nearest Ifc-class frame).
             for frame in stack:
                 fcls = frame["class"]
-                if fcls.startswith("Ifc") and fcls != "IfcBuildingStorey":
+                # Only real model elements are correlation candidates. The serializer
+                # also emits IfcOpeningElement groups, which are not in element_meta
+                # (the void is modelled as an IfcOpeningElement owned by the wall);
+                # left in, an opening's tight extent captured the wall fragments
+                # beside the door and surfaced as a GUID belonging to no element.
+                if (fcls.startswith("Ifc") and fcls != "IfcBuildingStorey"
+                        and frame["guid"] in model_guids):
                     nums = [float(v) for v in re.findall(_NUM, model_d)]
                     if nums:
                         xs, ys = nums[0::2], nums[1::2]
@@ -651,7 +661,10 @@ class HlrRenderer:
         # view superimposes the storeys, so exactly one plane is selected and its
         # own `matrix3` is used to map that plane's coordinates into model space.
         partitions, matrix3, plane_name, element_extents = parse_hlr_svg(
-            svg, raw=True, want_plane=self._plane_selector(view)
+            svg,
+            raw=True,
+            want_plane=self._plane_selector(view),
+            model_guids=set(self.manager.element_meta),
         )
         self.last_selected_matrix = matrix3
         self.last_calibration = None
@@ -851,6 +864,16 @@ class HlrRenderer:
                 best_area = None
                 for (guid, name), ext in element_extents.items():
                     if guid in hosted:
+                        continue
+                    # The serializer also emits IfcOpeningElement groups, which are
+                    # NOT in the model's element_meta (the void is modelled as an
+                    # IfcOpeningElement owned by the wall). They were not covered by
+                    # the metadata-based `hosted` check, and because an opening's
+                    # extent sits inside its host wall's, it won the tightest-match
+                    # contest and captured the wall fragments beside the door —
+                    # appearing downstream as a GUID belonging to no model element.
+                    cls = self.manager.element_meta.get(guid, {}).get("ifc_class")
+                    if cls in (None, "", "IfcOpeningElement") and guid not in self.manager.element_meta:
                         continue
                     ex0, ex1, ey0, ey1 = ext
                     span_x = max(ex1 - ex0, 1e-6)
