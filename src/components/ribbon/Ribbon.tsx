@@ -1,36 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import {
-  FolderOpen,
-  Save,
-  RotateCcw,
-  RotateCw,
-  Box,
-  Layers,
-  DoorClosed,
-  AppWindow,
-  Square,
-  Home,
-  Grid,
-  Ruler,
-  Maximize2,
-  FileText,
-  FileSpreadsheet,
-  Globe,
-  Settings,
-  Tag,
-  PenTool,
-  Download,
-  Scissors,
-  Eye,
-  Lock,
-  Equal,
-  Sparkles,
-  Upload,
-  Check,
-  X,
-  AlertCircle,
-  Trash2,
-} from 'lucide-react';
+import { AlertCircle, AppWindow, Box, Check, DoorClosed, Download, Equal, Eye, FileSpreadsheet, FileText, FolderOpen, Globe, Grid, Home, Layers, Lock, Maximize2, PenTool, RotateCcw, RotateCw, Ruler, Save, Scissors, Settings, SlidersHorizontal, Sparkles, Square, Tag, Trash2, Upload, X } from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
 import { ActiveTool } from '../../types/bim';
 
@@ -42,6 +11,7 @@ export const Ribbon: React.FC = () => {
     activeTool,
     setActiveTool,
     toggleSectionBox,
+    setViewRangeModalOpen,
     sectionBox,
     exportIfc,
     exportProjectContainer,
@@ -572,6 +542,14 @@ export const Ribbon: React.FC = () => {
             )}
             {renderToolButton('BX', 'Section Box', 'BX', <Scissors size={20} className="text-[#ec4899]" />, () =>
               toggleSectionBox()
+            )}
+            {/* The dialog existed but nothing opened it. */}
+            {renderToolButton(
+              'select',
+              'View Range',
+              'VR',
+              <SlidersHorizontal size={20} className="text-[#38bdf8]" />,
+              () => setViewRangeModalOpen(true)
             )}
           </div>
         )}
