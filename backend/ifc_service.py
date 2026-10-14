@@ -70,7 +70,7 @@ from units import (  # noqa: E402  (kept beside the constants it documents)
     UNIT_CONVERSION_SOURCE,
     METRES_PER_FOOT,
     inches_to_feet,
-    FEET_0, FEET_1, FEET_4, FEET_6, FEET_8, FEET_10, FEET_12,
+    FEET_0, FEET_1, FEET_2, FEET_4, FEET_6, FEET_8, FEET_10, FEET_12,
     INCHES_4, INCHES_8, INCHES_4_7_8, INCHES_10, INCHES_12, INCHES_0_625,
     DOOR_WIDTH_36, DOOR_HEIGHT_84,
     WINDOW_WIDTH_48, WINDOW_HEIGHT_48, WINDOW_SILL_36,
@@ -3388,9 +3388,12 @@ class BimModelManager:
                 if glen > 0.001:
                     ux = gdx / glen
                     uy = gdy / glen
-                    # Extend grid line by 1.2m at bubble end and 0.6m at tail
-                    bubble_center = [ep[0] + ux * 1.2, ep[1] + uy * 1.2]
-                    tail = [sp[0] - ux * 0.6, sp[1] - uy * 0.6]
+                    # Extend the grid line past the building envelope so bubbles never
+                    # land on walls. These offsets were 1.2/0.6 — metres left over from
+                    # before the units boundary — in a contract that is decimal feet, so
+                    # every bubble sat 3.28x too far out. Now in feet.
+                    bubble_center = [ep[0] + ux * FEET_4, ep[1] + uy * FEET_4]
+                    tail = [sp[0] - ux * FEET_2, sp[1] - uy * FEET_2]
                 else:
                     bubble_center = ep
                     tail = sp
@@ -3784,7 +3787,11 @@ class BimModelManager:
                 "start": [x0, y0], "end": [x1, y0],
                 "length": width,
                 "text": format_feet_inches(width),
-                "offset": -1.5,
+                # `offset_norm` is the direction the dimension line is displaced in,
+                # and the viewport indexes it directly. Emitting only `offset` (a
+                # distance) crashed the plan with "Cannot read properties of undefined
+                # (reading '0')". Width runs along +X, so its offset is along -Y.
+                "offset_norm": [0.0, -1.0],
             },
             {
                 "guid": None,
@@ -3792,7 +3799,8 @@ class BimModelManager:
                 "start": [x0, y0], "end": [x0, y1],
                 "length": depth,
                 "text": format_feet_inches(depth),
-                "offset": -1.5,
+                # Depth runs along +Y, so its offset is along -X.
+                "offset_norm": [-1.0, 0.0],
             },
         ]
 
@@ -3818,10 +3826,29 @@ class BimModelManager:
             start, end = meta.get("start"), meta.get("end")
             if not start or not end:
                 continue
+            # The grid record must carry the same fields the analytic renderer
+            # produced, because the viewport reads them: it draws the axis from `d` and
+            # the bubble at `circle_center`, and labels it with `tag`. Omitting `tag`
+            # and `circle_center` crashed the 2D plan with
+            # "Cannot read properties of undefined (reading '0')" — a real regression
+            # from switching the renderer, and exactly why the contract has to be kept.
+            gdx, gdy = end[0] - start[0], end[1] - start[1]
+            glen = _math.hypot(gdx, gdy)
+            if glen > 1e-6:
+                ux, uy = gdx / glen, gdy / glen
+                # Offsets in FEET, since this contract is decimal feet. (The analytic
+                # renderer used 1.2/0.6, which were metres carried over from before the
+                # units boundary and put every bubble 3.28x too far out.)
+                bubble_center = [end[0] + ux * FEET_4, end[1] + uy * FEET_4]
+                tail = [start[0] - ux * FEET_2, start[1] - uy * FEET_2]
+            else:
+                bubble_center, tail = [end[0], end[1]], [start[0], start[1]]
             grids_svg.append({
                 "guid": guid,
+                "tag": meta.get("tag") or meta.get("name") or "?",
                 "name": meta.get("name", "Grid"),
-                "d": f"M {start[0]:.3f} {start[1]:.3f} L {end[0]:.3f} {end[1]:.3f}",
+                "d": f"M {tail[0]:.3f} {tail[1]:.3f} L {bubble_center[0]:.3f} {bubble_center[1]:.3f}",
+                "circle_center": bubble_center,
                 "class": "grid-line",
             })
 
@@ -3860,8 +3887,31 @@ class BimModelManager:
                 continue
             poly = meta["polygon"]
             d = "M " + " L ".join(f"{p[0]:.3f} {p[1]:.3f}" for p in poly) + " Z"
-            roofs_svg.append({"guid": guid, "d": d, "class": "IfcRoof projection",
-                              "pitch": meta.get("pitch", 0.0)})
+            # The viewport draws the ridge from `ridge_d`, labels the pitch from
+            # `pitch_text`, and keys its overhead treatment off `center`/`is_overhead`.
+            # Omitting them would crash the plan the same way the grids did.
+            xs = [p[0] for p in poly]
+            ys = [p[1] for p in poly]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            mid_x, mid_y = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
+            if (max_x - min_x) >= (max_y - min_y):
+                ridge_d = f"M {min_x:.3f} {mid_y:.3f} L {max_x:.3f} {mid_y:.3f}"
+            else:
+                ridge_d = f"M {mid_x:.3f} {min_y:.3f} L {mid_x:.3f} {max_y:.3f}"
+            pitch_deg = float(meta.get("pitch", 15.0) or 0.0)
+            roof_elev = float(meta.get("elevation", FEET_10) or 0.0)
+            roofs_svg.append({
+                "guid": guid,
+                "name": meta.get("name", "Roof"),
+                "d": d,
+                "ridge_d": ridge_d,
+                "pitch": pitch_deg,
+                "pitch_text": f"{pitch_deg:.1f}\u00b0 Slope" if pitch_deg > 0 else "Flat (0\u00b0)",
+                "center": [mid_x, mid_y],
+                "class": "IfcRoof projection",
+                "is_overhead": cut_elevation < (roof_elev - 0.5),
+            })
 
         # Assign, don't setdefault: the HLR contract already carries these keys as
         # empty lists, so setdefault would silently keep the empty one. (That bug

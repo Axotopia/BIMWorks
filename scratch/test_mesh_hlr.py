@@ -341,6 +341,48 @@ def main():
           any(e.get("guid") and "Wall" in (e.get("class") or "")
               for e in plan_c["cut_paths"]), plan_c["partitions"])
 
+    print("8e. Contract completeness — every field the viewport reads ...")
+    # The renderer was swapped under an existing frontend contract. Grids, roofs and
+    # dimensions each lost nested fields, which crashed the plan viewport in the BROWSER
+    # while every backend test passed, because those tests never asked whether the
+    # payload was one the UI could consume. This asserts the consumed fields directly.
+    mcon = fresh()
+    lcon = [i for i, l in mcon.levels.items() if l["name"] == "Level 1"][0]
+    cw = mcon.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8,
+                       name="South", level_id=lcon)["guid"]
+    mcon.add_window(cw, offset_along_wall=16.0, width=4.0, height=4.0, sill_height=3.0)
+    mcon.add_slab([(0, 0), (30, 0), (30, 20), (0, 20)], thickness=0.8333,
+                  name="Slab", elevation=0.0)
+    mcon.add_roof([(0, 0), (30, 0), (30, 20), (0, 20)], name="Roof", elevation=FEET_10)
+    mcon.add_grid("1", (0, -6), (0, 26))
+    cc = mcon.slice_2d_vector_plan(cut_elevation=4.0)
+
+    # (field list, record) exactly as read by PlanViewport2D.
+    consumed = [
+        ("grid", cc["grids"][0], ["guid", "d", "tag", "circle_center"]),
+        ("roof", cc["roofs"][0],
+         ["guid", "d", "ridge_d", "pitch_text", "center", "is_overhead"]),
+        ("dimension", cc["dimensions"][0], ["start", "end", "text", "offset_norm"]),
+        ("slab", cc["slabs"][0], ["guid", "d"]),
+        ("swing", cc["swing_paths"][0] if cc["swing_paths"] else {"d": "", "guid": "", "class": ""},
+         ["guid", "d", "class"]),
+    ]
+    for label, record, fields in consumed:
+        missing = [f for f in fields if f not in record]
+        check(f"a {label} record carries every field the viewport reads",
+              not missing, missing)
+
+    # Values must be usable, not merely present: indexing an undefined array is what
+    # actually threw in the browser.
+    check("a grid bubble centre is an indexable pair",
+          len(cc["grids"][0].get("circle_center") or []) == 2,
+          cc["grids"][0].get("circle_center"))
+    check("a dimension offset is an indexable pair",
+          len(cc["dimensions"][0].get("offset_norm") or []) == 2,
+          cc["dimensions"][0].get("offset_norm"))
+    check("a roof centre is an indexable pair",
+          len(cc["roofs"][0].get("center") or []) == 2, cc["roofs"][0].get("center"))
+
     print("9. Drafting symbols and dimensions are produced ...")
     # A window drawn as a bare wall gap is not how a plan shows a window; the glazing
     # symbol is annotation, like the door swing, so it cannot come from HLR.
