@@ -27,8 +27,38 @@ wall outlines as SIBLINGS, so outlines carry no identity. `correlate_plane_geome
 assigns each path to the tightest element group whose extent contains it. Verified:
 East and West resolve to their real GUIDs; South resolves for its main run.
 
-CONCRETE BLOCKER FOUND — HLR emits NO cut partition
----------------------------------------------------
+DEFINITIVE FINDINGS on the cut partition (round 4, measured)
+------------------------------------------------------------
+Enumerating every drawing plane of a two-wall plan, per plane:
+
+    Level 1              horiz=True  z=1.2   HAS_CUT=False
+    Level 2              horiz=True  z=0.0   HAS_CUT=False
+    Roof                 horiz=True  z=0.0   HAS_CUT=False
+    Section East West    horiz=False         HAS_CUT=True
+    Section North South  horiz=False         HAS_CUT=True
+
+So the serializer separates cut from projection only in the VERTICAL section
+planes; the storey ("plan") planes are projection-only even though their plane sits
+at the cut height. Consequences:
+
+* A floor plan taken from a storey plane therefore has NO cut partition by
+  construction on this build — the "correct cut partition" criterion cannot be met
+  from that plane.
+* Re-orienting the model to force a horizontal cut does NOT work: with the view
+  normal set to +Z the section plane is still emitted vertically and the geometry
+  comes back as an elevation (measured: 19 section-class paths forming
+  "x 0..5.07 y 0..10" style shapes, i.e. wall faces at full height, not footprints).
+* The storey plane DOES carry the door void structurally: a wall with a door comes
+  back split into segments with a gap where the opening is, versus a single 30 ft
+  run without the door.
+* Hidden lines are never separated in any configuration (see below).
+
+The remaining coordinate discrepancy in that plan output (the wall segments landing
+in the wrong place) is a separate, unresolved mapping issue in the plan path, on top
+of the missing cut partition.
+
+CONCRETE BLOCKER — HLR emits NO cut partition for a plan
+--------------------------------------------------------
 Measured on a wall + door + wall plan driven through `render_to_contract`:
 
     partitions: {'cut': 0, 'projection': 10, 'hidden': 0, 'below': 0}
