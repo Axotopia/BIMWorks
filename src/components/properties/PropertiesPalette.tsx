@@ -332,7 +332,7 @@ export const PropertiesPalette: React.FC = () => {
             {/* Revit Sketch Mode Trigger */}
             {(isSlab || isRoof) && (
               <button
-                onClick={() => startSketchMode(isRoof ? 'roof' : 'floor', selectedGuid)}
+                onClick={() => startSketchMode(isRoof ? 'roof' : 'floor', selectedGuid || undefined)}
                 className="w-full flex items-center justify-center space-x-2 py-2 px-3 bg-[#0e703c] hover:bg-[#15803d] border border-[#22c55e] text-white rounded font-bold text-xs shadow-md transition-all group mb-2"
                 title={`Enter Sketch Mode to modify 2D boundary of this ${isRoof ? 'roof' : 'floor'}`}
               >

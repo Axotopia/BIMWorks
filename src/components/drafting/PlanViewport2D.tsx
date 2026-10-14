@@ -833,7 +833,7 @@ export const PlanViewport2D: React.FC = () => {
                           stroke="#ffffff"
                           strokeWidth="0.06"
                         >
-                          {`${(l.slopeAngle ?? sketchSession.slopeDegrees).toFixed(1)}°`}
+                          {`${(l.slopeAngle ?? sketchSession.defaultSlopeAngle ?? sketchSession.pitch ?? 15.0).toFixed(1)}°`}
                         </text>
                       </g>
                     )}
