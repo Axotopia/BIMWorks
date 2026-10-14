@@ -462,6 +462,38 @@ def get_geometry():
     return bim_manager.get_geometry_buffers()
 
 
+@app.get("/api/view/2d")
+def get_2d_view(
+    view_type: str = "floor_plan",
+    cut_elevation: float = 4.0,
+    direction: str = "south",
+    view_depth: Optional[float] = None,
+    top: Optional[float] = None,
+    bottom: Optional[float] = None,
+):
+    """
+    Returns 2D linework for a plan, section or elevation.
+
+    Separate from `/api/slice/2d` because that endpoint is the plan path the viewport
+    has always called; this one exposes the view engine, so a section or elevation can
+    be requested at all. The view-range fields are optional and in decimal feet.
+    """
+    view_range = {
+        k: v for k, v in (("top", top), ("bottom", bottom), ("view_depth", view_depth))
+        if v is not None
+    }
+    view_range["cut"] = cut_elevation
+    try:
+        return bim_manager.render_2d_view(
+            view_type=view_type,
+            cut_elevation=cut_elevation,
+            direction=direction,
+            view_range=view_range,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.get("/api/slice/2d")
 def get_2d_slice(cut_elevation: float = 1.2):
     """

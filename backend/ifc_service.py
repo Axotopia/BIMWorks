@@ -3546,7 +3546,8 @@ class BimModelManager:
         contract["view_range"] = dict(view_range or {})
         contract["cut_elevation"] = float(cut_elevation)
         contract["renderer"] = "mesh-hlr"
-        return contract
+        # Annotation for every view type, not just plans.
+        return self._annotate_view(contract, cut_elevation, view_type)
 
     def _mesh_hlr_plan_contract(self, cut_elevation: float) -> Optional[Dict[str, Any]]:
         """
@@ -3731,6 +3732,20 @@ class BimModelManager:
             },
         ]
 
+    def _annotate_view(self, contract: Dict[str, Any], cut_elevation: float,
+                       view_type: str = "floor_plan") -> Dict[str, Any]:
+        """
+        Adds annotation drives and dimensions to any view's contract.
+
+        One entry point so a plan, section and elevation cannot drift apart — the
+        earlier shape of this code applied annotation on one code path only, which is
+        how sections ended up bare.
+        """
+        contract = self._finish_plan_contract(contract, cut_elevation, view_type)
+        if not contract.get("dimensions"):
+            contract["dimensions"] = self._overall_dimensions(contract)
+        return contract
+
     def _overall_dimensions(self, contract: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Overall width and depth dimensions for a plan, in decimal feet.
@@ -3781,13 +3796,18 @@ class BimModelManager:
             },
         ]
 
-    def _finish_plan_contract(self, contract: Dict[str, Any], cut_elevation: float) -> Dict[str, Any]:
+    def _finish_plan_contract(self, contract: Dict[str, Any], cut_elevation: float,
+                              view_type: str = "floor_plan") -> Dict[str, Any]:
         """
-        Adds the annotation drives that HLR cannot supply (datums, dimensions,
-        swing arcs, slab/roof references) to an HLR-rendered plan.
+        Adds the annotation drives that hidden-line removal cannot supply.
 
-        These are not modelled geometry, so there is nothing for hidden-line
-        removal to compute; they stay metadata-driven in both renderers.
+        Serves EVERY view type, not just plans: a section or elevation needs the same
+        datums, opening symbols and dimensions. It was previously applied only to the
+        `slice_2d_vector_plan` result, so `render_2d_view` returned sections and
+        elevations with no annotation, no grids and no dimensions at all.
+
+        These are not modelled geometry, so there is nothing for HLR to compute; they
+        stay metadata-driven whichever renderer produced the linework.
         """
         import math as _math
 
@@ -3813,10 +3833,15 @@ class BimModelManager:
             host = self.element_meta.get(meta.get("host_wall_guid"))
             if not host:
                 continue
+            # A door swing is a PLAN symbol: it says which way the leaf opens, which
+            # a section or elevation states differently (and drawing an arc across an
+            # elevation is simply wrong). Window jamb/glazing lines read correctly in
+            # both, so they are drawn in either.
+            is_plan = view_type in ("floor_plan", "plan")
             try:
                 if meta.get("ifc_class") == "IfcWindow":
                     window_paths.extend(self._window_symbol_paths(meta, host))
-                else:
+                elif is_plan:
                     swing_paths.extend(self._door_swing_paths(meta, host))
             except Exception as e:
                 print(f"Notice: opening symbol for {guid} failed: {e}")

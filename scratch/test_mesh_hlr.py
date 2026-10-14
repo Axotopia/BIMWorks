@@ -176,10 +176,14 @@ def main():
     print("7. Unified view entry point: plan, section and elevation ...")
     mv = fresh()
     lvv = [i for i, l in mv.levels.items() if l["name"] == "Level 1"][0]
-    mv.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8,
-                name="South", level_id=lvv)
+    vwall = mv.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8,
+                        name="South", level_id=lvv)["guid"]
     mv.add_wall((0, 20, 0), (30, 20, 0), height=4.0, thickness=INCHES_8,
                 name="Low", level_id=lvv)
+    # An opening, so the annotation checks below exercise real symbols rather than
+    # passing or failing on an empty fixture.
+    mv.add_door(vwall, offset_along_wall=6.0, width=3.0)
+    mv.add_window(vwall, offset_along_wall=18.0, width=4.0, height=4.0, sill_height=3.0)
     plan = mv.render_2d_view(view_type="floor_plan", cut_elevation=4.0)
     check("a floor plan is available through render_2d_view",
           plan["view_type"] == "floor_plan" and plan["partitions"]["cut"] > 0,
@@ -196,6 +200,23 @@ def main():
     check("every view reports the renderer and the view range",
           all(v.get("renderer") == "mesh-hlr" and "view_range" in v
               for v in (plan, sec, elev)))
+
+    # Annotation must reach EVERY view type. It was applied only on the plan path, so
+    # sections and elevations came back with no symbols, no grids and no dimensions.
+    check("a section carries annotation too",
+          len(sec.get("window_paths") or []) > 0 and len(sec.get("dimensions") or []) > 0,
+          {k: len(sec.get(k) or []) for k in ("window_paths", "dimensions", "grids")})
+    check("an elevation carries annotation too",
+          len(elev.get("window_paths") or []) > 0 and len(elev.get("dimensions") or []) > 0,
+          {k: len(elev.get(k) or []) for k in ("window_paths", "dimensions")})
+    # A door swing states which way a leaf opens, which is a PLAN representation; an
+    # arc drawn across an elevation would be wrong.
+    check("a door swing appears in the plan",
+          len(plan.get("swing_paths") or []) > 0, len(plan.get("swing_paths") or []))
+    check("no door swing is drawn in an elevation",
+          len(elev.get("swing_paths") or []) == 0, elev.get("swing_paths"))
+    check("no door swing is drawn in a section",
+          len(sec.get("swing_paths") or []) == 0, sec.get("swing_paths"))
 
     print("8. View range is honoured, not merely reported ...")
     # `view_depth` was carried in the contract but never applied, so a wall 200 ft

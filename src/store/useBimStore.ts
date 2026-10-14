@@ -658,7 +658,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   setActiveViewId: (id) => {
     set({ activeViewId: id });
     const view = get().views.find((v) => v.id === id);
-    if (view && view.type === 'floor_plan') {
+    // Any 2D view type, not just plans: sections and elevations are drawn by the same
+    // view engine and were previously never requested.
+    if (view && view.type !== '3d' && view.type !== 'sheet') {
       get().fetch2DSlice(view.viewRange.cut);
     }
   },
@@ -986,15 +988,39 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     }
   },
 
-  fetch2DSlice: async (cutElevation = 4.0) => {
+  fetch2DSlice: async (cutElevation) => {
     try {
-      const res = await fetch(`${API_BASE}/slice/2d?cut_elevation=${cutElevation}`);
+      // Route by the active view's own type. Before this, only floor plans fetched
+      // anything, so selecting a section or elevation left the viewport empty even
+      // though the backend could draw both.
+      const active = get().views.find((v) => v.id === get().activeViewId);
+      const viewType = active?.type ?? 'floor_plan';
+      const range = active?.viewRange;
+      const cut = cutElevation ?? range?.cut ?? 4.0;
+
+      let url: string;
+      if (viewType === 'section' || viewType === 'elevation') {
+        const params = new URLSearchParams({
+          view_type: viewType,
+          cut_elevation: String(cut),
+          // The store uses camelCase; the API uses the Revit field names.
+          ...(range?.top !== undefined ? { top: String(range.top) } : {}),
+          ...(range?.bottom !== undefined ? { bottom: String(range.bottom) } : {}),
+          // A view depth of 0 means "not set"; sending it would filter everything out.
+          ...(range?.viewDepth ? { view_depth: String(range.viewDepth) } : {}),
+        });
+        url = `${API_BASE}/view/2d?${params.toString()}`;
+      } else {
+        url = `${API_BASE}/slice/2d?cut_elevation=${cut}`;
+      }
+
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         set({ sliced2D: data });
       }
     } catch (e) {
-      console.error('Failed to fetch 2D slice', e);
+      console.error('Failed to fetch 2D view', e);
     }
   },
 
