@@ -252,50 +252,33 @@ The workflow answer from principle 3.
 
 ### P5 — 2D views & HLR (README M3) — after P3/P4
 
-**Status: PARTIAL — exit criteria NOT met. Do not mark M3 done.**
+**Status: COMPLETE except the reviewer-facing visual check.** Verified by `scratch/test_mesh_hlr.py` (22 checks) and `scratch/test_hlr.py` (29 checks), plus the twelve other suites.
 
-Attempted 2026-10-14. What was built, what was verified, and the specific blocker.
+**The renderer was replaced.** `slice_2d_vector_plan` now defaults to `renderer="mesh-hlr"`, an in-process hidden-line projector, with the ifcopenshell SVG serialiser and then the analytic slicer as fallbacks. The analytic path stays reachable via `renderer="analytic"` for comparison.
 
-**What was done**
+**Why not OCCT's `HLRBRep` as spec §4.1 names.** It is genuinely unreachable here: `pythonocc-core` is conda-only (not on PyPI — checked) and ifcopenshell's bindings expose no HLR symbols (`dir(ifcopenshell_wrapper)` has none). The SVG serialiser was implemented first and fought back for four rounds; it partitions cut from projection **only in vertical section planes**, so a plan comes back projection-only, and it never separates occluded edges. `backend/mesh_hlr.py` therefore computes the same three partitions from geometry the app already has — the triangulated buffers, which is exactly the input OCCT's HLR consumes — with shapely doing the 2D booleans and nearer geometry acting as the occluder.
 
-- `backend/hlr_renderer.py`: a view engine driving ifcopenshell's SVG serializer (which runs OCCT hidden-line removal), parsing its output into `section` / `projection` partitions, with `ViewDefinition`, `ViewRange`, `LineweightTable` view templates, an element-attribution step (the serializer gives GUIDs only to projection sub-views, so cut geometry is matched to elements by footprint), and `apply_view_range` implementing the drafting rule that a wall under 6 ft is never cut.
-- The plan contract gained `renderer` and `partitions` keys, and three defects in the shared plan path were fixed: `setdefault` was silently keeping an HLR-supplied *empty* slab/roof list (dropping every slab and roof from the plan), the door-swing symbol was extracted into a shared `_door_swing_paths` so both renderers emit it, and the 6-ft view-range rule was made an explicit, testable engine rather than inline slicing logic.
+| M3 structural check | Status |
+|---|---|
+| Plan linework produced by HLR, not analytic slicing | **MET** — default renderer is `mesh-hlr` |
+| Correct cut partition | **MET** — 26 segments on a wall+door plan; a cut above all geometry yields nothing (impossible for a projection-only renderer) |
+| Openings voided | **MET** — the wall cut is interrupted exactly at the door's 10–13 ft, and a doorless wall is continuous there |
+| Hidden lines separated | **MET** — an occluded wall yields hidden paths, and it is the occluded element that is hidden, not the occluder |
+| Section HLR correct on a multi-level model | **MET** — run 0–30 ft, height 0–20 ft across two storeys |
+| View range, view templates, lineweight tables | **MET** — `ViewRange`, `LineweightTable`, `ViewDefinition`; the 6-ft rule is applied in both renderers |
+| Plan visually matches a Revit plan to a reviewer's satisfaction | **NOT CLAIMED** — needs a human to look at the output |
 
-**What was verified** (`scratch/test_hlr.py`, 22 checks)
+**Two genuine geometry defects were found and fixed while doing this**, both P2 units-boundary bugs that affected far more than drawings:
 
-- The serializer does perform OCCT hidden-line removal and does emit genuinely partitioned `section`/`projection` geometry.
-- Cut geometry can be attributed to real element GUIDs.
-- The view-range engine behaves correctly (tall wall cut, 4 ft wall projected and not cut).
-- Annotation (slabs, grids, swing arcs) stays in exact model coordinates; analytic remains the default.
+1. **Placements were written in decimal feet into a metric IFC.** `is_si=False` means the matrix is already in file units; the file is metric, so every element away from the origin was out by 3.28×. A wall at model x=10 ft landed at x=10 m. Fixed by one helper, `_placement_for_ifc`, routing all 12 `edit_object_placement` call sites, plus `_refresh_wall_placement` (which was the one that actually won, re-writing the placement from the stored baseline).
 
-**Solved in round 2 — the earlier "vertical section" conclusion was a probing error**
+2. **Hosted openings were 3.28× adrift — and that is why opening subtraction never happened.** The opening never intersected its host wall, so the IFC void had nothing to subtract and the plan showed no door. Fixing the position made subtraction work: the host wall's mesh went from 8 verts/12 triangles to 16/28.
 
-With a `scale` set, the serializer emits *several* named drawing planes in one pass, not one:
+Both are now asserted in `test_mesh_hlr.py` §5 (a 30 ft wall spans 0–9.144 m; a wall at model x=30 ft sits at 9.144 m; a wall at (10,10) ft is centred on 3.048 m) and the opening void in §6.
 
-| Plane | Orientation | Notes |
-|---|---|---|
-| `Level 1` | horizontal, Z = 1.2 m | the floor-plan cut, 4 ft above the storey |
-| `Level 2` | horizontal, Z = 11.2 m | |
-| `Section East West` | vertical (normal = world Y) | |
-| `Section North South` | vertical | |
+**A process note worth keeping.** Twice in this milestone, scripted edits reported success without applying, and once an edit inserted a module-level helper *inside* the class body and silently truncated the class from 89 methods to 6. Both were caught only by running the code and checking structure with `ast`, not by reading the diff. Verify by executing.
 
-The first round probed without `scale`, which emits only the two vertical role sections — hence the wrong conclusion. A floor plan must therefore **select one plane** rather than render all of them. `HlrRenderer._plane_selector` selects by orientation plus cut height, and `_calibrate` maps the selected plane's frame onto the model's plan bounds.
-
-**Verified against known geometry** (a 30 ft wall at y=0, another at y=80 ft, a third at x=90 ft):
-
-- raw plane coordinates `u 197.97..802.03`, `v 338.02..461.98`;
-- calibrated output lands at x 0–30.33 ft, y 0–20 ft, with the door void visible;
-- the official `ifcopenshell.draw.main()` emits the **same frame**, independently validating the mapping rather than confirming my own settings.
-
-**Remaining gaps (why it is still not the default)**
-
-1. **Element correlation is partial.** In a plan plane the serializer emits element groups and wall outlines as *siblings*, so outlines carry no identity. `correlate_plane_geometry` assigns each path to the tightest element group whose extent contains it — verified as resolving East and West to their real GUIDs and South for its main run, but **fragments at an element's extent boundary still mis-attribute** (the wall piece beside a door opening). Calibration is also approximate sub-foot (~20.5 units/ft on one axis vs ~20.18 on the other), showing as a ~0.3 ft offset on the far wall. Both stem from using a bbox similarity transform rather than the serializer's exact plane matrix.
-2. **No `hidden` partition exists.** Every configuration tested removes occluded edges rather than separating them, so `hidden_paths` is always empty — the M3 wording "hidden lines separated" is **not** satisfied and the code does not claim otherwise.
-3. ~~Section/elevation HLR is unvalidated on a real multi-level model.~~ **Solved.** `_calibrate_section` maps a vertical plane's coordinates into model space (run and height), taking a wall's vertical extent from its `height` field because a thin wall's two baseline points share a z and the z-spread alone is degenerate. Verified on two 10 ft storeys: the section spans run 0–30 ft and height 0–20 ft. The M3 wording "section HLR correct on a multi-level model" is **met**, tested in `test_hlr.py` §3b. Sections are produced by re-orienting the model, since this build exposes no `addDrawing`.
-
-**What would unblock it:****What would unblock it:****What would unblock it:** an ifcopenshell build exposing `addDrawing` (or a serialiser whose storey plane is genuinely horizontal), which turns the calibration step into the only remaining work. Re-evaluate HLR as the default at that point.
-
-**Still outstanding from the M3 feature list** and not attempted here: view templates as saved, selectable presets; temporary hide/isolate; and the reviewer-facing visual comparison against a Revit plan (which needs the coordinate mapping first).
+**Remaining work:** the reviewer-facing visual comparison, and `mesh_hlr` currently writes geometry only (no view templates saved as presets, no temp hide/isolate).
 
 ### P6 — Sheets, PDF, validation (README M4); P7 — AI driver layer (README M5)
 Unchanged in content from the spec; entry criterion for P7 is now strictly gated on the P1 parity audit having been green since P1 (the AI plans against the same bus the UI uses — any residual raw-REST path would poison it). The regex prompt-planner is explicitly a placeholder until then.
