@@ -241,6 +241,24 @@ def main():
     check("...while keeping the walls inside it", near in lcut and mid in lcut,
           sorted(lcut))
 
+    print("8b. View depth edges ...")
+    # Zero is how the store seeds an unset depth, and reading it literally would blank
+    # the drawing; negative is nonsense and must not blank it either. Guarded in the
+    # backend, not only in the client, so a direct API call cannot silently empty a view.
+    mz = fresh()
+    lz = [i for i, l in mz.levels.items() if l["name"] == "Level 1"][0]
+    mz.add_wall((0, 0, 0), (40, 0, 0), height=FEET_10, thickness=INCHES_8,
+                name="S", level_id=lz)
+    mz.add_wall((40, 0, 0), (40, 24, 0), height=FEET_10, thickness=INCHES_8,
+                name="E", level_id=lz)
+    unlimited = mz.render_2d_view(view_type="floor_plan", cut_elevation=4.0)
+    for value in (0.0, -5.0):
+        got = mz.render_2d_view(view_type="floor_plan", cut_elevation=4.0,
+                                view_range={"view_depth": value})
+        check(f"a view depth of {value} behaves as unset, not as 'nothing visible'",
+              got["partitions"]["cut"] == unlimited["partitions"]["cut"],
+              (got["partitions"], unlimited["partitions"]))
+
     print("9. Drafting symbols and dimensions are produced ...")
     # A window drawn as a bare wall gap is not how a plan shows a window; the glazing
     # symbol is annotation, like the door swing, so it cannot come from HLR.

@@ -168,9 +168,23 @@ class MeshHlrProjector:
         depth_in = view_range.get("view_depth")
         top_in = view_range.get("top")
         bottom_in = view_range.get("bottom")
-        depth = float(depth_in) if depth_in not in (None, "") else None
-        top = float(top_in) if top_in not in (None, "") else None
-        bottom = float(bottom_in) if bottom_in not in (None, "") else None
+        def number(value):
+            if value in (None, ""):
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        depth = number(depth_in)
+        top = number(top_in)
+        bottom = number(bottom_in)
+        # A view depth of zero (or negative) means "not set", not "nothing visible":
+        # zero is how the store seeds an unset depth, and a literal reading would blank
+        # the drawing. Guarded here as well as in the client so a direct API call cannot
+        # produce a silently empty view.
+        if depth is not None and depth <= 0:
+            depth = None
         if depth is None and top is None and bottom is None:
             return prepared
 
