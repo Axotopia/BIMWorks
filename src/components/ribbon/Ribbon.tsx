@@ -26,6 +26,10 @@ import {
   Equal,
   Sparkles,
   Upload,
+  Check,
+  X,
+  AlertCircle,
+  Trash2,
 } from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
 import { ActiveTool } from '../../types/bim';
@@ -52,7 +56,20 @@ export const Ribbon: React.FC = () => {
     setActiveViewId,
     setActiveSheetId,
     keyBuffer,
+    sketchSession,
+    startSketchMode,
+    cancelSketchMode,
+    finishSketchMode,
+    setSketchDrawTool,
+    setSketchParam,
+    deleteSelectedSketchLine,
+    selectedGuid,
+    meshes,
   } = useBimStore();
+
+  const selectedMesh = meshes.find((m) => m.guid === selectedGuid);
+  const isSelectedSlab = selectedMesh?.ifc_class === 'IfcSlab' && !selectedMesh?.name.toLowerCase().includes('roof');
+  const isSelectedRoof = selectedMesh?.ifc_class === 'IfcRoof' || selectedMesh?.name.toLowerCase().includes('roof');
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -212,29 +229,218 @@ export const Ribbon: React.FC = () => {
         {tabs.map((tab) => (
           <button
             key={tab}
-            onClick={() => setActiveRibbonTab(tab)}
+            onClick={() => {
+              if (sketchSession) return;
+              setActiveRibbonTab(tab);
+            }}
             className={`px-3 py-1 text-xs font-medium rounded-t border-t border-l border-r transition-colors ${
-              activeRibbonTab === tab
+              !sketchSession && activeRibbonTab === tab
                 ? 'bg-[#1e1e1e] border-[#3c3c3c] text-white font-semibold'
                 : 'border-transparent text-[#969696] hover:text-[#d4d4d4] hover:bg-[#2d2d2d]'
-            }`}
+            } ${sketchSession ? 'opacity-40 cursor-not-allowed' : ''}`}
           >
             {tab}
           </button>
         ))}
+
+        {/* Revit Green Contextual Tab when in Sketch Mode */}
+        {sketchSession && (
+          <div className="flex items-center space-x-1.5 px-3 py-1 bg-[#107c41] text-white text-xs font-semibold rounded-t border-t border-l border-r border-[#15803d] shadow-sm ml-2">
+            <Sparkles size={13} className="text-[#86efac]" />
+            <span>
+              Modify |{' '}
+              {sketchSession.mode === 'roof'
+                ? sketchSession.isEditingExisting
+                  ? 'Edit Roof Footprint'
+                  : 'Create Roof Footprint'
+                : sketchSession.isEditingExisting
+                ? 'Edit Floor Boundary'
+                : 'Create Floor Boundary'}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Ribbon Panels Content */}
       <div className="flex items-center px-3 py-2 space-x-6 min-h-[72px] bg-[#1e1e1e] overflow-x-auto">
-        {activeRibbonTab === 'Architecture' && (
+        {/* SKETCH MODE CONTEXTUAL RIBBON PANELS */}
+        {sketchSession ? (
+          <>
+            {/* Mode Panel (Finish / Cancel) */}
+            <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
+              <button
+                onClick={() => finishSketchMode()}
+                className="flex flex-col items-center justify-center px-4 py-1.5 bg-[#14532d] hover:bg-[#166534] border border-[#22c55e] text-white rounded shadow transition-all group"
+                title="Finish Edit Mode (Enter)"
+              >
+                <Check size={20} className="text-[#4ade80] stroke-[3]" />
+                <span className="text-[11px] font-bold mt-0.5 leading-none">Finish</span>
+                <span className="text-[9px] text-[#86efac] font-mono leading-none mt-0.5">Enter</span>
+              </button>
+              <button
+                onClick={() => cancelSketchMode()}
+                className="flex flex-col items-center justify-center px-4 py-1.5 bg-[#450a0a] hover:bg-[#7f1d1d] border border-[#ef4444] text-white rounded shadow transition-all group"
+                title="Cancel Edit Mode (Esc)"
+              >
+                <X size={20} className="text-[#f87171] stroke-[3]" />
+                <span className="text-[11px] font-bold mt-0.5 leading-none">Cancel</span>
+                <span className="text-[9px] text-[#fca5a5] font-mono leading-none mt-0.5">Esc</span>
+              </button>
+            </div>
+
+            {/* Draw Tools Panel */}
+            <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
+              <button
+                onClick={() => setSketchDrawTool('line')}
+                className={`flex flex-col items-center justify-center px-3 py-1.5 rounded transition-all border ${
+                  sketchSession.drawTool === 'line'
+                    ? 'bg-[#094771] border-[#007acc] text-white shadow-sm'
+                    : 'border-transparent hover:bg-[#333333] hover:border-[#444444] text-[#cccccc]'
+                }`}
+                title="Line Tool (LI) - Draw boundary line segments"
+              >
+                <PenTool size={20} className="text-[#ec4899] mb-1" />
+                <span className="text-[11px] font-medium leading-none">Line</span>
+                <span className="text-[9px] font-mono text-[#858585]">LI</span>
+              </button>
+              <button
+                onClick={() => setSketchDrawTool('rectangle')}
+                className={`flex flex-col items-center justify-center px-3 py-1.5 rounded transition-all border ${
+                  sketchSession.drawTool === 'rectangle'
+                    ? 'bg-[#094771] border-[#007acc] text-white shadow-sm'
+                    : 'border-transparent hover:bg-[#333333] hover:border-[#444444] text-[#cccccc]'
+                }`}
+                title="Rectangle Tool (RE) - Draw 4-corner closed boundary"
+              >
+                <Square size={20} className="text-[#38bdf8] mb-1" />
+                <span className="text-[11px] font-medium leading-none">Rectangle</span>
+                <span className="text-[9px] font-mono text-[#858585]">RE</span>
+              </button>
+              <button
+                onClick={() => setSketchDrawTool('pick_walls')}
+                className={`flex flex-col items-center justify-center px-3 py-1.5 rounded transition-all border ${
+                  sketchSession.drawTool === 'pick_walls'
+                    ? 'bg-[#094771] border-[#007acc] text-white shadow-sm'
+                    : 'border-transparent hover:bg-[#333333] hover:border-[#444444] text-[#cccccc]'
+                }`}
+                title="Pick Walls (PW) - Pick walls to lock sketch boundary"
+              >
+                <Box size={20} className="text-[#a855f7] mb-1" />
+                <span className="text-[11px] font-medium leading-none">Pick Walls</span>
+                <span className="text-[9px] font-mono text-[#858585]">PW</span>
+              </button>
+            </div>
+
+            {/* Sketch Options Bar */}
+            <div className="flex items-center space-x-4 border-r border-[#333333] pr-5 text-xs">
+              {sketchSession.mode === 'roof' ? (
+                <>
+                  <label className="flex items-center space-x-1.5 cursor-pointer bg-[#262626] px-2.5 py-1.5 rounded border border-[#3c3c3c]">
+                    <input
+                      type="checkbox"
+                      checked={sketchSession.defaultDefinesSlope}
+                      onChange={(e) => setSketchParam('defaultDefinesSlope', e.target.checked)}
+                      className="rounded bg-[#1e1e1e] border-[#555555] text-[#007acc] focus:ring-0"
+                    />
+                    <span className="font-medium text-white text-[11px]">Defines Slope</span>
+                  </label>
+
+                  <div className="flex items-center space-x-1.5 bg-[#262626] px-2.5 py-1 rounded border border-[#3c3c3c]">
+                    <span className="text-[#888888] text-[11px]">Slope:</span>
+                    <input
+                      type="number"
+                      step="0.5"
+                      value={sketchSession.pitch}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 0;
+                        setSketchParam('pitch', val);
+                        setSketchParam('defaultSlopeAngle', val);
+                      }}
+                      className="w-14 bg-[#1e1e1e] border border-[#555555] rounded px-1.5 py-0.5 text-white text-right text-xs"
+                    />
+                    <span className="text-[#888888] text-[11px]">deg</span>
+                  </div>
+
+                  <div className="flex items-center space-x-1.5 bg-[#262626] px-2.5 py-1 rounded border border-[#3c3c3c]">
+                    <span className="text-[#888888] text-[11px]">Overhang:</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={sketchSession.defaultOverhang}
+                      onChange={(e) => setSketchParam('defaultOverhang', parseFloat(e.target.value) || 0)}
+                      className="w-14 bg-[#1e1e1e] border border-[#555555] rounded px-1.5 py-0.5 text-white text-right text-xs"
+                    />
+                    <span className="text-[#888888] text-[11px]">m</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center space-x-1.5 bg-[#262626] px-2.5 py-1 rounded border border-[#3c3c3c]">
+                    <span className="text-[#888888] text-[11px]">Thickness:</span>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={sketchSession.thickness}
+                      onChange={(e) => setSketchParam('thickness', parseFloat(e.target.value) || 0.25)}
+                      className="w-14 bg-[#1e1e1e] border border-[#555555] rounded px-1.5 py-0.5 text-white text-right text-xs"
+                    />
+                    <span className="text-[#888888] text-[11px]">m</span>
+                  </div>
+
+                  <div className="flex items-center space-x-1.5 bg-[#262626] px-2.5 py-1 rounded border border-[#3c3c3c]">
+                    <span className="text-[#888888] text-[11px]">Elevation:</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={sketchSession.elevation}
+                      onChange={(e) => setSketchParam('elevation', parseFloat(e.target.value) || 0)}
+                      className="w-14 bg-[#1e1e1e] border border-[#555555] rounded px-1.5 py-0.5 text-white text-right text-xs"
+                    />
+                    <span className="text-[#888888] text-[11px]">m</span>
+                  </div>
+                </>
+              )}
+
+              {sketchSession.selectedLineId && (
+                <button
+                  onClick={() => deleteSelectedSketchLine()}
+                  className="flex items-center space-x-1 px-2.5 py-1.5 bg-[#7f1d1d] hover:bg-[#991b1b] text-white rounded border border-[#ef4444] text-xs transition-colors"
+                  title="Delete Selected Line (Del)"
+                >
+                  <Trash2 size={13} />
+                  <span>Delete Line</span>
+                </button>
+              )}
+            </div>
+
+            {/* Validation & Feedback Status */}
+            <div className="flex items-center space-x-3">
+              <div className="flex items-center space-x-1.5 text-xs text-[#94a3b8] bg-[#1e293b] px-3 py-1.5 rounded border border-[#334155]">
+                <span className="w-2 h-2 rounded-full bg-[#ec4899] animate-ping" />
+                <span className="font-mono">{sketchSession.lines.length} lines</span>
+              </div>
+
+              {sketchSession.validationError && (
+                <div className="flex items-center space-x-1.5 px-3 py-1.5 bg-[#7f1d1d]/80 border border-[#ef4444] rounded text-red-200 text-xs shadow animate-bounce">
+                  <AlertCircle size={14} className="text-[#f87171] flex-shrink-0" />
+                  <span className="font-medium text-[11px]">{sketchSession.validationError}</span>
+                </div>
+              )}
+            </div>
+          </>
+        ) : activeRibbonTab === 'Architecture' && (
           <>
             {/* Build Panel */}
             <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
               {renderToolButton('WA', 'Wall', 'WA', <Box size={20} className="text-[#60a5fa]" />)}
               {renderToolButton('DR', 'Door', 'DR', <DoorClosed size={20} className="text-[#f97316]" />)}
               {renderToolButton('WN', 'Window', 'WN', <AppWindow size={20} className="text-[#38bdf8]" />)}
-              {renderToolButton('SB', 'Floor', 'SB', <Layers size={20} className="text-[#a855f7]" />)}
-              {renderToolButton('RF', 'Roof', 'RF', <Square size={20} className="text-[#ec4899]" />)}
+              {renderToolButton('SB', 'Floor', 'SB', <Layers size={20} className="text-[#a855f7]" />, () =>
+                startSketchMode('floor')
+              )}
+              {renderToolButton('RF', 'Roof', 'RF', <Square size={20} className="text-[#ec4899]" />, () =>
+                startSketchMode('roof')
+              )}
             </div>
 
             {/* Datum Panel */}
@@ -247,6 +453,28 @@ export const Ribbon: React.FC = () => {
             <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
               {renderToolButton('AL', 'Align & Lock', 'AL', <Lock size={20} className="text-[#38bdf8]" />)}
               {renderToolButton('EQ', 'Equalize', 'EQ', <Equal size={20} className="text-[#10b981]" />)}
+
+              {/* Contextual Edit Boundary / Edit Footprint buttons for selected element */}
+              {isSelectedSlab && selectedGuid && (
+                <button
+                  onClick={() => startSketchMode('floor', selectedGuid)}
+                  className="flex flex-col items-center justify-center px-3 py-1.5 bg-[#0e703c] hover:bg-[#15803d] border border-[#22c55e] text-white rounded shadow transition-all group"
+                  title="Edit Floor Boundary (Sketch Mode)"
+                >
+                  <PenTool size={18} className="text-[#86efac] mb-0.5 group-hover:scale-110 transition-transform" />
+                  <span className="text-[11px] font-bold leading-none">Edit Boundary</span>
+                </button>
+              )}
+              {isSelectedRoof && selectedGuid && (
+                <button
+                  onClick={() => startSketchMode('roof', selectedGuid)}
+                  className="flex flex-col items-center justify-center px-3 py-1.5 bg-[#0e703c] hover:bg-[#15803d] border border-[#22c55e] text-white rounded shadow transition-all group"
+                  title="Edit Roof Footprint (Sketch Mode)"
+                >
+                  <PenTool size={18} className="text-[#86efac] mb-0.5 group-hover:scale-110 transition-transform" />
+                  <span className="text-[11px] font-bold leading-none">Edit Footprint</span>
+                </button>
+              )}
             </div>
 
             {/* Project Loading & File Open Panel */}

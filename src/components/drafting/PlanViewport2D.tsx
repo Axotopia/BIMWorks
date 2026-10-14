@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useBimStore } from '../../store/useBimStore';
-import { Maximize2, ZoomIn, ZoomOut, Lock, Equal } from 'lucide-react';
+import { Maximize2, ZoomIn, ZoomOut, Lock, Equal, Check, X } from 'lucide-react';
 
 export const PlanViewport2D: React.FC = () => {
   const {
@@ -19,6 +19,7 @@ export const PlanViewport2D: React.FC = () => {
     createAlignConstraint,
     setActiveTool,
     elements,
+    meshes,
     createWall,
     createRoof,
     createSlab,
@@ -26,14 +27,59 @@ export const PlanViewport2D: React.FC = () => {
     createWindow,
     activeViewId,
     views,
+    sketchSession,
+    startSketchMode,
+    cancelSketchMode,
+    finishSketchMode,
+    addSketchLine,
+    addSketchRectangle,
+    addSketchFromWall,
+    selectSketchLine,
+    deleteSelectedSketchLine,
   } = useBimStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [firstPoint, setFirstPoint] = useState<[number, number] | null>(null);
   const [currentPoint, setCurrentPoint] = useState<[number, number] | null>(null);
+  const [sketchStartPoint, setSketchStartPoint] = useState<[number, number] | null>(null);
+
+  // Helper to snap to nearest existing sketch vertex within tolerance
+  const findSnapVertex = useCallback(
+    (arg1: number | [number, number], arg2?: number, tol = 0.35): [number, number] | null => {
+      if (!sketchSession) return null;
+      let mx: number, my: number;
+      if (Array.isArray(arg1)) {
+        mx = arg1[0];
+        my = arg1[1];
+      } else {
+        mx = arg1;
+        my = arg2 ?? 0;
+      }
+      for (const l of sketchSession.lines) {
+        if (Math.hypot(l.start[0] - mx, l.start[1] - my) <= tol) {
+          return l.start;
+        }
+        if (Math.hypot(l.end[0] - mx, l.end[1] - my) <= tol) {
+          return l.end;
+        }
+      }
+      return null;
+    },
+    [sketchSession]
+  );
 
   const handleElementClick = (guid: string) => {
+    if (sketchSession) {
+      if (sketchSession.drawTool === 'pick_walls') {
+        const el = elements[guid];
+        if (el?.ifc_class === 'IfcWallStandardCase' || el?.ifc_class === 'IfcWall') {
+          addSketchFromWall(guid);
+        }
+      }
+      return;
+    }
+
     if (activeTool === 'AL') {
       if (!alignPickState.refGuid) {
         setAlignPickState({ step: 'pick_target', refGuid: guid });
@@ -43,6 +89,20 @@ export const PlanViewport2D: React.FC = () => {
       return;
     }
     setSelectedGuid(guid);
+  };
+
+  const handleDoubleClick = () => {
+    if (selectedGuid && !sketchSession) {
+      const el = elements[selectedGuid];
+      const mesh = meshes.find((m) => m.guid === selectedGuid);
+      const ifcClass = el?.ifc_class || mesh?.ifc_class;
+      const name = (el?.name || mesh?.name || '').toLowerCase();
+      if (ifcClass === 'IfcSlab' && !name.includes('roof')) {
+        startSketchMode('floor', selectedGuid);
+      } else if (ifcClass === 'IfcRoof' || name.includes('roof')) {
+        startSketchMode('roof', selectedGuid);
+      }
+    }
   };
 
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 300, y: 300 });
@@ -112,6 +172,30 @@ export const PlanViewport2D: React.FC = () => {
       if (!coords) return;
       const [x, y] = coords;
 
+      if (sketchSession) {
+        const snap = findSnapVertex(x, y);
+        const finalX = snap ? snap[0] : x;
+        const finalY = snap ? snap[1] : y;
+
+        if (sketchSession.drawTool === 'line') {
+          if (!sketchStartPoint) {
+            setSketchStartPoint([finalX, finalY]);
+          } else {
+            addSketchLine(sketchStartPoint, [finalX, finalY]);
+            // Chain to next point (Revit chain sketch mode)
+            setSketchStartPoint([finalX, finalY]);
+          }
+        } else if (sketchSession.drawTool === 'rectangle') {
+          if (!sketchStartPoint) {
+            setSketchStartPoint([finalX, finalY]);
+          } else {
+            addSketchRectangle(sketchStartPoint, [finalX, finalY]);
+            setSketchStartPoint(null);
+          }
+        }
+        return;
+      }
+
       if (activeTool === 'WA') {
         if (!firstPoint) {
           setFirstPoint([x, y]);
@@ -123,33 +207,9 @@ export const PlanViewport2D: React.FC = () => {
           setCurrentPoint(null);
         }
       } else if (activeTool === 'RF') {
-        if (!firstPoint) {
-          setFirstPoint([x, y]);
-        } else {
-          const x1 = Math.min(firstPoint[0], x);
-          const x2 = Math.max(firstPoint[0], x);
-          const y1 = Math.min(firstPoint[1], y);
-          const y2 = Math.max(firstPoint[1], y);
-          if (x2 - x1 >= 0.5 && y2 - y1 >= 0.5) {
-            createRoof([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], 0.3, 6.0, 15.0);
-          }
-          setFirstPoint(null);
-          setCurrentPoint(null);
-        }
+        startSketchMode('roof');
       } else if (activeTool === 'SB') {
-        if (!firstPoint) {
-          setFirstPoint([x, y]);
-        } else {
-          const minX = Math.min(firstPoint[0], x);
-          const maxX = Math.max(firstPoint[0], x);
-          const minY = Math.min(firstPoint[1], y);
-          const maxY = Math.max(firstPoint[1], y);
-          if (maxX - minX >= 0.5 && maxY - minY >= 0.5) {
-            createSlab([[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]], 0.25, 0.0);
-          }
-          setFirstPoint(null);
-          setCurrentPoint(null);
-        }
+        startSketchMode('floor');
       } else if (activeTool === 'DR' || activeTool === 'WN') {
         let nearestWallGuid: string | null = null;
         let minDist = 2.0;
@@ -285,6 +345,7 @@ export const PlanViewport2D: React.FC = () => {
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onWheel={handleWheel}
+      onDoubleClick={handleDoubleClick}
       onContextMenu={(e) => e.preventDefault()}
     >
       {/* 2D Vector Drawing Layer */}
@@ -309,29 +370,33 @@ export const PlanViewport2D: React.FC = () => {
 
         {/* Global Transform: Pan & Scale */}
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${scale}, ${-scale})`}>
-          {/* 1. Slabs in Projection */}
-          {sliced2D?.slabs.map((slab) => {
-            const isSelected = selectedGuid === slab.guid;
-            return (
-              <path
-                key={`slab-${slab.guid}`}
-                d={slab.d}
-                className={`${slab.class} cursor-pointer transition-colors`}
-                stroke={isSelected ? '#0284c7' : '#94a3b8'}
-                strokeWidth={isSelected ? '2.0' : '0.8'}
-                vectorEffect="non-scaling-stroke"
-                fill={isSelected ? '#bae6fd' : '#f8fafc'}
-                fillOpacity={isSelected ? 0.5 : 0.4}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleElementClick(slab.guid);
-                }}
-              />
-            );
-          })}
+          {/* Base Model Linework (Halftoned/Dimmed during Sketch Mode) */}
+          <g className={sketchSession ? 'opacity-25 transition-opacity' : ''}>
+            {/* 1. Slabs in Projection */}
+            {sliced2D?.slabs.map((slab) => {
+              if (sketchSession?.isEditingExisting && sketchSession.targetGuid === slab.guid) return null;
+              const isSelected = selectedGuid === slab.guid;
+              return (
+                <path
+                  key={`slab-${slab.guid}`}
+                  d={slab.d}
+                  className={`${slab.class} cursor-pointer transition-colors`}
+                  stroke={isSelected ? '#0284c7' : '#94a3b8'}
+                  strokeWidth={isSelected ? '2.0' : '0.8'}
+                  vectorEffect="non-scaling-stroke"
+                  fill={isSelected ? '#bae6fd' : '#f8fafc'}
+                  fillOpacity={isSelected ? 0.5 : 0.4}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleElementClick(slab.guid);
+                  }}
+                />
+              );
+            })}
 
           {/* 1b. Roofs in Projection (Boundary, Ridge, and Pitch Slope) */}
           {sliced2D?.roofs?.map((roof) => {
+            if (sketchSession?.isEditingExisting && sketchSession.targetGuid === roof.guid) return null;
             const isSelected = selectedGuid === roof.guid;
             return (
               <g
@@ -674,8 +739,250 @@ export const PlanViewport2D: React.FC = () => {
                 </g>
               );
             })}
+          </g>
 
-          {/* Live Drawing Rubberband Visuals */}
+          {/* Revit Sketch Mode Linework & Overlay */}
+          {sketchSession && (
+            <g id="sketch-mode-layer">
+              {/* Existing Sketch Boundary Lines (Magenta #ec4899) */}
+              {sketchSession.lines.map((l) => {
+                const isSelected = sketchSession.selectedLineId === l.id;
+                const midX = (l.start[0] + l.end[0]) / 2;
+                const midY = (l.start[1] + l.end[1]) / 2;
+                const dx = l.end[0] - l.start[0];
+                const dy = l.end[1] - l.start[1];
+                const len = Math.hypot(dx, dy);
+                const nx = len > 0.0001 ? -dy / len : 0;
+                const ny = len > 0.0001 ? dx / len : 0;
+
+                return (
+                  <g key={l.id} className="cursor-pointer">
+                    {/* Transparent hit target for easy picking */}
+                    <line
+                      x1={l.start[0]}
+                      y1={l.start[1]}
+                      x2={l.end[0]}
+                      y2={l.end[1]}
+                      stroke="transparent"
+                      strokeWidth="12"
+                      vectorEffect="non-scaling-stroke"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        selectSketchLine(l.id);
+                      }}
+                    />
+                    {/* Revit-style Magenta Line */}
+                    <line
+                      x1={l.start[0]}
+                      y1={l.start[1]}
+                      x2={l.end[0]}
+                      y2={l.end[1]}
+                      stroke={isSelected ? '#be185d' : '#ec4899'}
+                      strokeWidth={isSelected ? '3.5' : '2.5'}
+                      vectorEffect="non-scaling-stroke"
+                      strokeLinecap="round"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        selectSketchLine(l.id);
+                      }}
+                    />
+                    {/* Vertex Endpoints */}
+                    <circle
+                      cx={l.start[0]}
+                      cy={l.start[1]}
+                      r="0.10"
+                      fill={isSelected ? '#be185d' : '#ec4899'}
+                      stroke="#ffffff"
+                      strokeWidth="1.5"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    <circle
+                      cx={l.end[0]}
+                      cy={l.end[1]}
+                      r="0.10"
+                      fill={isSelected ? '#be185d' : '#ec4899'}
+                      stroke="#ffffff"
+                      strokeWidth="1.5"
+                      vectorEffect="non-scaling-stroke"
+                    />
+
+                    {/* Roof Slope Indicator Triangle & Pitch Angle (Revit LT style) */}
+                    {sketchSession.elementType === 'roof' && l.definesSlope && (
+                      <g
+                        transform={`translate(${midX}, ${midY})`}
+                        className="pointer-events-none select-none"
+                      >
+                        <polygon
+                          points={`${nx * 0.35},${ny * 0.35} ${-ny * 0.2},${nx * 0.2} ${ny * 0.2},${-nx * 0.2}`}
+                          fill="#ec4899"
+                          stroke="#ffffff"
+                          strokeWidth="0.8"
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        <text
+                          x={nx * 0.65}
+                          y={-(ny * 0.65)}
+                          transform="scale(1, -1)"
+                          textAnchor="middle"
+                          dominantBaseline="central"
+                          fontSize="0.20"
+                          fontFamily="JetBrains Mono, monospace"
+                          fontWeight="bold"
+                          fill="#be185d"
+                          paintOrder="stroke"
+                          stroke="#ffffff"
+                          strokeWidth="0.06"
+                        >
+                          {`${(l.slopeAngle ?? sketchSession.slopeDegrees).toFixed(1)}°`}
+                        </text>
+                      </g>
+                    )}
+                  </g>
+                );
+              })}
+
+              {/* Rubberband during Sketch Creation */}
+              {sketchStartPoint && currentPoint && (
+                <g className="pointer-events-none select-none">
+                  {sketchSession.drawTool === 'line' && (
+                    <>
+                      <line
+                        x1={sketchStartPoint[0]}
+                        y1={sketchStartPoint[1]}
+                        x2={currentPoint[0]}
+                        y2={currentPoint[1]}
+                        stroke="#ec4899"
+                        strokeWidth="2.5"
+                        strokeDasharray="5 3"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                      <circle
+                        cx={sketchStartPoint[0]}
+                        cy={sketchStartPoint[1]}
+                        r="0.12"
+                        fill="#ec4899"
+                        stroke="#ffffff"
+                        strokeWidth="1.5"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                      <circle
+                        cx={currentPoint[0]}
+                        cy={currentPoint[1]}
+                        r="0.12"
+                        fill="#f472b6"
+                        stroke="#ffffff"
+                        strokeWidth="1.5"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                      <text
+                        x={(sketchStartPoint[0] + currentPoint[0]) / 2}
+                        y={-((sketchStartPoint[1] + currentPoint[1]) / 2) - 0.25}
+                        transform="scale(1, -1)"
+                        textAnchor="middle"
+                        fontSize="0.22"
+                        fontFamily="JetBrains Mono, monospace"
+                        fontWeight="bold"
+                        fill="#ec4899"
+                        paintOrder="stroke"
+                        stroke="#ffffff"
+                        strokeWidth="0.08"
+                      >
+                        {`${Math.hypot(
+                          currentPoint[0] - sketchStartPoint[0],
+                          currentPoint[1] - sketchStartPoint[1]
+                        ).toFixed(2)}m (${(
+                          Math.hypot(
+                            currentPoint[0] - sketchStartPoint[0],
+                            currentPoint[1] - sketchStartPoint[1]
+                          ) * 3.28084
+                        ).toFixed(1)}')`}
+                      </text>
+                    </>
+                  )}
+
+                  {sketchSession.drawTool === 'rectangle' && (
+                    <>
+                      <rect
+                        x={Math.min(sketchStartPoint[0], currentPoint[0])}
+                        y={Math.min(sketchStartPoint[1], currentPoint[1])}
+                        width={Math.abs(currentPoint[0] - sketchStartPoint[0])}
+                        height={Math.abs(currentPoint[1] - sketchStartPoint[1])}
+                        stroke="#ec4899"
+                        strokeWidth="2.5"
+                        strokeDasharray="5 3"
+                        vectorEffect="non-scaling-stroke"
+                        fill="#fbcfe8"
+                        fillOpacity="0.25"
+                      />
+                      <text
+                        x={(sketchStartPoint[0] + currentPoint[0]) / 2}
+                        y={-((sketchStartPoint[1] + currentPoint[1]) / 2)}
+                        transform="scale(1, -1)"
+                        textAnchor="middle"
+                        fontSize="0.24"
+                        fontFamily="JetBrains Mono, monospace"
+                        fontWeight="bold"
+                        fill="#ec4899"
+                        paintOrder="stroke"
+                        stroke="#ffffff"
+                        strokeWidth="0.08"
+                      >
+                        {`${Math.abs(currentPoint[0] - sketchStartPoint[0]).toFixed(2)}m × ${Math.abs(
+                          currentPoint[1] - sketchStartPoint[1]
+                        ).toFixed(2)}m`}
+                      </text>
+                    </>
+                  )}
+                </g>
+              )}
+
+              {/* Snap Point Indicator */}
+              {currentPoint && (() => {
+                const snap = findSnapVertex(currentPoint);
+                if (!snap) return null;
+                return (
+                  <g className="pointer-events-none select-none">
+                    <circle
+                      cx={snap[0]}
+                      cy={snap[1]}
+                      r="0.18"
+                      fill="none"
+                      stroke="#ec4899"
+                      strokeWidth="2"
+                      vectorEffect="non-scaling-stroke"
+                      className="animate-ping"
+                    />
+                    <circle
+                      cx={snap[0]}
+                      cy={snap[1]}
+                      r="0.14"
+                      fill="#ec4899"
+                      stroke="#ffffff"
+                      strokeWidth="1.5"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    <text
+                      x={snap[0]}
+                      y={-snap[1] - 0.28}
+                      transform="scale(1, -1)"
+                      textAnchor="middle"
+                      fontSize="0.18"
+                      fontFamily="Inter, sans-serif"
+                      fontWeight="bold"
+                      fill="#be185d"
+                      paintOrder="stroke"
+                      stroke="#ffffff"
+                      strokeWidth="0.06"
+                    >
+                      Endpoint Snap
+                    </text>
+                  </g>
+                );
+              })()}
+            </g>
+          )}
+
+          {/* Standard Live Drawing Rubberband Visuals (Walls) */}
           {firstPoint && currentPoint && (
             <g className="pointer-events-none select-none">
               {activeTool === 'WA' && (
@@ -708,40 +1015,6 @@ export const PlanViewport2D: React.FC = () => {
                     {`${Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]).toFixed(2)}m (${(
                       Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]) * 3.28084
                     ).toFixed(1)}')`}
-                  </text>
-                </>
-              )}
-
-              {(activeTool === 'RF' || activeTool === 'SB') && (
-                <>
-                  <rect
-                    x={Math.min(firstPoint[0], currentPoint[0])}
-                    y={Math.min(firstPoint[1], currentPoint[1])}
-                    width={Math.abs(currentPoint[0] - firstPoint[0])}
-                    height={Math.abs(currentPoint[1] - firstPoint[1])}
-                    stroke={activeTool === 'RF' ? '#f59e0b' : '#10b981'}
-                    strokeWidth="2.0"
-                    strokeDasharray="5 3"
-                    vectorEffect="non-scaling-stroke"
-                    fill={activeTool === 'RF' ? '#fef3c7' : '#d1fae5'}
-                    fillOpacity="0.4"
-                  />
-                  <circle cx={firstPoint[0]} cy={firstPoint[1]} r="0.12" fill="#0284c7" />
-                  <circle cx={currentPoint[0]} cy={currentPoint[1]} r="0.12" fill="#0284c7" />
-                  <text
-                    x={(firstPoint[0] + currentPoint[0]) / 2}
-                    y={-((firstPoint[1] + currentPoint[1]) / 2)}
-                    transform="scale(1, -1)"
-                    textAnchor="middle"
-                    fontSize="0.26"
-                    fontFamily="JetBrains Mono, monospace"
-                    fontWeight="bold"
-                    fill={activeTool === 'RF' ? '#b45309' : '#047857'}
-                    paintOrder="stroke"
-                    stroke="#ffffff"
-                    strokeWidth="0.08"
-                  >
-                    {`${activeTool === 'RF' ? 'Roof' : 'Floor Slab'}: ${Math.abs(currentPoint[0] - firstPoint[0]).toFixed(2)}m × ${Math.abs(currentPoint[1] - firstPoint[1]).toFixed(2)}m`}
                   </text>
                 </>
               )}
@@ -812,7 +1085,8 @@ export const PlanViewport2D: React.FC = () => {
       )}
 
       {/* Align Tool Active Banner */}
-      {activeTool === 'AL' && (
+      {/* Align Tool Active Banner */}
+      {!sketchSession && activeTool === 'AL' && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#094771]/95 text-white px-4 py-2 rounded-lg border border-[#38bdf8] text-xs shadow-xl flex items-center space-x-3 z-30 animate-fade-in">
           <Lock size={15} className="text-[#38bdf8] animate-pulse" />
           <span className="font-medium">
@@ -832,8 +1106,47 @@ export const PlanViewport2D: React.FC = () => {
         </div>
       )}
 
+      {/* Revit Sketch Mode Active Banner */}
+      {sketchSession && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#064e3b]/95 text-white px-5 py-2.5 rounded-xl border border-emerald-500 text-xs shadow-2xl flex items-center space-x-4 z-30 animate-fade-in backdrop-blur-md">
+          <div className="flex items-center space-x-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="font-bold tracking-wide text-emerald-200 uppercase text-[11px]">
+              {sketchSession.isEditingExisting ? 'Edit Mode' : 'Create Mode'}
+            </span>
+            <span className="text-slate-300 font-medium">
+              {sketchSession.elementType === 'floor' ? 'Floor Boundary' : 'Roof Footprint'}
+            </span>
+          </div>
+          <span className="text-emerald-300/40">|</span>
+          <span className="text-slate-200 font-sans">
+            {sketchSession.lines.length === 0
+              ? 'Draw boundary lines to form a closed loop (hotkeys: LI = Line, RE = Rectangle, PW = Pick Walls)'
+              : `${sketchSession.lines.length} sketch line${sketchSession.lines.length > 1 ? 's' : ''} defined.`}
+          </span>
+          <div className="flex items-center space-x-2 pl-2">
+            <button
+              onClick={() => finishSketchMode()}
+              className="flex items-center space-x-1 px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-semibold text-xs transition-colors shadow"
+              title="Finish Edit Mode (Enter)"
+            >
+              <Check size={14} />
+              <span>Finish</span>
+            </button>
+            <button
+              onClick={() => cancelSketchMode()}
+              className="flex items-center space-x-1 px-2.5 py-1 bg-red-600/80 hover:bg-red-600 text-white rounded font-medium text-xs transition-colors"
+              title="Cancel Edit Mode (Esc)"
+            >
+              <X size={14} />
+              <span>Cancel</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Drawing Tool Active Banner */}
-      {activeTool !== 'select' && activeTool !== 'AL' && (
+      {!sketchSession && activeTool !== 'select' && activeTool !== 'AL' && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#094771]/95 text-white px-4 py-2 rounded-lg border border-[#38bdf8] text-xs shadow-xl flex items-center space-x-3 z-30 animate-fade-in">
           <span className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-ping" />
           <span className="font-medium">

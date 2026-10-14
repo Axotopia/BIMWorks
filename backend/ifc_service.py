@@ -896,6 +896,61 @@ class BimModelManager:
                 meta["bbox"]["max"][2] += dz
             translated = True
 
+        # =====================================================================
+        # CONSTRAINT PROPAGATION (Dependency Graph)
+        # =====================================================================
+        if translated:
+            for cid, c in list(self.constraints.items()):
+                # 1. Align & Lock: Reference moves -> locked target moves by identical delta
+                if c.get("type") == "align" and c.get("is_locked", True):
+                    if c.get("ref_guid") == guid:
+                        target = c.get("target_guid")
+                        if target and target not in visited:
+                            self.translate_element(target, dx, dy, dz, visited)
+
+                # 2. Locked Dimension: Rigid delta binding between referenced elements
+                elif c.get("type") == "dimension_lock" and c.get("is_locked", True):
+                    if c.get("guid_a") == guid:
+                        other = c.get("guid_b")
+                        if other and other not in visited:
+                            self.translate_element(other, dx, dy, dz, visited)
+                    elif c.get("guid_b") == guid:
+                        other = c.get("guid_a")
+                        if other and other not in visited:
+                            self.translate_element(other, dx, dy, dz, visited)
+
+        return translated
+
+    @staticmethod
+    def _triangulate_polygon_2d(poly):
+        """Triangulates a simple 2D polygon into vertex index triples for arbitrary concave/complex shapes."""
+        n = len(poly)
+        if n < 3:
+            return []
+        if n == 3:
+            return [[0, 1, 2]]
+        try:
+            from shapely.geometry import Polygon
+            from shapely.ops import triangulate
+            shp_poly = Polygon(poly)
+            if shp_poly.is_valid and shp_poly.area > 1e-4:
+                tris = triangulate(shp_poly)
+                tri_indices = []
+                for tri in tris:
+                    if shp_poly.contains(tri.representative_point()):
+                        coords = list(tri.exterior.coords)[:3]
+                        idx = []
+                        for cx, cy in coords:
+                            best_i = min(range(n), key=lambda i: (poly[i][0] - cx)**2 + (poly[i][1] - cy)**2)
+                            idx.append(best_i)
+                        if len(set(idx)) == 3:
+                            tri_indices.append(idx)
+                if tri_indices:
+                    return tri_indices
+        except Exception:
+            pass
+        return [[0, i, i + 1] for i in range(1, n - 1)]
+
     @staticmethod
     def _build_flat_slab_mesh(poly, elevation=0.0, thickness=0.25):
         """Builds triangulated 3D mesh for flat slab."""
@@ -906,10 +961,11 @@ class BimModelManager:
         for x, y in poly:
             verts.extend([float(x), float(y), float(elevation)])
         faces = []
-        for i in range(1, n - 1):
-            faces.extend([0, i + 1, i])
-        for i in range(1, n - 1):
-            faces.extend([n, n + i, n + i + 1])
+        tri_indices = BimModelManager._triangulate_polygon_2d(poly)
+        for a, b, c in tri_indices:
+            faces.extend([a, c, b])
+        for a, b, c in tri_indices:
+            faces.extend([n + a, n + b, n + c])
         for i in range(n):
             nxt = (i + 1) % n
             faces.extend([i, n + i, n + nxt])
@@ -935,10 +991,11 @@ class BimModelManager:
             verts.extend([float(x), float(y), float(elevation + max(0.0, rise) + thickness)])
 
         faces = []
-        for i in range(1, n - 1):
-            faces.extend([0, i + 1, i])
-        for i in range(1, n - 1):
-            faces.extend([n, n + i, n + i + 1])
+        tri_indices = BimModelManager._triangulate_polygon_2d(poly)
+        for a, b, c in tri_indices:
+            faces.extend([a, c, b])
+        for a, b, c in tri_indices:
+            faces.extend([n + a, n + b, n + c])
         for i in range(n):
             nxt = (i + 1) % n
             faces.extend([i, n + i, n + nxt])
@@ -1089,31 +1146,6 @@ class BimModelManager:
             "width": meta.get("width", 0.9),
             "swing_flipped": meta.get("swing_flipped", False),
         }
-
-        # =====================================================================
-        # CONSTRAINT PROPAGATION (Dependency Graph)
-        # =====================================================================
-        if translated:
-            for cid, c in list(self.constraints.items()):
-                # 1. Align & Lock: Reference moves -> locked target moves by identical delta
-                if c.get("type") == "align" and c.get("is_locked", True):
-                    if c.get("ref_guid") == guid:
-                        target = c.get("target_guid")
-                        if target and target not in visited:
-                            self.translate_element(target, dx, dy, dz, visited)
-
-                # 2. Locked Dimension: Rigid delta binding between referenced elements
-                elif c.get("type") == "dimension_lock" and c.get("is_locked", True):
-                    if c.get("guid_a") == guid:
-                        other = c.get("guid_b")
-                        if other and other not in visited:
-                            self.translate_element(other, dx, dy, dz, visited)
-                    elif c.get("guid_b") == guid:
-                        other = c.get("guid_a")
-                        if other and other not in visited:
-                            self.translate_element(other, dx, dy, dz, visited)
-
-        return translated
 
     # =========================================================================
     # PARAMETRIC CONSTRAINT ENGINE: ALIGN, LOCK, EQUALIZE (EQ), PERSISTENCE

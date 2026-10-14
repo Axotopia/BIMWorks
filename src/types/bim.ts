@@ -176,7 +176,39 @@ export type ActiveTool =
   | 'SHT' // Sheet
   | 'BX' // Section Box
   | 'AL' // Align & Lock
-  | 'EQ'; // Equalize
+  | 'EQ' // Equalize
+  | 'sketch'; // Revit Sketch Mode (Edit Boundary / Edit Footprint / Create)
+
+export interface SketchLine {
+  id: string;
+  start: [number, number];
+  end: [number, number];
+  definesSlope?: boolean; // For roof sketch lines
+  slopeAngle?: number;    // Slope angle in degrees (e.g. 15.0 or 30.0)
+  overhang?: number;      // Overhang offset in meters
+  pickedWallGuid?: string; // Associated wall constraint
+}
+
+export type SketchDrawTool = 'line' | 'rectangle' | 'pick_walls';
+
+export interface SketchSession {
+  mode: 'floor' | 'roof';
+  elementType: 'floor' | 'roof';
+  isEditingExisting: boolean;
+  targetGuid?: string;
+  targetName?: string;
+  elevation: number;
+  thickness: number;
+  pitch: number;
+  lines: SketchLine[];
+  selectedLineId: string | null;
+  drawTool: SketchDrawTool;
+  defaultDefinesSlope: boolean;
+  defaultSlopeAngle: number;
+  defaultOverhang: number;
+  spanDirection?: [number, number];
+  validationError?: string | null;
+}
 
 export interface WallJoinPolicy {
   allow_join: boolean;

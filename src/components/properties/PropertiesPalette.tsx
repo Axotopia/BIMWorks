@@ -1,5 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, Trash2, Box, Info, Check, Move, ArrowUpRight, Maximize2, RotateCcw } from 'lucide-react';
+import {
+  Settings,
+  Trash2,
+  Box,
+  Info,
+  Check,
+  Move,
+  ArrowUpRight,
+  Maximize2,
+  RotateCcw,
+  PenTool,
+  X,
+  AlertCircle,
+  Sparkles,
+} from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
 import { formatLength, metersToFeet } from '../../utils/units';
 
@@ -12,6 +26,13 @@ export const PropertiesPalette: React.FC = () => {
     translateElement,
     setEditTypeModalOpen,
     displayUnit,
+    sketchSession,
+    startSketchMode,
+    finishSketchMode,
+    cancelSketchMode,
+    updateSketchLine,
+    deleteSelectedSketchLine,
+    setSketchParam,
   } = useBimStore();
 
   const selectedMesh = meshes.find((m) => m.guid === selectedGuid);
@@ -161,8 +182,165 @@ export const PropertiesPalette: React.FC = () => {
 
       {/* Parameter Table & Bonsai-Style Geometry Editor */}
       <div className="flex-1 overflow-y-auto p-2 space-y-3">
-        {isElementSelected ? (
+        {sketchSession ? (
+          <div className="space-y-3">
+            {/* Active Sketch Mode Banner */}
+            <div className="bg-[#14532d]/40 border border-[#22c55e] p-3 rounded shadow-sm">
+              <div className="flex items-center space-x-1.5 text-[#4ade80] font-bold text-xs uppercase tracking-wide mb-1">
+                <Sparkles size={14} />
+                <span>
+                  {sketchSession.mode === 'roof' ? 'Roof Footprint Sketch' : 'Floor Boundary Sketch'}
+                </span>
+              </div>
+              <p className="text-[11px] text-[#bbf7d0] mb-3">
+                {sketchSession.isEditingExisting
+                  ? `Editing geometry of ${sketchSession.targetName || 'element'}. Draw/modify magenta boundary lines.`
+                  : 'Draw closed magenta boundary loop using Line, Rectangle, or Pick Walls.'}
+              </p>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => finishSketchMode()}
+                  className="flex-1 flex items-center justify-center space-x-1 py-1.5 bg-[#166534] hover:bg-[#15803d] border border-[#22c55e] text-white rounded text-xs font-semibold shadow"
+                >
+                  <Check size={14} />
+                  <span>Finish (Enter)</span>
+                </button>
+                <button
+                  onClick={() => cancelSketchMode()}
+                  className="flex-1 flex items-center justify-center space-x-1 py-1.5 bg-[#7f1d1d] hover:bg-[#991b1b] border border-[#ef4444] text-white rounded text-xs font-semibold shadow"
+                >
+                  <X size={14} />
+                  <span>Cancel (Esc)</span>
+                </button>
+              </div>
+
+              {sketchSession.validationError && (
+                <div className="mt-2.5 p-2 bg-[#450a0a] border border-[#ef4444] rounded text-red-200 text-xs flex items-start space-x-1.5">
+                  <AlertCircle size={14} className="text-[#f87171] flex-shrink-0 mt-0.5" />
+                  <span>{sketchSession.validationError}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Sketch Session Parameters */}
+            <div className="bg-[#1e1e1e] border border-[#3c3c3c] p-3 rounded space-y-2.5 text-xs">
+              <div className="text-[10px] uppercase font-bold text-[#94a3b8] tracking-wider">
+                Sketch Parameters
+              </div>
+
+              {sketchSession.mode === 'roof' ? (
+                <>
+                  <div>
+                    <label className="text-[10px] text-slate-300 block mb-1">Base Elevation (m)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={sketchSession.elevation}
+                      onChange={(e) => setSketchParam('elevation', parseFloat(e.target.value) || 0)}
+                      className="w-full bg-[#2a2d2e] border border-[#3c3c3c] rounded px-2 py-1 text-white text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-300 block mb-1">Roof Thickness (m)</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={sketchSession.thickness}
+                      onChange={(e) => setSketchParam('thickness', parseFloat(e.target.value) || 0.3)}
+                      className="w-full bg-[#2a2d2e] border border-[#3c3c3c] rounded px-2 py-1 text-white text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-300 block mb-1">Slope Pitch (degrees)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      value={sketchSession.pitch}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 0;
+                        setSketchParam('pitch', val);
+                        setSketchParam('defaultSlopeAngle', val);
+                      }}
+                      className="w-full bg-[#2a2d2e] border border-[#3c3c3c] rounded px-2 py-1 text-white text-xs"
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="text-[10px] text-slate-300 block mb-1">Elevation from Level (m)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={sketchSession.elevation}
+                      onChange={(e) => setSketchParam('elevation', parseFloat(e.target.value) || 0)}
+                      className="w-full bg-[#2a2d2e] border border-[#3c3c3c] rounded px-2 py-1 text-white text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-300 block mb-1">Floor Slab Thickness (m)</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={sketchSession.thickness}
+                      onChange={(e) => setSketchParam('thickness', parseFloat(e.target.value) || 0.25)}
+                      className="w-full bg-[#2a2d2e] border border-[#3c3c3c] rounded px-2 py-1 text-white text-xs"
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Selected Sketch Line Properties */}
+            {sketchSession.selectedLineId && (() => {
+              const selLine = sketchSession.lines.find((l) => l.id === sketchSession.selectedLineId);
+              if (!selLine) return null;
+              const len = Math.hypot(selLine.end[0] - selLine.start[0], selLine.end[1] - selLine.start[1]);
+              return (
+                <div className="bg-[#1f2937] border border-[#38bdf8]/40 p-3 rounded space-y-2 text-xs">
+                  <div className="flex items-center justify-between text-[#38bdf8] font-bold text-[10px] uppercase">
+                    <span>Selected Boundary Line</span>
+                    <button
+                      onClick={() => deleteSelectedSketchLine()}
+                      className="text-red-400 hover:text-red-300 p-0.5"
+                      title="Delete Line"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-slate-300">
+                    Length: <span className="text-white font-mono">{len.toFixed(2)}m</span>
+                  </div>
+                  {sketchSession.mode === 'roof' && (
+                    <label className="flex items-center space-x-2 cursor-pointer mt-1">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(selLine.definesSlope)}
+                        onChange={(e) => updateSketchLine(selLine.id, { definesSlope: e.target.checked })}
+                        className="rounded bg-[#2a2d2e] border-[#555555] text-[#007acc]"
+                      />
+                      <span className="text-white text-xs">Defines Roof Slope</span>
+                    </label>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        ) : isElementSelected ? (
           <>
+            {/* Revit Sketch Mode Trigger */}
+            {(isSlab || isRoof) && (
+              <button
+                onClick={() => startSketchMode(isRoof ? 'roof' : 'floor', selectedGuid)}
+                className="w-full flex items-center justify-center space-x-2 py-2 px-3 bg-[#0e703c] hover:bg-[#15803d] border border-[#22c55e] text-white rounded font-bold text-xs shadow-md transition-all group mb-2"
+                title={`Enter Sketch Mode to modify 2D boundary of this ${isRoof ? 'roof' : 'floor'}`}
+              >
+                <PenTool size={15} className="text-[#86efac] group-hover:scale-110 transition-transform" />
+                <span>{isRoof ? 'Edit Footprint (Sketch Mode)' : 'Edit Boundary (Sketch Mode)'}</span>
+              </button>
+            )}
+
             {/* Bonsai-Style Live Geometry & Slope Editor */}
             <div className="bg-[#1f242d] p-2.5 rounded border border-[#0284c7]/40 shadow-sm">
               <div className="flex items-center justify-between mb-2">

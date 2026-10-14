@@ -112,6 +112,11 @@ class ConstraintEqualizeParams(BaseModel):
     axis: Literal["x", "y"] = Field(default="x", description="Equalization axis")
 
 
+class ElementUpdateParams(BaseModel):
+    guid: str = Field(..., description="GUID of element to update")
+    updates: Dict[str, Any] = Field(..., description="Element property updates (polygon, thickness, elevation, pitch, etc.)")
+
+
 # Registry of command names to parameter classes
 COMMAND_REGISTRY = {
     "WallCreate": WallCreateParams,
@@ -127,6 +132,7 @@ COMMAND_REGISTRY = {
     "ConstraintAlign": ConstraintAlignParams,
     "ConstraintLockDim": ConstraintLockDimParams,
     "ConstraintEqualize": ConstraintEqualizeParams,
+    "ElementUpdate": ElementUpdateParams,
 }
 
 
@@ -291,6 +297,11 @@ class CommandBusEngine:
             p: ConstraintEqualizeParams = validated
             c = self.manager.equalize_span(p.span_start_guid, p.span_end_guid, p.interior_guids, p.axis)
             return {"status": "equalized", "constraint": c}
+
+        elif cmd_name == "ElementUpdate":
+            p: ElementUpdateParams = validated
+            res = self.manager.update_element(p.guid, p.updates)
+            return {"status": "updated", "guid": p.guid, "element": res}
 
         raise ValueError(f"Unhandled command execution: {cmd_name}")
 

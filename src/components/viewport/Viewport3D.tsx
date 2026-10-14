@@ -33,6 +33,10 @@ export const Viewport3D: React.FC = () => {
     setAlignPickState,
     createAlignConstraint,
     projectName,
+    sketchSession,
+    startSketchMode,
+    cancelSketchMode,
+    finishSketchMode,
   } = useBimStore();
 
   // Internal Three.js state
@@ -223,6 +227,11 @@ export const Viewport3D: React.FC = () => {
       if (hiddenGuids.includes(mData.guid)) return;
       if (isolatedGuids.length > 0 && !isolatedGuids.includes(mData.guid)) return;
 
+      // In Revit Sketch Mode: Hide the target element being edited
+      if (sketchSession?.isEditingExisting && sketchSession.targetGuid === mData.guid) {
+        return;
+      }
+
       const geom = new THREE.BufferGeometry();
       geom.setAttribute('position', new THREE.Float32BufferAttribute(mData.vertices, 3));
       geom.setIndex(mData.indices);
@@ -233,6 +242,12 @@ export const Viewport3D: React.FC = () => {
 
       let color = mData.color;
       let opacity = mData.opacity;
+
+      // In Revit Sketch Mode: Dim all other model elements (halftone)
+      const isHalftone = !!sketchSession;
+      if (isHalftone) {
+        opacity = Math.min(opacity, 0.22);
+      }
 
       if (isSelected) {
         color = '#0284c7'; // Revit selection blue
@@ -247,11 +262,15 @@ export const Viewport3D: React.FC = () => {
           color: isSelected ? 0x0284c7 : 0xd4d4d4,
           wireframe: true,
           clippingPlanes: clippingPlanesRef.current,
+          transparent: isHalftone,
+          opacity: isHalftone ? 0.25 : 1.0,
         });
       } else if (activeVisualStyle === 'hidden_line') {
         mat = new THREE.MeshLambertMaterial({
           color: isSelected ? 0x0284c7 : 0xffffff,
           clippingPlanes: clippingPlanesRef.current,
+          transparent: isHalftone,
+          opacity: isHalftone ? 0.25 : 1.0,
         });
       } else {
         // Consistent colors (Revit default)
@@ -259,7 +278,7 @@ export const Viewport3D: React.FC = () => {
           color: new THREE.Color(color),
           roughness: 0.8,
           metalness: 0.1,
-          transparent: opacity < 1.0,
+          transparent: isHalftone || opacity < 1.0,
           opacity: opacity,
           clippingPlanes: clippingPlanesRef.current,
           clipShadows: true,
@@ -276,6 +295,8 @@ export const Viewport3D: React.FC = () => {
         new THREE.LineBasicMaterial({
           color: isSelected ? 0x0369a1 : 0x1e293b,
           clippingPlanes: clippingPlanesRef.current,
+          transparent: isHalftone,
+          opacity: isHalftone ? 0.2 : 1.0,
         })
       );
       mesh.add(edgeLine);
@@ -283,7 +304,7 @@ export const Viewport3D: React.FC = () => {
       scene.add(mesh);
       threeMeshesRef.current.set(mData.guid, mesh);
     });
-  }, [meshes, selectedGuid, hoveredGuid, hiddenGuids, isolatedGuids, activeVisualStyle]);
+  }, [meshes, selectedGuid, hoveredGuid, hiddenGuids, isolatedGuids, activeVisualStyle, sketchSession]);
 
   // Handle Revit Navigation Events:
   // - Shift + MMB: Orbit
@@ -578,6 +599,36 @@ export const Viewport3D: React.FC = () => {
     return () => window.removeEventListener('orlt-zoom-extents', handleZoomExtents);
   }, [fitToExtents]);
 
+  // Double-click to invoke Revit Sketch Mode on Floor or Roof
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect || !cameraRef.current || !sceneRef.current) return;
+
+    const mouse = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, cameraRef.current);
+
+    const interactiveMeshes = Array.from(threeMeshesRef.current.values());
+    const intersects = raycaster.intersectObjects(interactiveMeshes, false);
+
+    if (intersects.length > 0) {
+      const hit = intersects[0];
+      const mesh = hit.object as THREE.Mesh;
+      const guid = mesh.userData?.guid;
+      const ifcClass = mesh.userData?.ifc_class;
+
+      if (ifcClass === 'IfcSlab') {
+        startSketchMode('floor', guid);
+      } else if (ifcClass === 'IfcRoof') {
+        startSketchMode('roof', guid);
+      }
+    }
+  };
+
   return (
     <div
       ref={containerRef}
@@ -585,6 +636,7 @@ export const Viewport3D: React.FC = () => {
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
+      onDoubleClick={handleDoubleClick}
       onWheel={handleWheel}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -730,6 +782,35 @@ export const Viewport3D: React.FC = () => {
           >
             Cancel (Esc)
           </button>
+        </div>
+      )}
+
+      {/* Revit Sketch Mode Active Banner */}
+      {sketchSession && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#064e3b]/95 backdrop-blur px-5 py-2.5 rounded-xl border border-emerald-500 text-xs text-white shadow-2xl flex items-center space-x-4 z-20 animate-fade-in">
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+          <span className="font-bold tracking-wide text-emerald-200 uppercase text-[11px]">
+            {sketchSession.isEditingExisting ? 'Edit Mode' : 'Create Mode'}
+          </span>
+          <span className="text-slate-200 font-sans">
+            {sketchSession.elementType === 'floor' ? 'Floor Boundary' : 'Roof Footprint'} — Switch to 2D Plan to draw magenta boundary lines
+          </span>
+          <div className="flex items-center space-x-2 pl-2">
+            <button
+              onClick={() => finishSketchMode()}
+              className="flex items-center space-x-1 px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-semibold text-xs transition-colors shadow"
+              title="Finish Edit Mode (Enter)"
+            >
+              Finish
+            </button>
+            <button
+              onClick={() => cancelSketchMode()}
+              className="flex items-center space-x-1 px-2.5 py-1 bg-red-600/80 hover:bg-red-600 text-white rounded font-medium text-xs transition-colors"
+              title="Cancel Edit Mode (Esc)"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
     </div>
