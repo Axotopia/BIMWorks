@@ -1039,11 +1039,29 @@ class BimModelManager:
         matrix = np.identity(4)
         matrix[0, 0], matrix[0, 1] = ux, -uy
         matrix[1, 0], matrix[1, 1] = uy, ux
-        # world position = baseline start + offset along u + local_y along the normal
+        # world position = baseline start + offset along u + local_y along the normal.
+        # The result is in DECIMAL FEET, like every other matrix this module builds;
+        # callers convert at the IFC boundary (see `_placement_for_ifc`).
         matrix[0, 3] = float(sp[0]) + ux * offset_along_wall - uy * local_y
         matrix[1, 3] = float(sp[1]) + uy * offset_along_wall + ux * local_y
         matrix[2, 3] = base_z + local_z
         return matrix
+
+    @staticmethod
+    def _placement_for_ifc(matrix):
+        """
+        Converts a placement matrix from internal decimal feet to the IFC's metres.
+
+        The rotation is dimensionless and passes through unchanged; only the
+        translation is unit-bearing. Every `edit_object_placement` call must go
+        through this, because the file is a metric IFC while the model is in feet —
+        feeding feet straight in put every element away from the origin out by 3.28x.
+        """
+        converted = np.array(matrix, dtype=float)
+        converted[0, 3] = feet_to_metres(float(matrix[0, 3]))
+        converted[1, 3] = feet_to_metres(float(matrix[1, 3]))
+        converted[2, 3] = feet_to_metres(float(matrix[2, 3]))
+        return converted
 
     def add_wall(
         self,
@@ -1108,14 +1126,13 @@ class BimModelManager:
         # are metres here), while the baseline is stored in decimal feet. Converting
         # here is the units boundary; without it a wall at model x=10 ft landed at
         # x=10 m — a 3.28x error, and the cause of the mixed-unit meshes.
-        matrix[0, 3] = feet_to_metres(float(start_pt[0]))
-        matrix[1, 3] = feet_to_metres(float(start_pt[1]))
-        matrix[2, 3] = feet_to_metres(
-            float(start_pt[2]) if len(start_pt) > 2 else float(base_z)
-        )
+        matrix[0, 3] = float(start_pt[0])
+        matrix[1, 3] = float(start_pt[1])
+        matrix[2, 3] = float(start_pt[2]) if len(start_pt) > 2 else float(base_z)
 
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=wall, matrix=matrix, is_si=False
+            "geometry.edit_object_placement", self.model, product=wall,
+            matrix=self._placement_for_ifc(matrix), is_si=False
         )
 
         meta = {
@@ -1191,7 +1208,8 @@ class BimModelManager:
         # Placement follows the host wall's own baseline/angle (world coords).
         op_matrix = self._hosted_placement_matrix(wall_meta, offset_along_wall, local_y=-INCHES_0_625)
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=opening, matrix=op_matrix, is_si=False
+            "geometry.edit_object_placement", self.model, product=opening,
+            matrix=self._placement_for_ifc(op_matrix), is_si=False
         )
 
         # Cut the wall
@@ -1221,7 +1239,8 @@ class BimModelManager:
         )
         door_matrix = self._hosted_placement_matrix(wall_meta, offset_along_wall, local_y=0.0)
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=door, matrix=door_matrix, is_si=False
+            "geometry.edit_object_placement", self.model, product=door,
+            matrix=self._placement_for_ifc(door_matrix), is_si=False
         )
 
         # Link door as filling of opening
@@ -1297,7 +1316,8 @@ class BimModelManager:
             wall_meta, offset_along_wall, local_y=-INCHES_0_625, local_z=sill_height
         )
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=opening, matrix=op_matrix, is_si=False
+            "geometry.edit_object_placement", self.model, product=opening,
+            matrix=self._placement_for_ifc(op_matrix), is_si=False
         )
 
         ifcopenshell.api.run("feature.add_feature", self.model, feature=opening, element=wall)
@@ -1327,7 +1347,8 @@ class BimModelManager:
             wall_meta, offset_along_wall, local_y=0.0, local_z=sill_height
         )
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=window, matrix=win_matrix, is_si=False
+            "geometry.edit_object_placement", self.model, product=window,
+            matrix=self._placement_for_ifc(win_matrix), is_si=False
         )
 
         ifcopenshell.api.run("feature.add_filling", self.model, opening=opening, element=window)
@@ -1405,12 +1426,12 @@ class BimModelManager:
         )
 
         matrix = np.identity(4)
-        matrix[0, 3] = feet_to_metres(float(min_x))
-        matrix[1, 3] = feet_to_metres(float(min_y))
-        # top of slab at elevation
-        matrix[2, 3] = feet_to_metres(float(elevation) - float(thickness))
+        matrix[0, 3] = float(min_x)
+        matrix[1, 3] = float(min_y)
+        matrix[2, 3] = float(elevation) - float(thickness)  # top of slab at elevation
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=slab, matrix=matrix, is_si=False
+            "geometry.edit_object_placement", self.model, product=slab,
+            matrix=self._placement_for_ifc(matrix), is_si=False
         )
 
         meta = {
@@ -1483,11 +1504,12 @@ class BimModelManager:
         )
 
         matrix = np.identity(4)
-        matrix[0, 3] = feet_to_metres(float(min_x))
-        matrix[1, 3] = feet_to_metres(float(min_y))
-        matrix[2, 3] = feet_to_metres(float(elevation))
+        matrix[0, 3] = float(min_x)
+        matrix[1, 3] = float(min_y)
+        matrix[2, 3] = float(elevation)
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=roof, matrix=matrix, is_si=False
+            "geometry.edit_object_placement", self.model, product=roof,
+            matrix=self._placement_for_ifc(matrix), is_si=False
         )
 
         meta = {
@@ -1726,14 +1748,16 @@ class BimModelManager:
                 host_meta, meta["offset_along_wall"], local_y=-INCHES_0_625, local_z=sill
             )
             ifcopenshell.api.run(
-                "geometry.edit_object_placement", self.model, product=opening, matrix=op_matrix, is_si=False
+                "geometry.edit_object_placement", self.model, product=opening,
+            matrix=self._placement_for_ifc(op_matrix), is_si=False
             )
 
             dw_matrix = self._hosted_placement_matrix(
                 host_meta, meta["offset_along_wall"], local_y=0.0, local_z=sill
             )
             ifcopenshell.api.run(
-                "geometry.edit_object_placement", self.model, product=door_win, matrix=dw_matrix, is_si=False
+                "geometry.edit_object_placement", self.model, product=door_win,
+            matrix=self._placement_for_ifc(dw_matrix), is_si=False
             )
             translated = True
 
@@ -2569,11 +2593,12 @@ class BimModelManager:
         # is already in file units (metres). Converting here is the units boundary.
         # Without it every wall placed away from the origin was out by 3.28x — the
         # cause of the mixed-unit meshes and of the x~98 anomaly in the drawing path.
-        matrix[0, 3] = feet_to_metres(float(sp[0]))
-        matrix[1, 3] = feet_to_metres(float(sp[1]))
-        matrix[2, 3] = feet_to_metres(float(sp[2]) if len(sp) > 2 else 0.0)
+        matrix[0, 3] = float(sp[0])
+        matrix[1, 3] = float(sp[1])
+        matrix[2, 3] = float(sp[2]) if len(sp) > 2 else 0.0
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=wall, matrix=matrix, is_si=False
+            "geometry.edit_object_placement", self.model, product=wall,
+            matrix=self._placement_for_ifc(matrix), is_si=False
         )
 
     def _invalidate_geometry_cache(self, *guids: str) -> None:

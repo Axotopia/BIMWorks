@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend")))
 
 import ifcopenshell.util.placement as placement_util
+from units import feet_to_metres
 from ifc_service import bim_manager
 from units import INCHES_0_625 as OPENING_FACE_NUDGE
 
@@ -37,11 +38,21 @@ def world_xy(entity):
 
 
 def expected_xy(host_meta, offset, local_y=0.0):
-    """Host-relative placement: start + u*offset + n*local_y (u = wall direction)."""
+    """
+    Host-relative placement: start + u*offset + n*local_y (u = wall direction).
+
+    Computed in decimal feet (the model's unit) and then converted to metres, because
+    `world_xy` reads the IFC placement and the IFC is metric. Comparing feet against
+    metres is what made this check pass at 0.9144 m before the placement boundary was
+    fixed.
+    """
     ang = float(host_meta["angle"])
     sp = host_meta["start"]
     ux, uy = math.cos(ang), math.sin(ang)
-    return sp[0] + ux * offset - uy * local_y, sp[1] + uy * offset + ux * local_y
+    return (
+        feet_to_metres(sp[0] + ux * offset - uy * local_y),
+        feet_to_metres(sp[1] + uy * offset + ux * local_y),
+    )
 
 
 def assert_on_wall(label, host_meta, meta, xy, local_y=0.0, tol=1e-6):

@@ -115,28 +115,43 @@ def main():
     check("a 20 ft wall on y spans 0..6.096 m",
           abs(east[2]) < 0.15 and abs(east[3] - 6.096) < 0.01, east)
 
-    print("6. Known gap: opening subtraction ...")
-    # The door void is present in the IFC (IfcRelVoidsElement + IfcOpeningElement)
-    # but the host wall's exported mesh is an unvoided box, so the cut shows no
-    # opening. Assert the CURRENT behaviour so that fixing it fails this check.
-    m3 = fresh()
-    w3 = m3.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8,
+    print("6. EXIT CRITERION: openings are voided in the cut ...")
+    # The door void is modelled as an IfcOpeningElement subtracted from the wall. It
+    # now actually subtracts (it did not before the placement-units fix, because the
+    # opening was 3.28x adrift and never intersected the wall).
+    mo = fresh()
+    wo = mo.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8,
                      name="South")["guid"]
-    m3.add_door(w3, offset_along_wall=10.0, width=3.0)
-    v3 = plan_projector(m3).render(cut_z=feet_to_metres(4.0))
-    wall_segments = []
-    for e in v3.cut:
+    mo.add_door(wo, offset_along_wall=10.0, width=3.0)
+    vo = plan_projector(mo).render(cut_z=feet_to_metres(4.0))
+    segs = []
+    for e in vo.cut:
         cs = [(round(metres_to_feet(x), 2), round(metres_to_feet(y), 2)) for x, y in e["coords"]]
         if len(cs) == 2 and abs(cs[0][1] - 0.33) < 0.03 and abs(cs[1][1] - 0.33) < 0.03:
-            wall_segments.append(tuple(sorted((cs[0][0], cs[1][0]))))
-    has_gap = any(a[1] < 10.5 and b[0] > 11.5
-                  for a, b in zip(sorted(wall_segments), sorted(wall_segments)[1:]))
-    if has_gap:
-        check("door void now appears in the cut — update this suite and the "
-              "hlr/mesh status notes", False, "gap present")
-    else:
-        check("KNOWN GAP: the void is not subtracted from the host mesh, so the cut "
-              "shows no door opening (IfcRelVoidsElement is present in the IFC)", True)
+            segs.append(tuple(sorted((cs[0][0], cs[1][0]))))
+    segs = sorted(set(segs))
+    gap = None
+    for a, b in zip(segs, segs[1:]):
+        d = b[0] - a[1]
+        if d > 1.0:
+            gap = (a[1], b[0])
+    check("the wall cut is interrupted by the door opening", gap is not None, segs)
+    if gap:
+        check("the gap is at the door's own position (10..13 ft)",
+              abs(gap[0] - 10.0) < 0.2 and abs(gap[1] - 13.0) < 0.2, gap)
+    # And a wall with no door is continuous across that span.
+    mw = fresh()
+    ww = mw.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8,
+                     name="South")["guid"]
+    vw = plan_projector(mw).render(cut_z=feet_to_metres(4.0))
+    wsegs = []
+    for e in vw.cut:
+        cs = [(round(metres_to_feet(x), 2), round(metres_to_feet(y), 2)) for x, y in e["coords"]]
+        if len(cs) == 2 and abs(cs[0][1] - 0.33) < 0.03 and abs(cs[1][1] - 0.33) < 0.03:
+            wsegs.append(tuple(sorted((cs[0][0], cs[1][0]))))
+    wseg_sorted = sorted(set(wsegs))
+    no_gap = all((b[0] - a[1]) <= 1.0 for a, b in zip(wseg_sorted, wseg_sorted[1:]))
+    check("a wall without a door has no gap there", no_gap, wseg_sorted)
 
     print(f"\nRESULT: {CHECKS['passed']} passed, {CHECKS['failed']} failed")
     if CHECKS["failed"]:
