@@ -3,45 +3,47 @@ BIMWorks - 2D view engine and hidden-line rendering (P5, README M3).
 
 STATUS: PARTIAL. Not the default renderer; the M3 exit criteria are not claimed.
 
-SOLVED this round — drawing-plane selection and model-space mapping
-------------------------------------------------------------------
-Earlier rounds concluded the serializer produced only a *vertical section*. That
-was wrong: probing without a `scale` setting emitted only the two role sections.
-With a scale set, the serializer emits several named drawing planes in one pass:
+SOLVED — plane selection, model-space mapping, element correlation
+-----------------------------------------------------------------
+With a `scale` set the serializer emits several NAMED drawing planes in one pass:
 
     Level 1             horizontal, plane Z = 1.2 m   (the cut, 4 ft above storey)
     Level 2             horizontal, plane Z = 11.2 m
     Section East West   vertical (normal = world Y)
     Section North South vertical
 
-So a floor plan must SELECT one plane rather than render them all, and `parse_hlr_svg`
-does that via `HlrRenderer._plane_selector`. The selected plane's coordinates are
-then mapped to model space by calibrating the rendered content box against the
-model's own plan bounds (`_calibrate`).
+so a floor plan must SELECT one plane (rendering all of them superimposed is what
+earlier made the output look like a vertical section). `_plane_selector` selects by
+orientation plus cut height; `_calibrate` maps the plane frame to model feet by
+matching the content box to the model's own plan bounds.
 
-Verified against known geometry (a 30 ft wall at model y=0, another at y=80 ft,
-a third at x=90 ft):
-  * raw plane coordinates span u 197.97..802.03, v 338.02..461.98;
-  * calibrated output lands at x 0..30.33 ft, y 0..20 ft with the door void visible;
-  * the official `ifcopenshell.draw.main()` emits the SAME frame
-    (u 197.97..802.03, v 338.02..461.98), which independently validates the mapping.
+Verified against known geometry (30 ft wall at y=0, another at y=80 ft, a third at
+x=90 ft): raw plane coords u 197.97..802.03, v 338.02..461.98 calibrate to
+x 0..30.33 ft, y 0..20 ft. The official `ifcopenshell.draw.main()` emits the SAME
+frame, which independently validates the mapping.
 
-Also verified: `apply_view_range` implements the drafting rule that a wall under
-6 ft is never cut; `ViewDefinition`/`ViewRange`/`LineweightTable` provide the view
-engine types; element attribution by name and by geometry both exist.
+Element identity: in a plan plane the serializer emits the element groups and the
+wall outlines as SIBLINGS, so outlines carry no identity. `correlate_plane_geometry`
+assigns each path to the tightest element group whose extent contains it. Verified:
+East and West resolve to their real GUIDs; South resolves for its main run.
 
-REMAINING GAP before this can be the default
---------------------------------------------
-Per-element attribution of cut *outlines* is not yet reliable. The serializer puts
-`ifc:guid` on element groups for some sub-views, but wall outlines come back
-unattributed, so a plan cannot yet support select/hide per element. Calibration is
-also approximate at the sub-foot level (scale ~20.5 units/ft vs ~20.18 on the other
-axis), which is visible as a ~0.3 ft offset on the far wall. Both need fixing before
-`slice_2d_vector_plan` can default to `renderer="hlr"`.
+REMAINING GAPS before this can be the default
+---------------------------------------------
+1. Fragments at an element's extent boundary (e.g. the piece of wall beside a door
+   opening) still mis-attribute, and calibration is approximate sub-foot
+   (~20.5 units/ft on one axis vs ~20.18 on the other), visible as a ~0.3 ft offset
+   on the far wall. Both are consequences of using a bbox similarity transform
+   instead of the serializer's exact plane matrix.
+2. No `hidden` partition is emitted in any configuration (occluded edges are removed
+   rather than separated), so `hidden_paths` is always empty and the M3 wording
+   "hidden lines separated" is not satisfied.
+3. Section/elevation views re-orient the model (this build exposes no `addDrawing`),
+   so section HLR has not been validated on a real multi-level model.
 
-The M3 exit criteria ("a plan view ... matches a Revit plan to a reviewer's
-satisfaction", "section HLR correct on a multi-level model") are therefore NOT met.
+The M3 exit criteria are therefore NOT met. `slice_2d_vector_plan` defaults to
+`renderer="analytic"`; HLR is opt-in and documented as unverified.
 """
+
 
 
 
@@ -254,7 +256,12 @@ def parse_hlr_svg(
     svg: str,
     raw: bool = False,
     want_plane=None,
-) -> Tuple[Dict[str, List[Dict[str, Any]]], Optional[List[List[float]]], Optional[str]]:
+) -> Tuple[
+    Dict[str, List[Dict[str, Any]]],
+    Optional[List[List[float]]],
+    Optional[str],
+    Dict[Tuple[Optional[str], Optional[str]], List[float]],
+]:
     """
     Parses the serializer's SVG into partitions of paths.
 
@@ -276,6 +283,10 @@ def parse_hlr_svg(
     selected_matrix: Optional[List[List[float]]] = None
     plane_name: Optional[str] = None
     plane_chosen = False
+    #: Per element group inside the selected plane: its paths' extent, keyed by
+    #: (guid, name). Planes put element groups and geometry as *siblings*, so the
+    #: element's own extent is the only way to correlate them.
+    element_extents: Dict[Tuple[Optional[str], Optional[str]], List[float]] = {}
 
     # Track nesting: each frame is (class, guid, matrix, is_plane_group, in_wanted)
     stack: List[Dict[str, Any]] = []
@@ -360,14 +371,30 @@ def parse_hlr_svg(
 
         model_d = _clean_path(d) if raw else _d_to_model(d, local_matrix or selected_matrix)
         if model_d:
-            partitions[partition].append({
+            entry = {
                 "d": model_d,
                 "guid": guid,
                 "ifc_class": ifc_class,
                 "element_name": element_name,
-            })
+            }
+            # Record the extent of any *element* group on the stack so sibling
+            # geometry can be correlated to it later. Reads the stack rather than
+            # `ifc_class`, because a path inside an element group frequently resolves
+            # its class to the outer storey group (the element group is then only on
+            # the stack, not the nearest Ifc-class frame).
+            for frame in stack:
+                fcls = frame["class"]
+                if fcls.startswith("Ifc") and fcls != "IfcBuildingStorey":
+                    nums = [float(v) for v in re.findall(_NUM, model_d)]
+                    if nums:
+                        xs, ys = nums[0::2], nums[1::2]
+                        key = (frame["guid"], frame.get("name"))
+                        ext = element_extents.setdefault(key, [1e18, -1e18, 1e18, -1e18])
+                        ext[0] = min(ext[0], min(xs)); ext[1] = max(ext[1], max(xs))
+                        ext[2] = min(ext[2], min(ys)); ext[3] = max(ext[3], max(ys))
+            partitions[partition].append(entry)
 
-    return partitions, selected_matrix, plane_name
+    return partitions, selected_matrix, plane_name, element_extents
 
 
 def _plane_height(plane: Optional[str]) -> Optional[float]:
@@ -601,7 +628,7 @@ class HlrRenderer:
         # storey's plan plus two vertical sections). Rendering all of them into one
         # view superimposes the storeys, so exactly one plane is selected and its
         # own `matrix3` is used to map that plane's coordinates into model space.
-        partitions, matrix3, plane_name = parse_hlr_svg(
+        partitions, matrix3, plane_name, element_extents = parse_hlr_svg(
             svg, raw=True, want_plane=self._plane_selector(view)
         )
         self.last_selected_matrix = matrix3
@@ -611,6 +638,9 @@ class HlrRenderer:
             partitions["hidden"] = []
         # Map the selected plane's coordinates into model space by calibration.
         partitions = self._calibrate(partitions, view, raw=True)
+        # Correlation runs AFTER calibration so element extents and geometry share
+        # one coordinate space.
+        partitions = self._correlate_after_calibration(partitions, element_extents, view)
         if view.view_type != "floor_plan":
             partitions = self._to_section_frame(partitions, view)
         rendered = RenderedView(
@@ -746,6 +776,62 @@ class HlrRenderer:
                     entry["ambiguous_name"] = True
                 resolved += 1
         return resolved
+
+    def correlate_plane_geometry(self, partitions, element_extents, view: ViewDefinition) -> int:
+        """
+        Attaches element identity to geometry that arrives as a *sibling* of the
+        element groups rather than nested inside them.
+
+        In a plan plane the serializer emits, side by side:
+
+            <g class="IfcBuildingStorey" ...plane...>
+              <g class="IfcWallStandardCase" name="South" guid="..."><path/></g>
+              <g class="projection">  <path/> <path/> ... </g>
+            </g>
+
+        so the wall's outline lives in the sibling `projection` group and carries no
+        identity at all. The element group's own extent (one path per element) is the
+        correlation key: geometry is assigned to the element whose extent contains
+        it. Verticals are checked against the element's run only, since a wall's
+        outline spans its length while its thickness is much smaller than the
+        containing test would allow.
+        """
+        if not element_extents:
+            return 0
+        attributed = 0
+        for partition in ("cut", "section", "projection", "below"):
+            for entry in partitions.get(partition, []):
+                if entry.get("guid") and entry.get("ifc_class") not in (None, "IfcBuildingStorey"):
+                    continue
+                nums = [float(v) for v in re.findall(_NUM, entry["d"])]
+                if not nums:
+                    continue
+                xs, ys = nums[0::2], nums[1::2]
+                bx0, bx1, by0, by1 = min(xs), max(xs), min(ys), max(ys)
+                # Pick the TIGHTEST containing element, not the first: a door's
+                # extent sits inside its host wall's, so taking the first match
+                # handed the wall's own fragments to the door.
+                best = None
+                best_area = None
+                for (guid, name), ext in element_extents.items():
+                    ex0, ex1, ey0, ey1 = ext
+                    span_x = max(ex1 - ex0, 1e-6)
+                    span_y = max(ey1 - ey0, 1e-6)
+                    # Tolerance proportional to the element's own size, so thick
+                    # outlines and end caps still correlate.
+                    tx = max(0.05 * span_x, 0.35)
+                    ty = max(0.05 * span_y, 0.35)
+                    if (bx0 >= ex0 - tx and bx1 <= ex1 + tx
+                            and by0 >= ey0 - ty and by1 <= ey1 + ty):
+                        area = span_x * span_y
+                        if best_area is None or area < best_area:
+                            best, best_area = (guid, name), area
+                if best:
+                    entry["guid"], entry["element_name"] = best
+                    if not entry.get("ifc_class") or entry["ifc_class"] == "IfcBuildingStorey":
+                        entry["ifc_class"] = "IfcWallStandardCase"
+                    attributed += 1
+        return attributed
 
     # -- coordinate calibration ---------------------------------------------
     def model_plan_bounds(self) -> Optional[Tuple[float, float, float, float]]:
@@ -907,6 +993,33 @@ class HlrRenderer:
         for paths in partitions.values():
             for entry in paths:
                 entry["d"] = _remap_path(entry["d"], to_model)
+        return partitions
+
+    def _correlate_after_calibration(self, partitions, element_extents, view):
+        """
+        Re-derives element extents in calibrated space, then correlates.
+
+        The extents captured during parsing are in the serializer's frame; after
+        calibration everything is in model feet, so the extents are transformed with
+        the same calibration before they are compared.
+        """
+        cal = self.last_calibration
+        if not cal or not element_extents:
+            return partitions
+        cx0, cy0, _cx1, _cy1 = cal["content"]
+        mx0, my1 = cal["model"][0], cal["model"][3]
+        sx, sy = cal["scale"]
+
+        def remap(ext):
+            ex0, ex1, ey0, ey1 = ext
+            x0 = mx0 + (ex0 - cx0) * sx
+            x1 = mx0 + (ex1 - cx0) * sx
+            y0 = my1 - (ey1 - cy0) * sy
+            y1 = my1 - (ey0 - cy0) * sy
+            return [min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1)]
+
+        scaled_extents = {k: remap(v) for k, v in element_extents.items()}
+        self.correlate_plane_geometry(partitions, scaled_extents, view)
         return partitions
 
     # -- element attribution ------------------------------------------------

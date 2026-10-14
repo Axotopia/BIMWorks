@@ -287,14 +287,13 @@ The first round probed without `scale`, which emits only the two vertical role s
 - calibrated output lands at x 0–30.33 ft, y 0–20 ft, with the door void visible;
 - the official `ifcopenshell.draw.main()` emits the **same frame**, independently validating the mapping rather than confirming my own settings.
 
-**Remaining gap (why it is still not the default)**
+**Remaining gaps (why it is still not the default)**
 
-1. **Per-element attribution of cut outlines is unreliable.** The serializer puts `ifc:guid` on element groups for some sub-views, but wall outlines come back unattributed, so a plan cannot support per-element select/hide. Name resolution and geometric attribution both exist but do not yet cover this case.
-2. **Calibration is approximate sub-foot** (~20.5 units/ft on one axis vs ~20.18 on the other), showing as a ~0.3 ft offset on the far wall.
+1. **Element correlation is partial.** In a plan plane the serializer emits element groups and wall outlines as *siblings*, so outlines carry no identity. `correlate_plane_geometry` assigns each path to the tightest element group whose extent contains it — verified as resolving East and West to their real GUIDs and South for its main run, but **fragments at an element's extent boundary still mis-attribute** (the wall piece beside a door opening). Calibration is also approximate sub-foot (~20.5 units/ft on one axis vs ~20.18 on the other), showing as a ~0.3 ft offset on the far wall. Both stem from using a bbox similarity transform rather than the serializer's exact plane matrix.
+2. **No `hidden` partition exists.** Every configuration tested removes occluded edges rather than separating them, so `hidden_paths` is always empty — the M3 wording "hidden lines separated" is **not** satisfied and the code does not claim otherwise.
+3. **Section/elevation HLR is unvalidated on a real multi-level model.** This build exposes no `addDrawing`, so sections are produced by re-orienting the model; that path has not been verified against a genuine multi-storey section.
 
-Both must be fixed before `slice_2d_vector_plan` can default to `renderer="hlr"`.
-
-**What would unblock it:****What would unblock it:** an ifcopenshell build exposing `addDrawing` (or a serialiser whose storey plane is genuinely horizontal), which turns the calibration step into the only remaining work. Re-evaluate HLR as the default at that point.
+**What would unblock it:****What would unblock it:****What would unblock it:** an ifcopenshell build exposing `addDrawing` (or a serialiser whose storey plane is genuinely horizontal), which turns the calibration step into the only remaining work. Re-evaluate HLR as the default at that point.
 
 **Still outstanding from the M3 feature list** and not attempted here: view templates as saved, selectable presets; temporary hide/isolate; and the reviewer-facing visual comparison against a Revit plan (which needs the coordinate mapping first).
 

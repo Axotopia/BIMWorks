@@ -74,13 +74,35 @@ def main():
           len(r.partitions.get("hidden", [])) == 0)
 
     print("2. Cut geometry is attributed to elements ...")
-    # Plane selection and model-coordinate mapping are verified; per-element
-    # attribution of cut outlines is the remaining gap (see the module docstring).
     check("a drawing plane was selected and named",
           r.drawing_plane_name is not None, r.drawing_plane_name)
     check("the selected plane's coordinates were calibrated into model feet",
-          r.calibration is not None and all(abs(v) > 0 for v in (r.calibration or {}).get("scale", [])),
+          r.calibration is not None
+          and all(abs(v) > 0 for v in (r.calibration or {}).get("scale", [])),
           r.calibration)
+
+    print("2b. Sibling geometry is correlated to element groups ...")
+    # In a plan plane the serializer emits wall groups and the wall outlines as
+    # SIBLINGS, so the outlines carry no identity; correlation uses the element
+    # group's own extent. Assert it resolves the unambiguous walls.
+    m3 = fresh()
+    lvl = [i for i, l in m3.levels.items() if l["name"] == "Level 1"][0]
+    guids = {}
+    for name, (a, b) in {
+        "South": ((0, 0), (30, 0)),
+        "East": ((30, 0), (30, 20)),
+        "West": ((0, 0), (0, 16)),
+    }.items():
+        guids[name] = m3.add_wall((a[0], a[1], 0), (b[0], b[1], 0), height=FEET_10,
+                                  thickness=INCHES_8, name=name, level_id=lvl)["guid"]
+    rendered3 = HlrRenderer(m3).render(
+        ViewDefinition(id="c", name="C", view_type="floor_plan", level_id=lvl,
+                       view_range=ViewRange(cut=4.0)))
+    resolved = {e.get("guid") for ps in rendered3.partitions.values() for e in ps
+                if e.get("guid")}
+    for name, g in guids.items():
+        check(f"geometry correlated to the {name} wall",
+              g in resolved, sorted(x[:6] for x in resolved))
 
     print("3. View-range engine: a low wall is not cut ...")
     m = fresh()
