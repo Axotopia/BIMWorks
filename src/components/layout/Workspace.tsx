@@ -73,6 +73,13 @@ export const Workspace: React.FC = () => {
     });
 
     event.api.addPanel({
+      id: 'view-roof-plan',
+      component: 'plan',
+      title: 'Roof Plan',
+      position: { referencePanel: centerPanel },
+    });
+
+    event.api.addPanel({
       id: 'sheet-a101',
       component: 'sheet',
       title: 'A101 - FLOOR PLAN & SECTIONS',
@@ -109,9 +116,21 @@ export const Workspace: React.FC = () => {
       const panel = dockviewApiRef.current.getPanel(activeViewId);
       if (panel) {
         panel.api.setActive();
+      } else {
+        const view = views.find((v) => v.id === activeViewId);
+        if (view) {
+          const comp = view.type === '3d' ? 'threeD' : 'plan';
+          const centerPanel = dockviewApiRef.current.getPanel('view-3d');
+          dockviewApiRef.current.addPanel({
+            id: view.id,
+            component: comp,
+            title: view.name,
+            position: centerPanel ? { referencePanel: centerPanel } : undefined,
+          });
+        }
       }
     }
-  }, [activeViewId]);
+  }, [activeViewId, views]);
 
   useEffect(() => {
     if (dockviewApiRef.current && activeSheetId) {

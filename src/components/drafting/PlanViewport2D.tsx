@@ -19,9 +19,19 @@ export const PlanViewport2D: React.FC = () => {
     createAlignConstraint,
     setActiveTool,
     elements,
+    createWall,
+    createRoof,
+    createSlab,
+    createDoor,
+    createWindow,
+    activeViewId,
+    views,
   } = useBimStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const [firstPoint, setFirstPoint] = useState<[number, number] | null>(null);
+  const [currentPoint, setCurrentPoint] = useState<[number, number] | null>(null);
 
   const handleElementClick = (guid: string) => {
     if (activeTool === 'AL') {
@@ -43,11 +53,137 @@ export const PlanViewport2D: React.FC = () => {
   const [editingDimValue, setEditingDimValue] = useState<string>('');
   const [isEditingDim, setIsEditingDim] = useState<boolean>(false);
 
-  // Pan with Middle Mouse Button (MMB) or Left Drag
+  // Convert client mouse coordinates to 2D model coordinates with 0.25m snapping
+  const getModelCoords = useCallback(
+    (clientX: number, clientY: number): [number, number] | null => {
+      if (!containerRef.current) return null;
+      const rect = containerRef.current.getBoundingClientRect();
+      const svgX = clientX - rect.left;
+      const svgY = clientY - rect.top;
+      const modelX = (svgX - pan.x) / scale;
+      const modelY = -(svgY - pan.y) / scale;
+      const snap = 0.25;
+      const snappedX = Math.round(modelX / snap) * snap;
+      const snappedY = Math.round(modelY / snap) * snap;
+      return [snappedX, snappedY];
+    },
+    [pan, scale]
+  );
+
+  // Cancel tool on Escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (activeTool !== 'select') {
+          setActiveTool('select');
+          setFirstPoint(null);
+          setCurrentPoint(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeTool, setActiveTool]);
+
+  // Reset points when active tool changes
+  useEffect(() => {
+    setFirstPoint(null);
+    setCurrentPoint(null);
+  }, [activeTool]);
+
+  // Mouse interaction: Panning vs Geometry Authoring
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 1 || e.button === 0) {
+    // MMB always pans
+    if (e.button === 1) {
       isPanningRef.current = true;
       startMouseRef.current = { x: e.clientX, y: e.clientY };
+      return;
+    }
+
+    // LMB
+    if (e.button === 0) {
+      if (activeTool === 'select') {
+        isPanningRef.current = true;
+        startMouseRef.current = { x: e.clientX, y: e.clientY };
+        return;
+      }
+
+      const coords = getModelCoords(e.clientX, e.clientY);
+      if (!coords) return;
+      const [x, y] = coords;
+
+      if (activeTool === 'WA') {
+        if (!firstPoint) {
+          setFirstPoint([x, y]);
+        } else {
+          if (Math.hypot(x - firstPoint[0], y - firstPoint[1]) >= 0.5) {
+            createWall([firstPoint[0], firstPoint[1], 0], [x, y, 0]);
+          }
+          setFirstPoint(null);
+          setCurrentPoint(null);
+        }
+      } else if (activeTool === 'RF') {
+        if (!firstPoint) {
+          setFirstPoint([x, y]);
+        } else {
+          const x1 = Math.min(firstPoint[0], x);
+          const x2 = Math.max(firstPoint[0], x);
+          const y1 = Math.min(firstPoint[1], y);
+          const y2 = Math.max(firstPoint[1], y);
+          if (x2 - x1 >= 0.5 && y2 - y1 >= 0.5) {
+            createRoof([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], 0.3, 6.0, 15.0);
+          }
+          setFirstPoint(null);
+          setCurrentPoint(null);
+        }
+      } else if (activeTool === 'SB') {
+        if (!firstPoint) {
+          setFirstPoint([x, y]);
+        } else {
+          const minX = Math.min(firstPoint[0], x);
+          const maxX = Math.max(firstPoint[0], x);
+          const minY = Math.min(firstPoint[1], y);
+          const maxY = Math.max(firstPoint[1], y);
+          if (maxX - minX >= 0.5 && maxY - minY >= 0.5) {
+            createSlab([[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]], 0.25, 0.0);
+          }
+          setFirstPoint(null);
+          setCurrentPoint(null);
+        }
+      } else if (activeTool === 'DR' || activeTool === 'WN') {
+        let nearestWallGuid: string | null = null;
+        let minDist = 2.0;
+        let hostOffset = 1.0;
+
+        sliced2D?.cut_paths?.forEach((cp) => {
+          const elem = elements[cp.guid];
+          if (elem && elem.start && elem.end) {
+            const sx = elem.start[0], sy = elem.start[1];
+            const ex = elem.end[0], ey = elem.end[1];
+            const len = Math.hypot(ex - sx, ey - sy);
+            if (len > 0.01) {
+              const ux = (ex - sx) / len, uy = (ey - sy) / len;
+              const proj = (x - sx) * ux + (y - sy) * uy;
+              if (proj >= 0 && proj <= len) {
+                const perp = Math.hypot(x - (sx + ux * proj), y - (sy + uy * proj));
+                if (perp < minDist) {
+                  minDist = perp;
+                  nearestWallGuid = cp.guid;
+                  hostOffset = proj;
+                }
+              }
+            }
+          }
+        });
+
+        if (nearestWallGuid) {
+          if (activeTool === 'DR') {
+            createDoor(nearestWallGuid, hostOffset);
+          } else {
+            createWindow(nearestWallGuid, hostOffset);
+          }
+        }
+      }
     }
   };
 
@@ -57,6 +193,11 @@ export const PlanViewport2D: React.FC = () => {
       const dy = e.clientY - startMouseRef.current.y;
       startMouseRef.current = { x: e.clientX, y: e.clientY };
       setPan((p) => ({ x: p.x + dx, y: p.y + dy }));
+    } else if (activeTool !== 'select') {
+      const coords = getModelCoords(e.clientX, e.clientY);
+      if (coords) {
+        setCurrentPoint(coords);
+      }
     }
   };
 
@@ -74,7 +215,11 @@ export const PlanViewport2D: React.FC = () => {
     if (!sliced2D) return;
     const pathsToFit = (sliced2D.cut_paths && sliced2D.cut_paths.length > 0)
       ? sliced2D.cut_paths
-      : [...(sliced2D.projection_paths || []), ...(sliced2D.slabs || [])];
+      : [
+          ...(sliced2D.projection_paths || []),
+          ...(sliced2D.roofs || []),
+          ...(sliced2D.slabs || []),
+        ];
 
     if (pathsToFit.length === 0) {
       setPan({ x: 350, y: 320 });
@@ -117,15 +262,25 @@ export const PlanViewport2D: React.FC = () => {
   const resetView = fit2DToExtents;
 
   useEffect(() => {
-    if (sliced2D && (sliced2D.cut_paths?.length || sliced2D.projection_paths?.length)) {
+    if (
+      sliced2D &&
+      (sliced2D.cut_paths?.length ||
+        sliced2D.projection_paths?.length ||
+        sliced2D.roofs?.length ||
+        sliced2D.slabs?.length)
+    ) {
       fit2DToExtents();
     }
   }, [sliced2D, fit2DToExtents]);
 
+  const isDrawing = activeTool !== 'select' && activeTool !== 'AL';
+
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full bg-[#ffffff] overflow-hidden select-none cursor-grab active:cursor-grabbing"
+      className={`relative w-full h-full bg-[#ffffff] overflow-hidden select-none ${
+        isDrawing ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'
+      }`}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -155,18 +310,77 @@ export const PlanViewport2D: React.FC = () => {
         {/* Global Transform: Pan & Scale */}
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${scale}, ${-scale})`}>
           {/* 1. Slabs in Projection */}
-          {sliced2D?.slabs.map((slab) => (
-            <path
-              key={`slab-${slab.guid}`}
-              d={slab.d}
-              className={slab.class}
-              stroke="#cbd5e1"
-              strokeWidth="0.8"
-              vectorEffect="non-scaling-stroke"
-              fill="#f8fafc"
-              fillOpacity={0.4}
-            />
-          ))}
+          {sliced2D?.slabs.map((slab) => {
+            const isSelected = selectedGuid === slab.guid;
+            return (
+              <path
+                key={`slab-${slab.guid}`}
+                d={slab.d}
+                className={`${slab.class} cursor-pointer transition-colors`}
+                stroke={isSelected ? '#0284c7' : '#94a3b8'}
+                strokeWidth={isSelected ? '2.0' : '0.8'}
+                vectorEffect="non-scaling-stroke"
+                fill={isSelected ? '#bae6fd' : '#f8fafc'}
+                fillOpacity={isSelected ? 0.5 : 0.4}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleElementClick(slab.guid);
+                }}
+              />
+            );
+          })}
+
+          {/* 1b. Roofs in Projection (Boundary, Ridge, and Pitch Slope) */}
+          {sliced2D?.roofs?.map((roof) => {
+            const isSelected = selectedGuid === roof.guid;
+            return (
+              <g
+                key={`roof-${roof.guid}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleElementClick(roof.guid);
+                }}
+                className="cursor-pointer"
+              >
+                <path
+                  d={roof.d}
+                  stroke={isSelected ? '#0284c7' : '#475569'}
+                  strokeWidth={isSelected ? '2.5' : '1.5'}
+                  strokeDasharray={roof.is_overhead ? '6 3' : 'none'}
+                  vectorEffect="non-scaling-stroke"
+                  fill={isSelected ? '#bae6fd' : '#e2e8f0'}
+                  fillOpacity={isSelected ? 0.45 : 0.25}
+                />
+                {roof.ridge_d && (
+                  <path
+                    d={roof.ridge_d}
+                    stroke={isSelected ? '#0284c7' : '#334155'}
+                    strokeWidth="1.5"
+                    strokeDasharray={roof.is_overhead ? '4 2' : 'none'}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )}
+                {roof.center && roof.pitch_text && (
+                  <text
+                    x={roof.center[0]}
+                    y={-roof.center[1]}
+                    transform="scale(1, -1)"
+                    textAnchor="middle"
+                    dominantBaseline="central"
+                    fontSize="0.22"
+                    fontFamily="Inter, sans-serif"
+                    fontWeight="600"
+                    fill={isSelected ? '#0284c7' : '#334155'}
+                    paintOrder="stroke"
+                    stroke="#ffffff"
+                    strokeWidth="0.08"
+                  >
+                    {roof.pitch_text}
+                  </text>
+                )}
+              </g>
+            );
+          })}
 
           {/* 2. Datum Grids */}
           {sliced2D?.grids.map((grid) => (
@@ -460,21 +674,104 @@ export const PlanViewport2D: React.FC = () => {
                 </g>
               );
             })}
+
+          {/* Live Drawing Rubberband Visuals */}
+          {firstPoint && currentPoint && (
+            <g className="pointer-events-none select-none">
+              {activeTool === 'WA' && (
+                <>
+                  <line
+                    x1={firstPoint[0]}
+                    y1={firstPoint[1]}
+                    x2={currentPoint[0]}
+                    y2={currentPoint[1]}
+                    stroke="#0284c7"
+                    strokeWidth="3.0"
+                    vectorEffect="non-scaling-stroke"
+                    strokeDasharray="6 3"
+                  />
+                  <circle cx={firstPoint[0]} cy={firstPoint[1]} r="0.14" fill="#0284c7" />
+                  <circle cx={currentPoint[0]} cy={currentPoint[1]} r="0.14" fill="#38bdf8" />
+                  <text
+                    x={(firstPoint[0] + currentPoint[0]) / 2}
+                    y={-((firstPoint[1] + currentPoint[1]) / 2) - 0.25}
+                    transform="scale(1, -1)"
+                    textAnchor="middle"
+                    fontSize="0.24"
+                    fontFamily="JetBrains Mono, monospace"
+                    fontWeight="bold"
+                    fill="#0284c7"
+                    paintOrder="stroke"
+                    stroke="#ffffff"
+                    strokeWidth="0.08"
+                  >
+                    {`${Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]).toFixed(2)}m (${(
+                      Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]) * 3.28084
+                    ).toFixed(1)}')`}
+                  </text>
+                </>
+              )}
+
+              {(activeTool === 'RF' || activeTool === 'SB') && (
+                <>
+                  <rect
+                    x={Math.min(firstPoint[0], currentPoint[0])}
+                    y={Math.min(firstPoint[1], currentPoint[1])}
+                    width={Math.abs(currentPoint[0] - firstPoint[0])}
+                    height={Math.abs(currentPoint[1] - firstPoint[1])}
+                    stroke={activeTool === 'RF' ? '#f59e0b' : '#10b981'}
+                    strokeWidth="2.0"
+                    strokeDasharray="5 3"
+                    vectorEffect="non-scaling-stroke"
+                    fill={activeTool === 'RF' ? '#fef3c7' : '#d1fae5'}
+                    fillOpacity="0.4"
+                  />
+                  <circle cx={firstPoint[0]} cy={firstPoint[1]} r="0.12" fill="#0284c7" />
+                  <circle cx={currentPoint[0]} cy={currentPoint[1]} r="0.12" fill="#0284c7" />
+                  <text
+                    x={(firstPoint[0] + currentPoint[0]) / 2}
+                    y={-((firstPoint[1] + currentPoint[1]) / 2)}
+                    transform="scale(1, -1)"
+                    textAnchor="middle"
+                    fontSize="0.26"
+                    fontFamily="JetBrains Mono, monospace"
+                    fontWeight="bold"
+                    fill={activeTool === 'RF' ? '#b45309' : '#047857'}
+                    paintOrder="stroke"
+                    stroke="#ffffff"
+                    strokeWidth="0.08"
+                  >
+                    {`${activeTool === 'RF' ? 'Roof' : 'Floor Slab'}: ${Math.abs(currentPoint[0] - firstPoint[0]).toFixed(2)}m × ${Math.abs(currentPoint[1] - firstPoint[1]).toFixed(2)}m`}
+                  </text>
+                </>
+              )}
+            </g>
+          )}
         </g>
       </svg>
 
       {/* Viewport Header Controls */}
-      <div className="absolute top-3 left-3 flex items-center space-x-2 bg-white/90 backdrop-blur px-3 py-1.5 rounded shadow border border-slate-300 text-xs text-slate-800 z-10 font-sans">
-        <span className="font-bold">Floor Plan: Level 1 (Cut Plane: 4'-0" / 1.2m)</span>
-        <span className="text-slate-400">|</span>
-        <button
-          onClick={resetView}
-          className="p-1 hover:bg-slate-100 rounded text-slate-700"
-          title="Zoom Extents"
-        >
-          <Maximize2 size={13} />
-        </button>
-      </div>
+      {(() => {
+        const currentView = views.find((v) => v.id === activeViewId) || {
+          name: 'Floor Plan: Level 1',
+          viewRange: { cut: 1.2 },
+        };
+        return (
+          <div className="absolute top-3 left-3 flex items-center space-x-2 bg-white/90 backdrop-blur px-3 py-1.5 rounded shadow border border-slate-300 text-xs text-slate-800 z-10 font-sans">
+            <span className="font-bold">
+              {currentView.name} (Cut Plane: {(currentView.viewRange.cut * 3.28084).toFixed(0)}'-0" / {currentView.viewRange.cut}m)
+            </span>
+            <span className="text-slate-400">|</span>
+            <button
+              onClick={resetView}
+              className="p-1 hover:bg-slate-100 rounded text-slate-700"
+              title="Zoom Extents"
+            >
+              <Maximize2 size={13} />
+            </button>
+          </div>
+        );
+      })()}
 
       {/* Dynamic Temporary Dimension Pill Overlay */}
       {tempDimension && (
@@ -529,6 +826,30 @@ export const PlanViewport2D: React.FC = () => {
               setAlignPickState({ step: null, refGuid: null });
             }}
             className="px-2 py-0.5 bg-black/40 hover:bg-black/60 rounded text-[10px]"
+          >
+            Cancel (Esc)
+          </button>
+        </div>
+      )}
+
+      {/* Drawing Tool Active Banner */}
+      {activeTool !== 'select' && activeTool !== 'AL' && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#094771]/95 text-white px-4 py-2 rounded-lg border border-[#38bdf8] text-xs shadow-xl flex items-center space-x-3 z-30 animate-fade-in">
+          <span className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-ping" />
+          <span className="font-medium">
+            {activeTool === 'WA' && (!firstPoint ? 'WALL TOOL (WA): Click 1st point for wall baseline' : `Click 2nd point to place wall (${Math.hypot((currentPoint?.[0] || 0) - firstPoint[0], (currentPoint?.[1] || 0) - firstPoint[1]).toFixed(2)}m)`)}
+            {activeTool === 'RF' && (!firstPoint ? 'ROOF TOOL (RF): Click 1st corner for roof footprint' : `Click opposite corner to place pitched roof (${Math.abs((currentPoint?.[0] || 0) - firstPoint[0]).toFixed(1)}m × ${Math.abs((currentPoint?.[1] || 0) - firstPoint[1]).toFixed(1)}m)`)}
+            {activeTool === 'SB' && (!firstPoint ? 'FLOOR SLAB TOOL (SB): Click 1st corner for floor slab' : `Click opposite corner to place floor slab (${Math.abs((currentPoint?.[0] || 0) - firstPoint[0]).toFixed(1)}m × ${Math.abs((currentPoint?.[1] || 0) - firstPoint[1]).toFixed(1)}m)`)}
+            {activeTool === 'DR' && 'DOOR TOOL (DR): Click near any wall to place door'}
+            {activeTool === 'WN' && 'WINDOW TOOL (WN): Click near any wall to place window'}
+          </span>
+          <button
+            onClick={() => {
+              setActiveTool('select');
+              setFirstPoint(null);
+              setCurrentPoint(null);
+            }}
+            className="px-2 py-0.5 bg-black/40 hover:bg-black/60 rounded text-[10px] text-slate-200"
           >
             Cancel (Esc)
           </button>

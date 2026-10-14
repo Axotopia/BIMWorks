@@ -65,6 +65,17 @@ export interface Sliced2DData {
   projection_paths: Array<{ guid: string; class: string; d: string }>;
   swing_paths: Array<{ guid: string; class: string; d: string }>;
   slabs: Array<{ guid: string; d: string; class: string }>;
+  roofs?: Array<{
+    guid: string;
+    name: string;
+    d: string;
+    ridge_d?: string;
+    pitch: number;
+    pitch_text?: string;
+    center?: [number, number];
+    class: string;
+    is_overhead?: boolean;
+  }>;
   grids: Array<{ guid: string; tag: string; d: string; circle_center: [number, number] }>;
   dimensions: Array<{
     guid: string;

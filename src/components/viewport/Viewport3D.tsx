@@ -18,6 +18,8 @@ export const Viewport3D: React.FC = () => {
     activeTool,
     setActiveTool,
     createWall,
+    createRoof,
+    createSlab,
     createDoor,
     createWindow,
     sectionBox,
@@ -51,6 +53,11 @@ export const Viewport3D: React.FC = () => {
   // Wall placement interaction
   const [wallStartPoint, setWallStartPoint] = useState<[number, number, number] | null>(null);
   const [wallCurrentPoint, setWallCurrentPoint] = useState<[number, number, number] | null>(null);
+
+  // Box footprint interaction (Roof / Slab)
+  const [boxStartPoint, setBoxStartPoint] = useState<[number, number] | null>(null);
+  const [boxCurrentPoint, setBoxCurrentPoint] = useState<[number, number] | null>(null);
+
   const [editingDimValue, setEditingDimValue] = useState<string>('');
   const [isEditingDim, setIsEditingDim] = useState<boolean>(false);
 
@@ -331,6 +338,58 @@ export const Viewport3D: React.FC = () => {
         return;
       }
 
+      // Tool: Roof Creation (RF)
+      if (activeTool === 'RF') {
+        const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+        const intersectPt = new THREE.Vector3();
+        raycaster.ray.intersectPlane(groundPlane, intersectPt);
+
+        if (!boxStartPoint) {
+          const x = Math.round(intersectPt.x * 2) / 2;
+          const y = Math.round(intersectPt.y * 2) / 2;
+          setBoxStartPoint([x, y]);
+        } else {
+          const x2 = Math.round(intersectPt.x * 2) / 2;
+          const y2 = Math.round(intersectPt.y * 2) / 2;
+          const minX = Math.min(boxStartPoint[0], x2);
+          const maxX = Math.max(boxStartPoint[0], x2);
+          const minY = Math.min(boxStartPoint[1], y2);
+          const maxY = Math.max(boxStartPoint[1], y2);
+          if (maxX - minX >= 0.5 && maxY - minY >= 0.5) {
+            createRoof([[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]], 0.3, 6.0, 15.0);
+          }
+          setBoxStartPoint(null);
+          setBoxCurrentPoint(null);
+        }
+        return;
+      }
+
+      // Tool: Slab / Floor Creation (SB)
+      if (activeTool === 'SB') {
+        const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+        const intersectPt = new THREE.Vector3();
+        raycaster.ray.intersectPlane(groundPlane, intersectPt);
+
+        if (!boxStartPoint) {
+          const x = Math.round(intersectPt.x * 2) / 2;
+          const y = Math.round(intersectPt.y * 2) / 2;
+          setBoxStartPoint([x, y]);
+        } else {
+          const x2 = Math.round(intersectPt.x * 2) / 2;
+          const y2 = Math.round(intersectPt.y * 2) / 2;
+          const minX = Math.min(boxStartPoint[0], x2);
+          const maxX = Math.max(boxStartPoint[0], x2);
+          const minY = Math.min(boxStartPoint[1], y2);
+          const maxY = Math.max(boxStartPoint[1], y2);
+          if (maxX - minX >= 0.5 && maxY - minY >= 0.5) {
+            createSlab([[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]], 0.25, 0.0);
+          }
+          setBoxStartPoint(null);
+          setBoxCurrentPoint(null);
+        }
+        return;
+      }
+
       // Tool: Door (DR) or Window (WN) placement
       if (activeTool === 'DR' || activeTool === 'WN') {
         const wallMeshes = Array.from(threeMeshesRef.current.values()).filter(
@@ -432,6 +491,26 @@ export const Viewport3D: React.FC = () => {
         Math.round(pt.y * 2) / 2,
         0,
       ]);
+    }
+
+    // Roof / Slab creation preview
+    if ((activeTool === 'RF' || activeTool === 'SB') && boxStartPoint && cameraRef.current) {
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (rect) {
+        const mouse = new THREE.Vector2(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          -((e.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, cameraRef.current);
+        const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+        const pt = new THREE.Vector3();
+        raycaster.ray.intersectPlane(groundPlane, pt);
+        setBoxCurrentPoint([
+          Math.round(pt.x * 2) / 2,
+          Math.round(pt.y * 2) / 2,
+        ]);
+      }
     }
   };
 
@@ -581,6 +660,50 @@ export const Viewport3D: React.FC = () => {
             onClick={() => {
               setActiveTool('select');
               setWallStartPoint(null);
+            }}
+            className="px-2 py-0.5 bg-[#3c3c3c] hover:bg-[#4a4a4a] rounded text-[10px]"
+          >
+            Cancel (Esc)
+          </button>
+        </div>
+      )}
+
+      {/* Roof Placement Status Banner */}
+      {activeTool === 'RF' && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#094771]/90 backdrop-blur px-4 py-2 rounded-lg border border-[#007acc] text-xs text-white shadow-xl flex items-center space-x-3 z-10 animate-fade-in">
+          <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+          <span>
+            {boxStartPoint
+              ? `Click opposite corner to complete roof (${Math.abs((boxCurrentPoint?.[0] || 0) - boxStartPoint[0]).toFixed(1)}m × ${Math.abs((boxCurrentPoint?.[1] || 0) - boxStartPoint[1]).toFixed(1)}m)`
+              : 'Click 1st corner for roof boundary footprint'}
+          </span>
+          <button
+            onClick={() => {
+              setActiveTool('select');
+              setBoxStartPoint(null);
+              setBoxCurrentPoint(null);
+            }}
+            className="px-2 py-0.5 bg-[#3c3c3c] hover:bg-[#4a4a4a] rounded text-[10px]"
+          >
+            Cancel (Esc)
+          </button>
+        </div>
+      )}
+
+      {/* Slab Placement Status Banner */}
+      {activeTool === 'SB' && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#094771]/90 backdrop-blur px-4 py-2 rounded-lg border border-[#007acc] text-xs text-white shadow-xl flex items-center space-x-3 z-10 animate-fade-in">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+          <span>
+            {boxStartPoint
+              ? `Click opposite corner to complete floor slab (${Math.abs((boxCurrentPoint?.[0] || 0) - boxStartPoint[0]).toFixed(1)}m × ${Math.abs((boxCurrentPoint?.[1] || 0) - boxStartPoint[1]).toFixed(1)}m)`
+              : 'Click 1st corner for floor slab boundary'}
+          </span>
+          <button
+            onClick={() => {
+              setActiveTool('select');
+              setBoxStartPoint(null);
+              setBoxCurrentPoint(null);
             }}
             className="px-2 py-0.5 bg-[#3c3c3c] hover:bg-[#4a4a4a] rounded text-[10px]"
           >

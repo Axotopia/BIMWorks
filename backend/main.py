@@ -68,6 +68,21 @@ class RoofRequest(BaseModel):
     name: str = "Roof : Pitched Metal Deck"
 
 
+class UpdateElementRequest(BaseModel):
+    name: Optional[str] = None
+    height: Optional[float] = None
+    thickness: Optional[float] = None
+    elevation: Optional[float] = None
+    pitch: Optional[float] = None
+    pitch_degrees: Optional[float] = None
+    width: Optional[float] = None
+    offset_along_wall: Optional[float] = None
+    swing_flipped: Optional[bool] = None
+    start: Optional[List[float]] = None
+    end: Optional[List[float]] = None
+    polygon: Optional[List[List[float]]] = None
+
+
 class GridRequest(BaseModel):
     axis_name: str
     start: List[float]
@@ -241,6 +256,10 @@ def load_sample_building():
     return {"status": "sample_loaded", "elements_count": len(bim_manager.element_meta)}
 
 
+# Auto-populate default sample building model on sidecar startup
+load_sample_building()
+
+
 @app.post("/api/wall")
 def create_wall(req: WallRequest):
     try:
@@ -361,6 +380,43 @@ def translate_element(guid: str, req: TranslateRequest):
     if not success:
         raise HTTPException(status_code=404, detail="Element not found or not translatable")
     return {"status": "translated", "guid": guid}
+
+
+@app.get("/api/element/{guid}")
+def get_element(guid: str):
+    if guid not in bim_manager.element_meta:
+        raise HTTPException(status_code=404, detail="Element not found")
+    meta = bim_manager.element_meta[guid]
+    return {
+        "guid": guid,
+        "ifc_class": meta.get("ifc_class"),
+        "name": meta.get("name"),
+        "elevation": meta.get("elevation", 0.0),
+        "thickness": meta.get("thickness", 0.2),
+        "height": meta.get("height", 3.0),
+        "pitch": meta.get("pitch", 15.0),
+        "length": meta.get("length", 0.0),
+        "angle": meta.get("angle", 0.0),
+        "start": meta.get("start"),
+        "end": meta.get("end"),
+        "polygon": meta.get("polygon"),
+        "offset_along_wall": meta.get("offset_along_wall", 0.0),
+        "width": meta.get("width", 0.9),
+        "swing_flipped": meta.get("swing_flipped", False),
+        "type_properties": meta.get("type_properties", {}),
+        "bbox": meta.get("bbox", {}),
+    }
+
+
+@app.post("/api/element/{guid}/update")
+def update_element_endpoint(guid: str, req: UpdateElementRequest):
+    try:
+        updated = bim_manager.update_element(guid, req.dict(exclude_unset=True))
+        return {"status": "updated", "guid": guid, "element": updated}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Element not found")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/geometry")

@@ -135,6 +135,9 @@ interface BimStoreState {
   createWall: (start: [number, number, number], end: [number, number, number], name?: string) => Promise<void>;
   createDoor: (hostWallGuid: string, offset: number, name?: string) => Promise<void>;
   createWindow: (hostWallGuid: string, offset: number, name?: string) => Promise<void>;
+  createRoof: (polygon: [number, number][], thickness?: number, elevation?: number, pitch_degrees?: number, name?: string) => Promise<void>;
+  createSlab: (polygon: [number, number][], thickness?: number, elevation?: number, name?: string) => Promise<void>;
+  updateElement: (guid: string, updates: Partial<BimElement>) => Promise<void>;
   deleteElement: (guid: string) => Promise<void>;
   translateElement: (guid: string, dx: number, dy: number, dz?: number) => Promise<void>;
   updateGeoreferencing: (data: BimStoreState['georeference']) => Promise<void>;
@@ -210,6 +213,16 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       detailLevel: 'medium',
       visualStyle: 'hidden_line',
       viewRange: { top: 2.3, cut: 1.2, bottom: 0.0, viewDepth: 0.0 },
+    },
+    {
+      id: 'view-roof-plan',
+      name: 'Roof Plan',
+      type: 'floor_plan',
+      levelId: 'lvl-roof',
+      scale: '1/4" = 1\'-0"',
+      detailLevel: 'medium',
+      visualStyle: 'hidden_line',
+      viewRange: { top: 15.0, cut: 8.0, bottom: 0.0, viewDepth: 0.0 },
     },
     {
       id: 'view-section-1',
@@ -823,6 +836,56 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       }
     } catch (e) {
       console.error('Failed to insert window', e);
+    }
+  },
+
+  createRoof: async (polygon, thickness = 0.3, elevation = 6.0, pitch_degrees = 15.0, name = 'Roof : Pitched Metal Deck') => {
+    try {
+      const res = await fetch(`${API_BASE}/roof`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ polygon, thickness, elevation, pitch_degrees, name }),
+      });
+      if (res.ok) {
+        await get().fetchGeometry();
+        await get().fetch2DSlice();
+        set({ activeTool: 'select' });
+      }
+    } catch (e) {
+      console.error('Failed to create roof', e);
+    }
+  },
+
+  createSlab: async (polygon, thickness = 0.25, elevation = 0.0, name = 'Floor : 10" Concrete Slab') => {
+    try {
+      const res = await fetch(`${API_BASE}/slab`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ polygon, thickness, elevation, name }),
+      });
+      if (res.ok) {
+        await get().fetchGeometry();
+        await get().fetch2DSlice();
+        set({ activeTool: 'select' });
+      }
+    } catch (e) {
+      console.error('Failed to create slab', e);
+    }
+  },
+
+  updateElement: async (guid: string, updates: Partial<BimElement>) => {
+    try {
+      const res = await fetch(`${API_BASE}/element/${guid}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+      if (res.ok) {
+        await get().fetchGeometry();
+        await get().fetch2DSlice();
+      }
+    } catch (e) {
+      console.error('Failed to update element', e);
     }
   },
 

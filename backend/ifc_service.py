@@ -825,13 +825,28 @@ class BimModelManager:
         ifc_class = meta.get("ifc_class")
         translated = False
 
-        if ifc_class == "IfcWallStandardCase":
-            meta["start"][0] += dx
-            meta["start"][1] += dy
-            meta["start"][2] += dz
-            meta["end"][0] += dx
-            meta["end"][1] += dy
-            meta["end"][2] += dz
+        if ifc_class in ("IfcWall", "IfcWallStandardCase"):
+            if "start" in meta and meta["start"]:
+                meta["start"][0] += dx
+                meta["start"][1] += dy
+                meta["start"][2] = (meta["start"][2] if len(meta["start"]) > 2 else 0.0) + dz
+            if "end" in meta and meta["end"]:
+                meta["end"][0] += dx
+                meta["end"][1] += dy
+                meta["end"][2] = (meta["end"][2] if len(meta["end"]) > 2 else 0.0) + dz
+            if "cached_verts" in meta and meta["cached_verts"]:
+                cv = meta["cached_verts"]
+                meta["cached_verts"] = [
+                    cv[i] + dx if i % 3 == 0 else (cv[i] + dy if i % 3 == 1 else cv[i] + dz)
+                    for i in range(len(cv))
+                ]
+            if "bbox" in meta and "min" in meta["bbox"]:
+                meta["bbox"]["min"][0] += dx
+                meta["bbox"]["min"][1] += dy
+                meta["bbox"]["min"][2] += dz
+                meta["bbox"]["max"][0] += dx
+                meta["bbox"]["max"][1] += dy
+                meta["bbox"]["max"][2] += dz
             translated = True
             # Rebuild join-trimmed geometry and placement from the new baseline
             self.recompute_wall_joins()
@@ -861,6 +876,219 @@ class BimModelManager:
             meta["end"][0] += dx
             meta["end"][1] += dy
             translated = True
+
+        elif ifc_class in ("IfcSlab", "IfcRoof"):
+            meta["elevation"] = meta.get("elevation", 0.0) + dz
+            if "polygon" in meta and meta["polygon"]:
+                meta["polygon"] = [(p[0] + dx, p[1] + dy) for p in meta["polygon"]]
+            if "cached_verts" in meta and meta["cached_verts"]:
+                cv = meta["cached_verts"]
+                meta["cached_verts"] = [
+                    cv[i] + dx if i % 3 == 0 else (cv[i] + dy if i % 3 == 1 else cv[i] + dz)
+                    for i in range(len(cv))
+                ]
+            if "bbox" in meta and "min" in meta["bbox"]:
+                meta["bbox"]["min"][0] += dx
+                meta["bbox"]["min"][1] += dy
+                meta["bbox"]["min"][2] += dz
+                meta["bbox"]["max"][0] += dx
+                meta["bbox"]["max"][1] += dy
+                meta["bbox"]["max"][2] += dz
+            translated = True
+
+    @staticmethod
+    def _build_flat_slab_mesh(poly, elevation=0.0, thickness=0.25):
+        """Builds triangulated 3D mesh for flat slab."""
+        n = len(poly)
+        verts = []
+        for x, y in poly:
+            verts.extend([float(x), float(y), float(elevation - thickness)])
+        for x, y in poly:
+            verts.extend([float(x), float(y), float(elevation)])
+        faces = []
+        for i in range(1, n - 1):
+            faces.extend([0, i + 1, i])
+        for i in range(1, n - 1):
+            faces.extend([n, n + i, n + i + 1])
+        for i in range(n):
+            nxt = (i + 1) % n
+            faces.extend([i, n + i, n + nxt])
+            faces.extend([i, n + nxt, nxt])
+        return verts, faces
+
+    @staticmethod
+    def _build_pitched_roof_mesh(poly, elevation=6.0, thickness=0.3, pitch_deg=15.0):
+        """Builds triangulated 3D mesh for pitched roof."""
+        n = len(poly)
+        rad = math.radians(pitch_deg)
+        ys = [p[1] for p in poly]
+        min_y, max_y = min(ys), max(ys)
+        mid_y = (min_y + max_y) / 2.0
+        half_span = (max_y - min_y) / 2.0 if max_y > min_y else 1.0
+
+        verts = []
+        for x, y in poly:
+            rise = (half_span - abs(y - mid_y)) * math.tan(rad)
+            verts.extend([float(x), float(y), float(elevation + max(0.0, rise))])
+        for x, y in poly:
+            rise = (half_span - abs(y - mid_y)) * math.tan(rad)
+            verts.extend([float(x), float(y), float(elevation + max(0.0, rise) + thickness)])
+
+        faces = []
+        for i in range(1, n - 1):
+            faces.extend([0, i + 1, i])
+        for i in range(1, n - 1):
+            faces.extend([n, n + i, n + i + 1])
+        for i in range(n):
+            nxt = (i + 1) % n
+            faces.extend([i, n + i, n + nxt])
+            faces.extend([i, n + nxt, nxt])
+        return verts, faces
+
+    @staticmethod
+    def _build_wall_mesh(sp, ep, height=3.0, thickness=0.2):
+        """Builds triangulated 3D mesh for wall solid."""
+        dx = ep[0] - sp[0]
+        dy = ep[1] - sp[1]
+        L = math.hypot(dx, dy)
+        if L < 0.001:
+            return [], []
+        ux, uy = dx / L, dy / L
+        nx, ny = -uy * (thickness / 2.0), ux * (thickness / 2.0)
+        z0 = sp[2] if len(sp) > 2 else 0.0
+        z1 = z0 + height
+
+        poly = [
+            (sp[0] + nx, sp[1] + ny),
+            (sp[0] - nx, sp[1] - ny),
+            (ep[0] - nx, ep[1] - ny),
+            (ep[0] + nx, ep[1] + ny),
+        ]
+        verts = []
+        for x, y in poly:
+            verts.extend([float(x), float(y), float(z0)])
+        for x, y in poly:
+            verts.extend([float(x), float(y), float(z1)])
+
+        faces = [
+            0, 2, 1, 0, 3, 2,
+            4, 5, 6, 4, 6, 7,
+            0, 4, 5, 0, 5, 1,
+            2, 6, 7, 2, 7, 3,
+            1, 5, 6, 1, 6, 2,
+            3, 7, 4, 3, 4, 0,
+        ]
+        return verts, faces
+
+    def update_element(self, guid: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Updates parameters and geometry of any IFC element (Roof, Wall, Floor, Door, Window).
+        Rebuilds 3D representation and updates 2D linework in real-time.
+        """
+        if guid not in self.element_meta:
+            raise KeyError(f"Element {guid} not found")
+
+        meta = self.element_meta[guid]
+        ifc_class = meta.get("ifc_class")
+
+        # Case 1: Roof or Slab
+        if ifc_class in ("IfcRoof", "IfcSlab"):
+            if "name" in updates and updates["name"]:
+                meta["name"] = updates["name"]
+            if "pitch" in updates or "pitch_degrees" in updates:
+                val = updates.get("pitch") if updates.get("pitch") is not None else updates.get("pitch_degrees")
+                meta["pitch"] = float(val)
+            if "elevation" in updates and updates["elevation"] is not None:
+                meta["elevation"] = float(updates["elevation"])
+            if "thickness" in updates and updates["thickness"] is not None:
+                meta["thickness"] = float(updates["thickness"])
+            if "polygon" in updates and updates["polygon"]:
+                meta["polygon"] = [tuple(p) for p in updates["polygon"]]
+
+            is_roof = ifc_class == "IfcRoof" or "roof" in (meta.get("name") or "").lower()
+            poly = meta.get("polygon")
+            if is_roof and poly and len(poly) >= 3:
+                elev = meta.get("elevation", 6.0)
+                th = meta.get("thickness", 0.3)
+                pitch = meta.get("pitch", 15.0)
+                verts, faces = self._build_pitched_roof_mesh(poly, elev, th, pitch)
+                meta["cached_verts"] = verts
+                meta["cached_faces"] = faces
+                xs = [p[0] for p in poly]
+                ys = [p[1] for p in poly]
+                zs = [verts[i] for i in range(2, len(verts), 3)]
+                meta["bbox"] = {
+                    "min": [min(xs), min(ys), min(zs)],
+                    "max": [max(xs), max(ys), max(zs)],
+                }
+            elif poly and len(poly) >= 3:
+                elev = meta.get("elevation", 0.0)
+                th = meta.get("thickness", 0.25)
+                verts, faces = self._build_flat_slab_mesh(poly, elev, th)
+                meta["cached_verts"] = verts
+                meta["cached_faces"] = faces
+                xs = [p[0] for p in poly]
+                ys = [p[1] for p in poly]
+                meta["bbox"] = {
+                    "min": [min(xs), min(ys), elev - th],
+                    "max": [max(xs), max(ys), elev],
+                }
+
+        # Case 2: Wall
+        elif ifc_class in ("IfcWall", "IfcWallStandardCase"):
+            if "name" in updates and updates["name"]:
+                meta["name"] = updates["name"]
+            if "height" in updates and updates["height"] is not None:
+                meta["height"] = float(updates["height"])
+            if "thickness" in updates and updates["thickness"] is not None:
+                meta["thickness"] = float(updates["thickness"])
+            if "start" in updates and updates["start"]:
+                meta["start"] = list(updates["start"])
+            if "end" in updates and updates["end"]:
+                meta["end"] = list(updates["end"])
+
+            sp = meta["start"]
+            ep = meta["end"]
+            h = meta.get("height", 3.0)
+            th = meta.get("thickness", 0.2)
+            meta["length"] = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
+            meta["angle"] = math.atan2(ep[1] - sp[1], ep[0] - sp[0])
+            verts, faces = self._build_wall_mesh(sp, ep, h, th)
+            meta["cached_verts"] = verts
+            meta["cached_faces"] = faces
+            meta["bbox"] = {
+                "min": [min(sp[0], ep[0]) - th, min(sp[1], ep[1]) - th, sp[2] if len(sp) > 2 else 0.0],
+                "max": [max(sp[0], ep[0]) + th, max(sp[1], ep[1]) + th, (sp[2] if len(sp) > 2 else 0.0) + h],
+            }
+            self.recompute_wall_joins()
+
+        # Case 3: Door / Window
+        elif ifc_class in ("IfcDoor", "IfcWindow"):
+            if "offset_along_wall" in updates and updates["offset_along_wall"] is not None:
+                meta["offset_along_wall"] = float(updates["offset_along_wall"])
+            if "width" in updates and updates["width"] is not None:
+                meta["width"] = float(updates["width"])
+            if "height" in updates and updates["height"] is not None:
+                meta["height"] = float(updates["height"])
+            if "swing_flipped" in updates and updates["swing_flipped"] is not None:
+                meta["swing_flipped"] = bool(updates["swing_flipped"])
+
+        return {
+            "guid": guid,
+            "ifc_class": meta.get("ifc_class"),
+            "name": meta.get("name"),
+            "elevation": meta.get("elevation", 0.0),
+            "thickness": meta.get("thickness", 0.2),
+            "height": meta.get("height", 3.0),
+            "pitch": meta.get("pitch", 15.0),
+            "length": meta.get("length", 0.0),
+            "start": meta.get("start"),
+            "end": meta.get("end"),
+            "polygon": meta.get("polygon"),
+            "offset_along_wall": meta.get("offset_along_wall", 0.0),
+            "width": meta.get("width", 0.9),
+            "swing_flipped": meta.get("swing_flipped", False),
+        }
 
         # =====================================================================
         # CONSTRAINT PROPAGATION (Dependency Graph)
@@ -1829,11 +2057,51 @@ class BimModelManager:
                     ) + " Z"
                     slabs_svg.append({"guid": meta["guid"], "d": path_str, "class": "IfcSlab projection"})
 
+        # Process Roofs (footprint polygon, ridge line, pitch tag, slope indicators)
+        roofs_svg = []
+        for meta in self.element_meta.values():
+            ifc_cls = meta.get("ifc_class")
+            name = (meta.get("name") or "").lower()
+            if ifc_cls == "IfcRoof" or (ifc_cls == "IfcSlab" and ("roof" in name or "awning" in name)):
+                pts = meta.get("polygon", [])
+                if pts and len(pts) >= 3:
+                    path_str = f"M {pts[0][0]:.3f} {pts[0][1]:.3f} " + " ".join(
+                        f"L {p[0]:.3f} {p[1]:.3f}" for p in pts[1:]
+                    ) + " Z"
+
+                    xs = [p[0] for p in pts]
+                    ys = [p[1] for p in pts]
+                    min_x, max_x = min(xs), max(xs)
+                    min_y, max_y = min(ys), max(ys)
+                    mid_y = (min_y + max_y) / 2.0
+                    mid_x = (min_x + max_x) / 2.0
+
+                    ridge_d = None
+                    if (max_x - min_x) >= (max_y - min_y):
+                        ridge_d = f"M {min_x:.3f} {mid_y:.3f} L {max_x:.3f} {mid_y:.3f}"
+                    else:
+                        ridge_d = f"M {mid_x:.3f} {min_y:.3f} L {mid_x:.3f} {max_y:.3f}"
+
+                    pitch_deg = meta.get("pitch", 15.0)
+                    roof_elev = meta.get("elevation", 6.0)
+                    roofs_svg.append({
+                        "guid": meta["guid"],
+                        "name": meta.get("name", "Roof"),
+                        "d": path_str,
+                        "ridge_d": ridge_d,
+                        "pitch": pitch_deg,
+                        "pitch_text": f"{pitch_deg:.1f}° Slope" if pitch_deg > 0 else "Flat (0°)",
+                        "center": [mid_x, mid_y],
+                        "class": "IfcRoof projection",
+                        "is_overhead": cut_elevation < (roof_elev - 0.5),
+                    })
+
         return {
             "cut_paths": svg_cut_paths,
             "projection_paths": svg_projection_paths,
             "swing_paths": svg_swing_paths,
             "slabs": slabs_svg,
+            "roofs": roofs_svg,
             "grids": grids_svg,
             "dimensions": deduped_dims,
         }
@@ -2245,9 +2513,20 @@ class BimModelManager:
                 })
 
             elif ifc_class == "IfcRoof":
+                pts_2d = [(raw_verts[i], raw_verts[i+1]) for i in range(0, len(raw_verts), 3)] if raw_verts else []
+                hull = self._get_2d_hull(pts_2d) if len(pts_2d) >= 3 else [
+                    [min_x, min_y],
+                    [max_x, min_y],
+                    [max_x, max_y],
+                    [min_x, max_y],
+                ]
+                span = min(dx, dy) / 2.0 if min(dx, dy) > 0.1 else 1.0
+                est_pitch = math.degrees(math.atan2(dz, span)) if dz > 0.4 else 0.0
                 meta.update({
-                    "thickness": max(dz, 0.2),
+                    "thickness": max(min(dz, 0.4), 0.2),
                     "elevation": min_z,
+                    "pitch": round(est_pitch, 1),
+                    "polygon": hull,
                 })
 
             self.element_meta[guid] = meta
