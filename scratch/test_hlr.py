@@ -9,9 +9,12 @@ the full account; the short version:
             parser reads those partitions correctly.
   VERIFIED  The view-range engine (a wall under 6 ft is never cut).
   VERIFIED  The plan contract still carries exact model-coordinate annotation.
-  NOT MET   Placing HLR geometry in model coordinates on this ifcopenshell build,
-            which is why the analytic renderer remains the default and the M3 exit
-            criteria are not claimed.
+  VERIFIED  The serializer emits several named drawing planes; selecting one and
+            calibrating it against the model's plan bounds puts HLR geometry in
+            model coordinates (validated against ifcopenshell.draw.main()).
+  NOT MET   Per-element attribution of cut outlines is unreliable and calibration
+            is approximate sub-foot, so the analytic renderer remains the default
+            and the M3 exit criteria are not claimed.
 
 Run:  ./.venv/bin/python scratch/test_hlr.py
 """
@@ -156,8 +159,9 @@ def main():
     print(f"\nRESULT: {CHECKS['passed']} passed, {CHECKS['failed']} failed")
     if CHECKS["failed"]:
         return 1
-    print("P5 PARTIAL: partitioning and view-range engine verified; "
-          "model-coordinate placement NOT achieved (see hlr_renderer docstring)")
+    print("P5 PARTIAL: drawing-plane selection, model-space mapping and the "
+          "view-range engine verified; per-element attribution and sub-foot "
+          "calibration remain (see hlr_renderer docstring)")
     return 0
 
 

@@ -268,18 +268,33 @@ Attempted 2026-10-14. What was built, what was verified, and the specific blocke
 - The view-range engine behaves correctly (tall wall cut, 4 ft wall projected and not cut).
 - Annotation (slabs, grids, swing arcs) stays in exact model coordinates; analytic remains the default.
 
-**The blocker (measured, not assumed)**
+**Solved in round 2 — the earlier "vertical section" conclusion was a probing error**
 
-The M3 gate needs plan/section/elevation views whose geometry is in model coordinates. On this ifcopenshell build that could not be achieved:
+With a `scale` set, the serializer emits *several* named drawing planes in one pass, not one:
 
-- `serializer.addDrawing(...)` — the documented way to specify a drawing plane — is **absent**; the serializer exposes only `setFile`/`write`/`finalize`.
-- With `auto-section`, the emitted `ifc:plane` maps world Y into the plane's local Z, i.e. the serializer produces a **vertical section, not a horizontal plan**. Measured on an L-shaped plan: the wall at model x=30 reads as x≈30.3 and the wall at x=0 as x≈−0.2, while all three walls share a single Y band of ≈4.8–14.8 — a height band. That is an elevation.
-- Inverting `matrix3` algebraically yields mirrored/offset drawings; calibrating the rendered content box against the model's plan bounds only works when the serializer's plane really is the world XY plane, which here it is not.
-- No `hidden` partition is emitted in any tested configuration (the serializer removes occluded edges rather than separating them), so `hidden_paths` is empty and the layout does not claim otherwise.
+| Plane | Orientation | Notes |
+|---|---|---|
+| `Level 1` | horizontal, Z = 1.2 m | the floor-plan cut, 4 ft above the storey |
+| `Level 2` | horizontal, Z = 11.2 m | |
+| `Section East West` | vertical (normal = world Y) | |
+| `Section North South` | vertical | |
 
-Consequently `slice_2d_vector_plan(renderer=...)` defaults to `"analytic"`; HLR is opt-in via `renderer="hlr"` and is documented as unverified. `test_hlr.py` pins the limitation: if a future build gains `addDrawing`, that test **fails loudly** so the coordinate mapping gets revisited rather than the limitation silently persisting.
+The first round probed without `scale`, which emits only the two vertical role sections — hence the wrong conclusion. A floor plan must therefore **select one plane** rather than render all of them. `HlrRenderer._plane_selector` selects by orientation plus cut height, and `_calibrate` maps the selected plane's frame onto the model's plan bounds.
 
-**What would unblock it:** an ifcopenshell build exposing `addDrawing` (or a serialiser whose storey plane is genuinely horizontal), which turns the calibration step into the only remaining work. Re-evaluate HLR as the default at that point.
+**Verified against known geometry** (a 30 ft wall at y=0, another at y=80 ft, a third at x=90 ft):
+
+- raw plane coordinates `u 197.97..802.03`, `v 338.02..461.98`;
+- calibrated output lands at x 0–30.33 ft, y 0–20 ft, with the door void visible;
+- the official `ifcopenshell.draw.main()` emits the **same frame**, independently validating the mapping rather than confirming my own settings.
+
+**Remaining gap (why it is still not the default)**
+
+1. **Per-element attribution of cut outlines is unreliable.** The serializer puts `ifc:guid` on element groups for some sub-views, but wall outlines come back unattributed, so a plan cannot support per-element select/hide. Name resolution and geometric attribution both exist but do not yet cover this case.
+2. **Calibration is approximate sub-foot** (~20.5 units/ft on one axis vs ~20.18 on the other), showing as a ~0.3 ft offset on the far wall.
+
+Both must be fixed before `slice_2d_vector_plan` can default to `renderer="hlr"`.
+
+**What would unblock it:****What would unblock it:** an ifcopenshell build exposing `addDrawing` (or a serialiser whose storey plane is genuinely horizontal), which turns the calibration step into the only remaining work. Re-evaluate HLR as the default at that point.
 
 **Still outstanding from the M3 feature list** and not attempted here: view templates as saved, selectable presets; temporary hide/isolate; and the reviewer-facing visual comparison against a Revit plan (which needs the coordinate mapping first).
 
