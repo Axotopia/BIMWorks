@@ -356,6 +356,172 @@ class BimModelManager:
         return level_id
 
     # =========================================================================
+    # SKETCH DATA MODEL (P4): sketch edits and sketch-driven recompute
+    # =========================================================================
+    # Both editing skins — the precision 2D sketch editor and direct manipulation
+    # (dragging an edge or a vertex) — go through these operations. The editor and
+    # the drag handlers convert their gesture into the same call, so the two skins
+    # cannot produce different geometry for the same intent.
+
+    @staticmethod
+    def _seed_roof_sketch(polygon_pts) -> Any:
+        """An eave-only sketch for a roof created from a bare polygon."""
+        from sketch_model import Sketch, SketchCurve
+
+        sk = Sketch(kind="roof")
+        for i in range(len(polygon_pts)):
+            a = polygon_pts[i]
+            b = polygon_pts[(i + 1) % len(polygon_pts)]
+            sk.add_curve(SketchCurve(id=f"eave{i + 1}",
+                                     start=(float(a[0]), float(a[1])),
+                                     end=(float(b[0]), float(b[1]))))
+        return sk
+
+    def get_sketch(self, guid: str) -> Optional[Any]:
+        """Returns the element's sketch, or None when it has none."""
+        meta = self.element_meta.get(guid)
+        if not meta or not meta.get("sketch"):
+            return None
+        from sketch_model import Sketch
+
+        return Sketch.from_dict(meta["sketch"])
+
+    def set_roof_sketch(self, guid: str, sketch: Any) -> Dict[str, Any]:
+        """
+        Installs (or replaces) a roof's sketch and regenerates its geometry.
+
+        This is the single entry point both skins use: the sketch editor calls it
+        on Finish, and a drag calls it with the mutating operation already applied.
+        """
+        if guid not in self.element_meta:
+            raise KeyError(f"Element {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") != "IfcRoof":
+            raise ValueError("set_roof_sketch expects a roof")
+
+        problem = sketch.validate()
+        if problem:
+            raise ValueError(problem)
+
+        meta["sketch"] = sketch.to_dict()
+        footprint = sketch.footprint()
+        meta["polygon"] = [[float(x), float(y)] for x, y in footprint]
+        if sketch.thickness:
+            meta["thickness"] = float(sketch.thickness)
+        if sketch.slope_curves():
+            meta["pitch"] = float(
+                sketch.slope_curves()[0].slope_angle
+                if sketch.slope_curves()[0].slope_angle is not None
+                else sketch.default_slope_angle
+            )
+        self._regenerate_sketch_geometry(guid)
+        self._recompute_after_sketch(guid)
+        return {
+            "status": "sketch-applied",
+            "guid": guid,
+            "curves": len(sketch.curves),
+            "slope_lines": len(sketch.slope_curves()),
+            "footprint": meta["polygon"],
+        }
+
+    def move_sketch_vertex(self, guid: str, curve_id: str, end_index: int,
+                           to: Tuple[float, float]) -> Dict[str, Any]:
+        """Direct manipulation: drag one sketch vertex (the 'drag a vertex' skin)."""
+        return self._edit_sketch(
+            guid, lambda sk: sk.move_vertex(curve_id, end_index, (float(to[0]), float(to[1]))),
+            "vertex-moved",
+        )
+
+    def move_sketch_curve(self, guid: str, curve_id: str, dx: float, dy: float) -> Dict[str, Any]:
+        """Direct manipulation: drag a whole sketch edge (the 'drag an edge' skin)."""
+        return self._edit_sketch(
+            guid, lambda sk: sk.move_curve(curve_id, float(dx), float(dy)), "edge-moved"
+        )
+
+    def set_sketch_slope(self, guid: str, curve_id: str, defines: bool,
+                         angle: Optional[float] = None) -> Dict[str, Any]:
+        """Toggles Revit's Defines-Slope on a sketch curve, optionally setting its angle."""
+        return self._edit_sketch(
+            guid, lambda sk: sk.set_defines_slope(curve_id, defines, angle), "slope-set"
+        )
+
+    def add_sketch_curve(self, guid: str, curve_id: str, start: Tuple[float, float],
+                         end: Tuple[float, float], defines_slope: bool = False,
+                         slope_angle: Optional[float] = None) -> Dict[str, Any]:
+        """Adds a sketch curve (what the editor's Line/Rectangle tool emits)."""
+        from sketch_model import SketchCurve
+
+        def op(sk):
+            sk.add_curve(SketchCurve(
+                id=curve_id, start=(float(start[0]), float(start[1])),
+                end=(float(end[0]), float(end[1])),
+                defines_slope=bool(defines_slope), slope_angle=slope_angle,
+            ))
+            return True
+
+        return self._edit_sketch(guid, op, "curve-added")
+
+    def remove_sketch_curve(self, guid: str, curve_id: str) -> Dict[str, Any]:
+        return self._edit_sketch(guid, lambda sk: sk.remove_curve(curve_id), "curve-removed")
+
+    def _edit_sketch(self, guid: str, operation, status: str) -> Dict[str, Any]:
+        """
+        Loads the sketch, applies one mutation, then re-applies it to the model.
+
+        Keeping mutation and application in one place is what guarantees the two
+        skins agree: a drag and an editor commit differ only in which `operation`
+        they pass.
+        """
+        sketch = self.get_sketch(guid)
+        if sketch is None:
+            raise ValueError(f"Element {guid} has no sketch")
+        if not operation(sketch):
+            raise ValueError("Sketch operation had no effect (unknown curve?)")
+        result = self.set_roof_sketch(guid, sketch)
+        result["status"] = status
+        return result
+
+    def _regenerate_sketch_geometry(self, guid: str) -> None:
+        """
+        Rebuilds a roof's display geometry from its sketch.
+
+        Stored on the meta as `sketch_mesh` rather than as the IFC Body
+        representation: an arbitrary pitched surface is not representable as the
+        extruded profile the rest of the pipeline writes, and silently flattening it
+        into an extrusion is exactly the "model looks right but is wrong" failure
+        this project has been fixing. The parametric truth (the sketch) is what
+        persists; the IFC keeps a valid bounding extrusion for interop.
+        """
+        meta = self.element_meta.get(guid)
+        if not meta or not meta.get("sketch"):
+            return
+        from sketch_model import Sketch, build_roof_mesh
+
+        sketch = Sketch.from_dict(meta["sketch"])
+        try:
+            verts, faces = build_roof_mesh(sketch)
+        except Exception as e:
+            print(f"Notice: could not build sketch geometry for {guid}: {e}")
+            return
+        if not verts:
+            return
+        meta["sketch_mesh"] = {"vertices": verts, "indices": faces}
+        xs = verts[0::3]
+        ys = verts[1::3]
+        zs = verts[2::3]
+        meta["bbox"] = {"min": [min(xs), min(ys), min(zs)], "max": [max(xs), max(ys), max(zs)]}
+
+    def _recompute_after_sketch(self, guid: str) -> None:
+        """Routes a sketch edit through the P3 dependency graph."""
+        try:
+            from dependency_graph import DependencyGraph
+
+            graph = DependencyGraph.build(self)
+            self.last_join_stats = graph.recompute([guid])
+        except Exception as e:
+            print(f"Notice: recompute after sketch edit failed: {e}")
+
+    # =========================================================================
     # MODIFY TOOLS (P3): Copy / Rotate / Offset / Mirror / Trim-Extend / Split
     # =========================================================================
     # Each is a plain geometry operation so it can be driven from the CommandBus
@@ -703,6 +869,11 @@ class BimModelManager:
                 record[key] = self._jsonable(meta[key])
         if meta.get("footprint"):
             record["footprint"] = self._jsonable(meta["footprint"])
+        if meta.get("sketch"):
+            # P4: the sketch is first-class overlay data, so a roof/floor/profile
+            # drawn in either skin survives save/load. Before this the sketch lived
+            # only in the browser and was lost on reload (finding N13).
+            record["sketch"] = self._jsonable(meta["sketch"])
         if meta.get("hosted_openings"):
             record["hosted_openings"] = list(meta["hosted_openings"])
         record["join_policy"] = self._jsonable(self.join_policies.get(guid, {}))
@@ -1130,8 +1301,17 @@ class BimModelManager:
         level_id: Optional[str] = None,
         name: str = "Roof : Pitched Metal Deck",
         guid: Optional[str] = None,
+        sketch: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Creates an IfcRoof."""
+        """
+        Creates an IfcRoof.
+
+        `sketch` (P4) is the authoritative parametric definition — footprint plus
+        Defines-Slope lines. When supplied, the display geometry is generated from
+        the sketch (so a gable actually has a ridge) and the sketch is persisted to
+        the overlay; `polygon_pts`/`pitch_degrees` remain for the simple case and
+        for callers that predate sketches.
+        """
         storey = self.get_storey_by_id(level_id)
         roof = ifcopenshell.api.run("root.create_entity", self.model, ifc_class="IfcRoof", name=name)
         guid = self._apply_guid(roof, guid)
@@ -1175,6 +1355,13 @@ class BimModelManager:
             "ifc_class": "IfcRoof",
             "name": name,
             "polygon": polygon_pts,
+            # A roof always owns a sketch. If the caller did not supply one, seed an
+            # empty sketch with just the eave loop, so the editor or a drag can take
+            # over immediately instead of failing with "no sketch".
+            "sketch": (
+                sketch.to_dict() if sketch is not None and hasattr(sketch, "to_dict")
+                else self._seed_roof_sketch(polygon_pts).to_dict()
+            ),
             "thickness": thickness,
             "elevation": elevation,
             "pitch": pitch_degrees,
@@ -2468,13 +2655,21 @@ class BimModelManager:
                 polygon = rec.get("polygon")
                 if not polygon:
                     return False
+                roof_sketch = None
+                if rec.get("sketch"):
+                    from sketch_model import Sketch
+
+                    roof_sketch = Sketch.from_dict(rec["sketch"])
                 meta = self.add_roof(
                     polygon_pts=[tuple(p) for p in polygon],
                     thickness=float(rec.get("thickness", 0.3)),
                     elevation=float(rec.get("elevation", 6.0)),
                     pitch_degrees=float(rec.get("pitch", 15.0)),
                     level_id=level_id, name=name, guid=guid,
+                    sketch=roof_sketch,
                 )
+                if roof_sketch is not None:
+                    self._regenerate_sketch_geometry(guid)
 
             elif ifc_class == "IfcGrid":
                 start = rec.get("start")
