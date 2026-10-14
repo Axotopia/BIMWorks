@@ -27,6 +27,23 @@ wall outlines as SIBLINGS, so outlines carry no identity. `correlate_plane_geome
 assigns each path to the tightest element group whose extent contains it. Verified:
 East and West resolve to their real GUIDs; South resolves for its main run.
 
+CONCRETE BLOCKER FOUND — HLR emits NO cut partition
+---------------------------------------------------
+Measured on a wall + door + wall plan driven through `render_to_contract`:
+
+    partitions: {'cut': 0, 'projection': 10, 'hidden': 0, 'below': 0}
+
+and on a tall-wall + 4 ft-wall plan, the TALL wall does not appear in `cut_paths`
+at all. The M3 criterion "correct cut partition" therefore FAILS, which is why HLR
+cannot be the default regardless of the mapping/attribution work.
+
+The likely cause is the settings: earlier probes showed the `section`/`cut` class
+only when `auto-section` was combined with other options, and the plane groups that
+`_plane_selector` now picks (`Level 1` etc.) appear to be *projection-only* plan
+views rather than true section cuts. Establishing which settings produce a cut
+partition — and that they can coexist with plane selection — is the next concrete
+step.
+
 REMAINING GAPS before this can be the default
 ---------------------------------------------
 1. Attribution: SOLVED (calibration exact, no stray GUIDs). The bug was that the
