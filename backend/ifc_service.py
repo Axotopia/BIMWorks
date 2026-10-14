@@ -1104,9 +1104,15 @@ class BimModelManager:
         matrix[0, 1] = -sin_a
         matrix[1, 0] = sin_a
         matrix[1, 1] = cos_a
-        matrix[0, 3] = start_pt[0]
-        matrix[1, 3] = start_pt[1]
-        matrix[2, 3] = start_pt[2] if len(start_pt) > 2 else base_z
+        # Placements go into a metric IFC (`is_si=False` means "file units", which
+        # are metres here), while the baseline is stored in decimal feet. Converting
+        # here is the units boundary; without it a wall at model x=10 ft landed at
+        # x=10 m — a 3.28x error, and the cause of the mixed-unit meshes.
+        matrix[0, 3] = feet_to_metres(float(start_pt[0]))
+        matrix[1, 3] = feet_to_metres(float(start_pt[1]))
+        matrix[2, 3] = feet_to_metres(
+            float(start_pt[2]) if len(start_pt) > 2 else float(base_z)
+        )
 
         ifcopenshell.api.run(
             "geometry.edit_object_placement", self.model, product=wall, matrix=matrix, is_si=False
@@ -1399,9 +1405,10 @@ class BimModelManager:
         )
 
         matrix = np.identity(4)
-        matrix[0, 3] = min_x
-        matrix[1, 3] = min_y
-        matrix[2, 3] = elevation - thickness  # top of slab at elevation
+        matrix[0, 3] = feet_to_metres(float(min_x))
+        matrix[1, 3] = feet_to_metres(float(min_y))
+        # top of slab at elevation
+        matrix[2, 3] = feet_to_metres(float(elevation) - float(thickness))
         ifcopenshell.api.run(
             "geometry.edit_object_placement", self.model, product=slab, matrix=matrix, is_si=False
         )
@@ -1476,9 +1483,9 @@ class BimModelManager:
         )
 
         matrix = np.identity(4)
-        matrix[0, 3] = min_x
-        matrix[1, 3] = min_y
-        matrix[2, 3] = elevation
+        matrix[0, 3] = feet_to_metres(float(min_x))
+        matrix[1, 3] = feet_to_metres(float(min_y))
+        matrix[2, 3] = feet_to_metres(float(elevation))
         ifcopenshell.api.run(
             "geometry.edit_object_placement", self.model, product=roof, matrix=matrix, is_si=False
         )
@@ -2558,7 +2565,13 @@ class BimModelManager:
         cos_a, sin_a = math.cos(ang), math.sin(ang)
         matrix[0, 0], matrix[0, 1] = cos_a, -sin_a
         matrix[1, 0], matrix[1, 1] = sin_a, cos_a
-        matrix[0, 3], matrix[1, 3], matrix[2, 3] = sp[0], sp[1], sp[2]
+        # `sp` is decimal feet; the IFC is metric and `is_si=False` means the matrix
+        # is already in file units (metres). Converting here is the units boundary.
+        # Without it every wall placed away from the origin was out by 3.28x — the
+        # cause of the mixed-unit meshes and of the x~98 anomaly in the drawing path.
+        matrix[0, 3] = feet_to_metres(float(sp[0]))
+        matrix[1, 3] = feet_to_metres(float(sp[1]))
+        matrix[2, 3] = feet_to_metres(float(sp[2]) if len(sp) > 2 else 0.0)
         ifcopenshell.api.run(
             "geometry.edit_object_placement", self.model, product=wall, matrix=matrix, is_si=False
         )

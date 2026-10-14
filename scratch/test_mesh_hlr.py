@@ -89,27 +89,33 @@ def main():
           all(str(e["d"]).startswith("M ") for e in contract["cut_paths"]))
     check("renderer identifies itself", contract["renderer"] == "mesh-hlr")
 
-    print("5. KNOWN DEFECT: geometry buffers are mixed-unit ...")
-    # Measured: a 30 ft wall on x spans 0..9.144 (metres) while a 20 ft wall on y
-    # spans 0..6.096 with a baseline stored at 30 (feet). The profile dimensions are
-    # written in metres while the placement is in feet, so meshes are inconsistent
-    # between axes and between elements. This also explains the x~98 anomaly seen in
-    # the SVG path. Asserted so that fixing it fails this check.
+    print("5. Geometry buffers are consistently metric (was a defect) ...")
+    # Was mixed-unit: profile dimensions were written in metres while the placement
+    # was written in decimal feet, so a wall at model x=10 ft landed at x=10 m (3.28x)
+    # and meshes disagreed between axes and elements. Fixed at the placement boundary.
     mm = fresh()
     mm.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8, name="South")
     mm.add_wall((30, 0, 0), (30, 20, 0), height=FEET_10, thickness=INCHES_8, name="East")
+    mm.add_wall((10, 10, 0), (40, 10, 0), height=FEET_10, thickness=INCHES_8, name="Offset")
     spans = {}
     for mesh in mm.get_geometry_buffers()["meshes"]:
         v = mesh["vertices"]
         spans[mesh.get("name")] = (min(v[0::3]), max(v[0::3]), min(v[1::3]), max(v[1::3]))
-    south = spans.get("South", (0, 0, 0, 0))
-    east = spans.get("East", (0, 0, 0, 0))
-    mixed = abs(south[1] - 9.144) < 0.01 and abs(east[1] - 30.102) < 0.01
-    check("KNOWN DEFECT confirmed: South x is metres (0..9.144) while East x is feet "
-          "(~30) — profile dimensions and placement disagree",
-          mixed, spans)
+    south, east, off = spans["South"], spans["East"], spans["Offset"]
+    check("a 30 ft wall on x spans 0..9.144 m",
+          abs(south[0]) < 0.01 and abs(south[1] - 9.144) < 0.01, south)
+    check("a wall at model x=30 ft sits at 9.144 m, not 30 m",
+          abs(east[0] - 9.042) < 0.05 and abs(east[1] - 9.246) < 0.05, east)
+    # spans are (xmin, xmax, ymin, ymax)
+    check("a wall from model (10, 10) ft to (40, 10) ft spans x 3.048..12.192 m",
+          abs(off[0] - 3.048) < 0.05 and abs(off[1] - 12.192) < 0.05, off)
+    # Centred on y = 3.048 m (thickness 8" = 0.203 m), not at y = 10 m.
+    check("...and is centred on y 3.048 m, not 10 m",
+          abs((off[2] + off[3]) / 2.0 - 3.048) < 0.02, off)
+    check("a 20 ft wall on y spans 0..6.096 m",
+          abs(east[2]) < 0.15 and abs(east[3] - 6.096) < 0.01, east)
 
-    print("6. Known gap, asserted so it cannot be silently assumed fixed ...")
+    print("6. Known gap: opening subtraction ...")
     # The door void is present in the IFC (IfcRelVoidsElement + IfcOpeningElement)
     # but the host wall's exported mesh is an unvoided box, so the cut shows no
     # opening. Assert the CURRENT behaviour so that fixing it fails this check.
