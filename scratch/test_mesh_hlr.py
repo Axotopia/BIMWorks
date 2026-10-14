@@ -173,6 +173,30 @@ def main():
     no_gap = all((b[0] - a[1]) <= 1.0 for a, b in zip(wseg_sorted, wseg_sorted[1:]))
     check("a wall without a door has no gap there", no_gap, wseg_sorted)
 
+    print("7. Unified view entry point: plan, section and elevation ...")
+    mv = fresh()
+    lvv = [i for i, l in mv.levels.items() if l["name"] == "Level 1"][0]
+    mv.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8,
+                name="South", level_id=lvv)
+    mv.add_wall((0, 20, 0), (30, 20, 0), height=4.0, thickness=INCHES_8,
+                name="Low", level_id=lvv)
+    plan = mv.render_2d_view(view_type="floor_plan", cut_elevation=4.0)
+    check("a floor plan is available through render_2d_view",
+          plan["view_type"] == "floor_plan" and plan["partitions"]["cut"] > 0,
+          plan.get("partitions"))
+    sec = mv.render_2d_view(view_type="section", cut_elevation=4.0, direction="south")
+    check("a section is available and cuts", sec["partitions"]["cut"] > 0,
+          sec.get("partitions"))
+    elev = mv.render_2d_view(view_type="elevation", direction="south")
+    check("an elevation is available and does NOT cut", elev["partitions"]["cut"] == 0,
+          elev.get("partitions"))
+    check("the elevation still projects and hides geometry",
+          elev["partitions"]["projection"] > 0 and elev["partitions"]["hidden"] > 0,
+          elev.get("partitions"))
+    check("every view reports the renderer and the view range",
+          all(v.get("renderer") == "mesh-hlr" and "view_range" in v
+              for v in (plan, sec, elev)))
+
     print(f"\nRESULT: {CHECKS['passed']} passed, {CHECKS['failed']} failed")
     if CHECKS["failed"]:
         return 1

@@ -3470,6 +3470,68 @@ class BimModelManager:
         }
 
     # -- P5: HLR-backed plan ------------------------------------------------
+    def render_2d_view(self, view_type: str = "floor_plan",
+                       cut_elevation: float = FEET_4,
+                       direction: str = "south",
+                       view_range: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+        """
+        Renders a plan, section or elevation into the 2D vector contract.
+
+        The mesh projector is orthographic, so the view is chosen by camera:
+        a plan looks down (-Z); a section or elevation looks horizontally. `direction`
+        names which way the horizontal views look, so "north" shows the south face.
+
+        `view_range` carries the Revit view-range fields (cut/top/bottom/view_depth)
+        in decimal feet. The cut applies to plans (and to sections that cut); an
+        elevation does not cut, matching how elevations are drawn.
+        """
+        from mesh_hlr import MeshHlrProjector, ViewCamera
+        from units import feet_to_metres, metres_to_feet
+
+        view_type = (view_type or "floor_plan").lower()
+        if view_type not in ("floor_plan", "plan", "section", "elevation"):
+            raise ValueError(f"Unsupported view type {view_type!r}")
+
+        # (right, up) in world terms, with the direction the camera looks along.
+        cameras = {
+            "south": ViewCamera(right=(1.0, 0.0, 0.0), up=(0.0, 0.0, 1.0),
+                                direction=(0.0, -1.0, 0.0)),
+            "north": ViewCamera(right=(1.0, 0.0, 0.0), up=(0.0, 0.0, 1.0),
+                                direction=(0.0, 1.0, 0.0)),
+            "east": ViewCamera(right=(0.0, 1.0, 0.0), up=(0.0, 0.0, 1.0),
+                               direction=(1.0, 0.0, 0.0)),
+            "west": ViewCamera(right=(0.0, 1.0, 0.0), up=(0.0, 0.0, 1.0),
+                               direction=(-1.0, 0.0, 0.0)),
+            "top": ViewCamera(),
+        }
+        key = "top" if view_type in ("floor_plan", "plan") else (direction or "south")
+        camera = cameras.get(key, cameras["south"])
+
+        meshes = (self.get_geometry_buffers() or {}).get("meshes") or []
+        if not meshes:
+            return {"cut_paths": [], "projection_paths": [], "hidden_paths": [],
+                    "partitions": {"cut": 0, "projection": 0, "hidden": 0},
+                    "renderer": "mesh-hlr", "view_type": view_type,
+                    "error": "no geometry"}
+
+        projector = MeshHlrProjector(meshes)
+        # A plan cuts; an elevation does not; a section does.
+        cut_z = None
+        if view_type in ("floor_plan", "plan", "section"):
+            cut_z = feet_to_metres(float(cut_elevation))
+        view = projector.render(camera=camera, cut_z=cut_z)
+        contract = projector.to_contract(view)
+        for path_key in ("cut_paths", "projection_paths", "hidden_paths"):
+            for entry in contract.get(path_key, []):
+                entry["d"] = _scale_path(entry.get("d", ""), metres_to_feet)
+
+        contract["view_type"] = view_type
+        contract["direction"] = key
+        contract["view_range"] = dict(view_range or {})
+        contract["cut_elevation"] = float(cut_elevation)
+        contract["renderer"] = "mesh-hlr"
+        return contract
+
     def _mesh_hlr_plan_contract(self, cut_elevation: float) -> Optional[Dict[str, Any]]:
         """
         Renders the plan through the in-process geometric hidden-line projector.
