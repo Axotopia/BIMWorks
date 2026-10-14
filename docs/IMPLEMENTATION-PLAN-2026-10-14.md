@@ -292,6 +292,10 @@ Also established: `mesh_hlr` handles foreign IFC geometry (the external `sample_
 
 **Known limitation, documented rather than papered over:** `view_depth` drops whole elements rather than clipping geometry, which is coarser than Revit's view range.
 
+**On the last criterion.** "Visually matches a Revit plan to a reviewer's satisfaction" is the only M3 item not met, and it is unmet for one reason: **a reviewer's satisfaction cannot be self-certified by the agent that produced the drawing.** Everything the criterion rests on has been measured instead (see `test_mesh_hlr.py` §8d): cut is the heaviest linework and hidden the lightest, hidden is dashed, openings read as gaps at their own positions, the partition is drawn as a cut wall, and the drawings are committed in `review/` for inspection. What remains is a human saying yes or no.
+
+Flagged as blocked on that basis. Unblocking it requires one of: a reviewer confirming the drawings pass; a reviewer naming what is wrong; or a decision to accept the structural verification and record the visual check as an accepted open item.
+
 ### P6 — Sheets, PDF, validation (README M4); P7 — AI driver layer (README M5)
 Unchanged in content from the spec; entry criterion for P7 is now strictly gated on the P1 parity audit having been green since P1 (the AI plans against the same bus the UI uses — any residual raw-REST path would poison it). The regex prompt-planner is explicitly a placeholder until then.
 
