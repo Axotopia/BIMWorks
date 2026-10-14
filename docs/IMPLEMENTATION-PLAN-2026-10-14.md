@@ -269,7 +269,7 @@ The workflow answer from principle 3.
 | Lineweight tables / view templates | **MET** — every path carries its `{weight_mm, pattern, colour}` from the table, and the table is emitted on the contract so a template can restyle output without touching the renderer. (**Correction:** an earlier version of this table claimed this was MET when `LineweightTable` was in fact defined but never used and only `cut` had any effect. Both were wired in on 2026-10-14 and are now tested.) |
 | Section/elevation views in the same contract | **MET** — `render_2d_view(view_type, cut_elevation, direction, view_range)` serves plan/section/elevation; a plan and a section cut, an elevation does not |
 | Openings voided, both kinds | **MET** — on a wall with a door at 8 ft and a window at 18 ft the cut runs are (0–4.57)(4.57–8) **8–11 gap** (11–16.25)(16.25–18) **18–22 gap** (22–25.43)(25.43–30) |
-| Plan visually matches a Revit plan to a reviewer's satisfaction | **AWAITING REVIEW** — a rendered plan reads correctly (heavy cut walls, door and window as gaps at their positions, swing panel + quarter arc), but the objective words this as a reviewer's judgement, which cannot be self-certified |
+| Plan visually matches a Revit plan to a reviewer's satisfaction | **AWAITING REVIEW** — the drawing now carries cut/projection/hidden linework, door swings, window glazing symbols and overall dimensions in feet-inches — a rendered plan reads correctly (heavy cut walls, door and window as gaps at their positions, swing panel + quarter arc), but the objective words this as a reviewer's judgement, which cannot be self-certified |
 
 **Two genuine geometry defects were found and fixed while doing this**, both P2 units-boundary bugs that affected far more than drawings:
 
