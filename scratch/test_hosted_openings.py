@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 import ifcopenshell.util.placement as placement_util
 from ifc_service import bim_manager
+from units import INCHES_0_625 as OPENING_FACE_NUDGE
 
 
 def world_xy(entity):
@@ -48,7 +49,7 @@ def assert_on_wall(label, host_meta, meta, xy, local_y=0.0, tol=1e-6):
     dx, dy = xy[0] - ex, xy[1] - ey
     dist = math.hypot(dx, dy)
     assert dist < tol, (
-        f"{label}: placement off the host-relative position by {dist:.6f} m "
+        f"{label}: placement off the host-relative position by {dist:.6f} ft "
         f"(got {xy[0]:.6f},{xy[1]:.6f}; expected {ex:.6f},{ey:.6f})"
     )
     return dist
@@ -57,7 +58,7 @@ def assert_on_wall(label, host_meta, meta, xy, local_y=0.0, tol=1e-6):
 def check_case(label, start, end, insert_offset, drag_dx, drag_dy):
     """Insert a door and window on a wall, then drag and re-verify placement."""
     bim_manager.reset_model()
-    wall = bim_manager.add_wall(start, end, height=3.0, thickness=0.25, name=f"Host ({label})")
+    wall = bim_manager.add_wall(start, end, height=10.0, thickness=0.8333, name=f"Host ({label})")
     door = bim_manager.add_door(wall["guid"], offset_along_wall=insert_offset, width=0.95, height=2.13)
     window = bim_manager.add_window(
         wall["guid"], offset_along_wall=insert_offset + 1.0, width=1.2, height=1.2, sill_height=0.9
@@ -67,9 +68,10 @@ def check_case(label, start, end, insert_offset, drag_dx, drag_dy):
 
     # --- insertion placement sits on the wall baseline ------------------------
     assert_on_wall(f"{label} door insert", wall, door, world_xy(door["entity"]))
-    # The opening is nudged 0.05 m onto the wall face (local_y = -0.05).
+    # The opening is nudged 5/8" onto the wall face (local_y), so the
+    # expected position uses the same offset the builder applies.
     assert_on_wall(
-        f"{label} opening insert", wall, door, world_xy(door["opening_entity"]), local_y=-0.05
+        f"{label} opening insert", wall, door, world_xy(door["opening_entity"]), local_y=-OPENING_FACE_NUDGE
     )
     assert_on_wall(f"{label} window insert", wall, window, world_xy(window["entity"]))
 
@@ -80,14 +82,14 @@ def check_case(label, start, end, insert_offset, drag_dx, drag_dy):
     assert ok, f"{label}: translate_element returned False"
     actual_delta = door["offset_along_wall"] - before
     assert abs(actual_delta - expected_delta) < 1e-9, (
-        f"{label}: slide advanced {actual_delta:.9f} m but the wall-projected world "
+        f"{label}: slide advanced {actual_delta:.9f} ft but the wall-projected world "
         f"delta is {expected_delta:.9f} m (raw world dx was {drag_dx})"
     )
 
     # --- and the geometry actually moved with the metadata --------------------
     assert_on_wall(f"{label} door slide", wall, door, world_xy(door["entity"]))
     assert_on_wall(
-        f"{label} opening slide", wall, door, world_xy(door["opening_entity"]), local_y=-0.05
+        f"{label} opening slide", wall, door, world_xy(door["opening_entity"]), local_y=-OPENING_FACE_NUDGE
     )
 
     # --- a drag perpendicular to the wall must not slide the door at all ------
@@ -101,7 +103,7 @@ def check_case(label, start, end, insert_offset, drag_dx, drag_dy):
 
     print(
         f"   -> {label}: angle {ang_deg:5.1f}°, "
-        f"slide Δ{actual_delta:+.6f} m (projected), placement on-baseline ✓"
+        f"slide Δ{actual_delta:+.6f} ft (projected), placement on-baseline ✓"
     )
 
 
@@ -140,7 +142,7 @@ def test_hosted_openings():
     # --- 6. Slide must survive a project-container round-trip -----------------
     print("6. Slide + round-trip through a .bimworks container ...")
     bim_manager.reset_model()
-    wall = bim_manager.add_wall((0, 0, 0), (6, 6, 0), height=3.0, thickness=0.25, name="RoundTrip")
+    wall = bim_manager.add_wall((0, 0, 0), (6, 6, 0), height=10.0, thickness=0.8333, name="RoundTrip")
     door = bim_manager.add_door(wall["guid"], offset_along_wall=1.0, width=0.95, height=2.13)
     bim_manager.translate_element(door["guid"], 1.0, 1.0, 0.0)
     slid_offset = door["offset_along_wall"]
@@ -170,12 +172,12 @@ def test_hosted_openings():
     # The importer re-derives the offset from the fill's bbox centre, an
     # approximation, so allow a tolerance while still catching gross drift.
     assert abs(reloaded_door["offset_along_wall"] - slid_offset) < 0.75, (
-        f"reloaded offset {reloaded_door['offset_along_wall']:.3f} m is far from the "
+        f"reloaded offset {reloaded_door['offset_along_wall']:.3f} ft is far from the "
         f"saved {slid_offset:.3f} m"
     )
     print(
-        f"   -> offset {slid_offset:.3f} m survived save/load as "
-        f"{reloaded_door['offset_along_wall']:.3f} m on the re-imported "
+        f"   -> offset {slid_offset:.3f} ft survived save/load as "
+        f"{reloaded_door['offset_along_wall']:.3f} ft on the re-imported "
         f"{math.degrees(host['angle']):.0f}° baseline; host binding intact"
     )
 

@@ -166,7 +166,7 @@ This merges the session's open items #3 (units) and #4 (pset) and reframes #5 (i
 | # | P2 item | Status |
 |---|---|---|
 | 1 | Overlay schema v3 | **Done.** Per-element parametric records: baseline, polygon, host + offset, pitch, thickness, level, grid axis, type properties. Live entity refs and cached tessellation excluded; footprints excluded because the join engine recomputes them deterministically. Found en route: `polygon` was missing from the serialization field list, so slab/roof polygons were dropped — and because the IFC carried a bbox rectangle, the model still *looked* correct |
-| 2 | Units boundary | **Declaration done, conversion open** — see below |
+| 2 | Units boundary | **Done.** New `backend/units.py` is the single conversion point (exact 0.3048 m/ft) and the internal unit is decimal feet: the IFC declares a conversion-based foot unit, every builder default comes from the `units` constants (`FEET_10` wall height, `INCHES_8` exterior, `INCHES_4_7_8` partition, `FEET_4` cut plane, `FEET_6` not-cut rule), type parameters format as feet-inches, and the frontend passes feet with no conversion. A stored 10 ft wall is `10.0`, not `3.048` |
 | 3 | Load path rewrite | **Done.** `rebuild_from_overlay()` replays the overlay through the normal builders with GUID preservation, then recomputes joins once. Geometry is never inferred from tessellation for a v3 container. Legacy v2.1 containers still load, are flagged non-authoritative, and upgrade on re-save |
 | 4 | Staleness gating | **Done** (spec §3.1). Overlay GUIDs absent from the container's `model.ifc` are reported `stale` and never applied; unreconstructable records are `failed`; IFC content absent from the overlay is `unparametrized`. A full `load_report` is returned |
 | 5 | Delete `Pset_ORLT_Constraints` | **Done.** Writer removed (explicit no-op) and `strip_legacy_constraint_pset()` deletes it before serializing, so a container upgraded from an older build cannot keep shipping it |
@@ -179,7 +179,15 @@ This merges the session's open items #3 (units) and #4 (pset) and reframes #5 (i
 - `ifcopenshell.api.geometry.remove_representation` **segfaults** during a bulk rebuild (its inverse-attribute walk over a half-built representation graph). Replaced with a direct detach/remove.
 - Per-wall join recomputation during the overlay replay is premature and part of that crash: joins are now suppressed during the replay and recomputed once afterwards.
 
-**Open item detail — units (item 2).** The overlay and `meta.json` used to declare `decimal_feet` while every stored number was metres, so an exported model was mislabelled in both directions. That lie is fixed: internal unit `metres`, IFC length unit `METERS`, conversion `none`, all driven by one constant, and the fidelity suite asserts the declaration keeps matching the IFC (including that no conversion is claimed while none is applied). **However, the spec's locked decimal-feet internals are still not implemented.** Doing so rescales every stored dimension and default (3.0 m wall height, 0.2 m thickness, 1.2 m cut plane, 1.8288 m 6-ft rule) and every test expectation, so it must land as its own change with its own test pass rather than as a side effect of the overlay refactor. Until then, treat "internals are decimal feet" as an **open spec divergence**, not a satisfied criterion.
+**Units (item 2), as landed.** Before this, the overlay and `meta.json` declared `decimal_feet` while every stored number was metres — mislabelled in both directions, and the app's own numbers (3.0 wall height, 1.2 cut plane, 1.8288 not-cut threshold) gave it away. Now:
+
+- `backend/units.py` holds the only conversion factor (`METRES_PER_FOOT = 0.3048`, exact by definition) plus named architectural constants. Nothing else divides by 0.3048.
+- `reset_model` assigns an `IfcConversionBasedUnit` on the international foot, so `model.ifc` is natively in feet and no downstream conversion exists to get wrong. The overlay declares `decimal_feet` with `conversion: none`, which is now true.
+- Every builder default, the mesh builders, the 6-ft view-range rule, opening sizes (36x84 door, 48x48 window, 36" sill), the level elevations (10/20 ft) and the type-parameter strings are feet or feet-inches.
+- The frontend passes feet and no longer converts (`FEET_TO_M` deleted; the AI planner no longer rescales prompt dimensions; readouts label `'` instead of `m`).
+- The fidelity suite asserts the IFC carries a conversion-based foot unit with factor exactly 0.3048, that a 10 ft wall is stored as `10.0`, and that no extra conversion is claimed.
+
+**One real bug this surfaced:** `ifcopenshell.api.geometry.edit_object_placement` defaults to `is_si=True` and reinterprets the supplied matrix as metres, so a 4 ft offset became 13.12. All eleven matrix call sites (and the grid axis curve) now pass `is_si=False`, which is correct because our values are already in the file's unit. Without the units work this was invisible.
 
 ### P3 — Dependency graph + constraint solver (target: 2–4 weeks)
 The README's M2 core, now unblocked and correctly scoped.

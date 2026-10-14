@@ -726,7 +726,7 @@ export const Viewport3D: React.FC = () => {
           <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
           <span>
             {boxStartPoint
-              ? `Click opposite corner to complete roof (${Math.abs((boxCurrentPoint?.[0] || 0) - boxStartPoint[0]).toFixed(1)}m × ${Math.abs((boxCurrentPoint?.[1] || 0) - boxStartPoint[1]).toFixed(1)}m)`
+              ? `Click opposite corner to complete roof (${Math.abs((boxCurrentPoint?.[0] || 0) - boxStartPoint[0]).toFixed(1)}' × ${Math.abs((boxCurrentPoint?.[1] || 0) - boxStartPoint[1]).toFixed(1)}')`
               : 'Click 1st corner for roof boundary footprint'}
           </span>
           <button
@@ -748,7 +748,7 @@ export const Viewport3D: React.FC = () => {
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
           <span>
             {boxStartPoint
-              ? `Click opposite corner to complete floor slab (${Math.abs((boxCurrentPoint?.[0] || 0) - boxStartPoint[0]).toFixed(1)}m × ${Math.abs((boxCurrentPoint?.[1] || 0) - boxStartPoint[1]).toFixed(1)}m)`
+              ? `Click opposite corner to complete floor slab (${Math.abs((boxCurrentPoint?.[0] || 0) - boxStartPoint[0]).toFixed(1)}' × ${Math.abs((boxCurrentPoint?.[1] || 0) - boxStartPoint[1]).toFixed(1)}')`
               : 'Click 1st corner for floor slab boundary'}
           </span>
           <button

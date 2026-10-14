@@ -52,8 +52,13 @@ export const UI_ACTION_COMMANDS = {
 
 export type UiAction = keyof typeof UI_ACTION_COMMANDS;
 
-/** Feet -> metres; the engine's internals are metric (spec §11.3 fixes this in P2). */
-const FEET_TO_M = 0.3048;
+/**
+ * The engine's internal unit is decimal feet (spec §11.3), so command parameters
+ * are feet and no conversion happens here. Only explicitly metric prompt input
+ * ("3000 mm", "3 m") is normalised.
+ */
+const MM_PER_FOOT = 304.8;
+const M_PER_FOOT = 0.3048;
 
 const WALL_CLASSES = ['IfcWallStandardCase', 'IfcWall'];
 
@@ -105,9 +110,9 @@ function planHostedOffset(
     const value = parseFloat(atMatch[1]);
     const unit = (atMatch[2] || (value > 100 ? 'mm' : 'ft')).toLowerCase();
     if (Number.isFinite(value)) {
-      if (unit.startsWith('mm') || unit.startsWith('millimet')) offset = value / 1000;
-      else if (unit === 'm' || unit.startsWith('met')) offset = value;
-      else offset = value * FEET_TO_M;
+      if (unit.startsWith('mm') || unit.startsWith('millimet')) offset = value / MM_PER_FOOT;
+      else if (unit === 'm' || unit.startsWith('met')) offset = value / M_PER_FOOT;
+      else offset = value;  // feet: already the engine's unit
     }
   }
 
@@ -125,7 +130,7 @@ function extractPolygonFromLines(lines: SketchLine[]): { polygon: [number, numbe
     return { polygon: null, error: 'Sketch requires at least 3 connected lines to form a closed boundary.' };
   }
 
-  const tol = 0.35; // 35cm endpoint snap tolerance
+  const tol = 0.5; // 6in endpoint snap tolerance (internal unit: feet)
   const dist = (p1: [number, number], p2: [number, number]) => Math.hypot(p1[0] - p2[0], p1[1] - p2[1]);
 
   const unused = new Set(lines.map((_, i) => i));
@@ -364,8 +369,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   projectName: 'BIMWorks Architectural Project',
   levels: [
     { id: 'lvl-1', name: 'Level 1', elevation: 0.0 },
-    { id: 'lvl-2', name: 'Level 2', elevation: 3.0 },
-    { id: 'lvl-3', name: 'Roof', elevation: 6.0 },
+    { id: 'lvl-2', name: 'Level 2', elevation: 10.0 },
+    { id: 'lvl-3', name: 'Roof', elevation: 20.0 },
   ],
   views: [
     {
@@ -676,7 +681,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
       const feet = Math.floor(nearestDist * 3.28084);
       const inches = Math.round((nearestDist * 3.28084 - feet) * 12);
-      const display = `${feet}'-${inches}" (${(nearestDist * 1000).toFixed(0)} mm)`;
+      const display = `${feet}'-${inches}"`;
 
       // Measure along the dominant axis of the witness pair, not a fixed 'x',
       // so the pill and its edit gesture match the direction being measured.
@@ -950,7 +955,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     }
   },
 
-  fetch2DSlice: async (cutElevation = 1.2) => {
+  fetch2DSlice: async (cutElevation = 4.0) => {
     try {
       const res = await fetch(`${API_BASE}/slice/2d?cut_elevation=${cutElevation}`);
       if (res.ok) {
@@ -1048,7 +1053,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     try {
       await get().dispatchTransaction(
         'createWall',
-        { start, end, height: 3.0, thickness: 0.25, name },
+        { start, end, height: 10.0, thickness: 0.8333, name },
         `Create wall "${name}"`
       );
       set({ activeTool: 'select' });
@@ -1077,9 +1082,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         {
           host_wall_guid: hostWallGuid,
           offset_along_wall: offset,
-          width: 1.4,
-          height: 1.5,
-          sill_height: 0.9,
+          width: 4.0,
+          height: 4.0,
+          sill_height: 3.0,
           name,
         },
         'Insert window'
@@ -1424,8 +1429,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       const wFeet = rectMatch ? parseFloat(rectMatch[1]) : 30;
       const dFeet = rectMatch ? parseFloat(rectMatch[2]) : 20;
       // Convert decimal feet to meters for engine geometry
-      const wM = wFeet * 0.3048;
-      const dM = dFeet * 0.3048;
+      // Prompt dimensions are feet and the engine is feet: no conversion.
+      const wM = wFeet;
+      const dM = dFeet;
 
       return {
         intentSummary: `Create ${wFeet}' × ${dFeet}' perimeter wall enclosure (4 walls with Butt joins)`,
@@ -1435,8 +1441,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
             params: {
               start: [0, 0, 0],
               end: [wM, 0, 0],
-              height: 3.0,
-              thickness: 0.25,
+              height: 10.0,
+              thickness: 0.8333,
               name: 'Basic Wall : Exterior - 10" CMU',
             },
           },
@@ -1445,8 +1451,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
             params: {
               start: [wM, 0, 0],
               end: [wM, dM, 0],
-              height: 3.0,
-              thickness: 0.25,
+              height: 10.0,
+              thickness: 0.8333,
               name: 'Basic Wall : Exterior - 10" CMU',
             },
           },
@@ -1455,8 +1461,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
             params: {
               start: [wM, dM, 0],
               end: [0, dM, 0],
-              height: 3.0,
-              thickness: 0.25,
+              height: 10.0,
+              thickness: 0.8333,
               name: 'Basic Wall : Exterior - 10" CMU',
             },
           },
@@ -1465,8 +1471,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
             params: {
               start: [0, dM, 0],
               end: [0, 0, 0],
-              height: 3.0,
-              thickness: 0.25,
+              height: 10.0,
+              thickness: 0.8333,
               name: 'Basic Wall : Exterior - 10" CMU',
             },
           },
@@ -1496,7 +1502,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
               host_wall_guid: targetWall,
               offset_along_wall: offsetVal,
               width: doorWidth,
-              height: 2.13,
+              height: 7.0,
               name: 'Single Flush : 36" x 84"',
               swing_flipped: text.includes('flip'),
             },
@@ -1526,7 +1532,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
               offset_along_wall: winOffset,
               width: winWidth,
               height: 1.2,
-              sill_height: 0.9,
+              sill_height: 3.0,
               name: 'Fixed Window : 48" x 48"',
             },
           },
@@ -1548,7 +1554,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
                 [12, 9],
                 [0, 9],
               ],
-              thickness: 0.25,
+              thickness: 0.8333,
               elevation: 0.0,
               name: 'Floor : 10" Concrete Slab',
             },
@@ -1584,7 +1590,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           params: {
             start: [0, 0, 0],
             end: [6, 0, 0],
-            height: 3.0,
+            height: 10.0,
             thickness: 0.15,
             name: 'Basic Wall : Interior - 4 7/8" Partition',
           },

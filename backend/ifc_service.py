@@ -53,31 +53,30 @@ OVERLAY_SCHEMA_VERSION = 3
 LEGACY_OVERLAY_SCHEMA_VERSIONS = ("2.1",)
 
 # ---------------------------------------------------------------------------
-# UNITS (P2-F). Read this before touching any dimension.
+# UNITS (P2-F). Read backend/units.py before touching any dimension.
 #
-# The spec (§11.3) locks the *internal* unit to decimal feet. The running code
-# is consistently metric instead: `reset_model` assigns METERS to the IFC, every
-# builder default is a metric value (3.0 m wall height, 0.2 m thickness, 1.2 m
-# cut plane, 1.8288 m = 6 ft not-cut rule), and the frontend renders imperial by
-# converting at the display layer (`utils/units.ts`).
+# The internal unit is DECIMAL FEET (spec §11.3) and this module imports its
+# dimensions from `units` rather than carrying metric literals. The IFC declares a
+# conversion-based foot unit, so model.ifc, the overlay and every stored parameter
+# are all in feet — there is exactly one unit in the system and no conversion to
+# get wrong.
 #
-# What P2 fixed here is the *lie*, not the unit: the overlay and meta.json used to
-# declare `decimal_feet` while every stored number was metres, so an exported
-# model was mislabelled in both directions (review N7/units, README §8).
-#
-# The remaining work — actually storing decimal feet and converting once at the
-# serializer boundary — is deliberately deferred and tracked, because it rescales
-# every stored dimension: it must land with its own test pass, not as a quiet
-# side effect of the overlay refactor. `test_container_fidelity.py` asserts that
-# this declaration keeps matching the IFC's own unit, so the two cannot drift
-# apart again in silence.
+# Re-exported here so existing imports (`from ifc_service import INTERNAL_UNIT`)
+# keep working, and so the overlay/meta declarations have a single source.
 # ---------------------------------------------------------------------------
-INTERNAL_UNIT = "metres"
-IFC_LENGTH_UNIT = "METERS"
-# Recorded as "none" until the conversion lands; a non-"none" value here means
-# every overlay length is stored in INTERNAL_UNIT and the reverse conversion
-# happens on load.
-UNIT_CONVERSION_SOURCE = "none"
+from units import (  # noqa: E402  (kept beside the constants it documents)
+    INTERNAL_UNIT,
+    IFC_LENGTH_UNIT,
+    UNIT_CONVERSION_SOURCE,
+    METRES_PER_FOOT,
+    inches_to_feet,
+    FEET_0, FEET_1, FEET_4, FEET_6, FEET_8, FEET_10, FEET_12,
+    INCHES_4, INCHES_8, INCHES_4_7_8, INCHES_10, INCHES_12, INCHES_0_625,
+    DOOR_WIDTH_36, DOOR_HEIGHT_84,
+    WINDOW_WIDTH_48, WINDOW_HEIGHT_48, WINDOW_SILL_36,
+    DOOR_PANEL_THICKNESS, WINDOW_FRAME_THICKNESS,
+    format_feet_inches,
+)
 
 
 
@@ -97,8 +96,16 @@ class BimModelManager:
         self.project = ifcopenshell.api.run(
             "root.create_entity", self.model, ifc_class="IfcProject", name=self.project_name
         )
+        # Internal unit is DECIMAL FEET (spec §11.3). The IFC carries an
+        # IfcConversionBasedUnit on the international foot, so model.ifc is natively
+        # in feet and no unit conversion happens anywhere downstream: the IFC, the
+        # overlay and every stored parameter agree. See backend/units.py.
         ifcopenshell.api.run(
-            "unit.assign_unit", self.model, length={"is_metric": True, "raw": IFC_LENGTH_UNIT}
+            "unit.assign_unit",
+            self.model,
+            length={"is_metric": False, "raw": "FEET"},
+            area={"is_metric": False, "raw": "FEET"},
+            volume={"is_metric": False, "raw": "FEET"},
         )
 
         # Contexts
@@ -140,8 +147,8 @@ class BimModelManager:
         # Storeys (Levels)
         self.levels: Dict[str, Any] = {}
         self.add_level("Level 1", 0.0)
-        self.add_level("Level 2", 3.0)
-        self.add_level("Roof", 6.0)
+        self.add_level("Level 2", FEET_10)
+        self.add_level("Roof", FEET_10 * 2)
 
         # Elements internal tracking
         self.element_meta: Dict[str, Dict[str, Any]] = {}
@@ -445,8 +452,8 @@ class BimModelManager:
         self,
         start_pt: Tuple[float, float, float],
         end_pt: Tuple[float, float, float],
-        height: float = 3.0,
-        thickness: float = 0.2,
+        height: float = FEET_10,
+        thickness: float = INCHES_8,
         level_id: Optional[str] = None,
         name: str = "Basic Wall : Exterior - 8\" CMU",
         wall_id: Optional[str] = None,
@@ -504,7 +511,7 @@ class BimModelManager:
         matrix[2, 3] = start_pt[2] if len(start_pt) > 2 else base_z
 
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=wall, matrix=matrix
+            "geometry.edit_object_placement", self.model, product=wall, matrix=matrix, is_si=False
         )
 
         meta = {
@@ -522,7 +529,7 @@ class BimModelManager:
             "entity": wall,
             "type_properties": {
                 "Type Name": name,
-                "Thickness": f"{int(thickness * 1000)} mm",
+                "Thickness": format_feet_inches(thickness),
                 "Fire Rating": "2 HR",
                 "Thermal Resistance": "R-19",
                 "Function": "Exterior",
@@ -541,8 +548,8 @@ class BimModelManager:
         self,
         host_wall_guid: str,
         offset_along_wall: float,
-        width: float = 0.95,
-        height: float = 2.1,
+        width: float = DOOR_WIDTH_36,
+        height: float = DOOR_HEIGHT_84,
         name: str = "Single Flush : 36\" x 84\"",
         swing_flipped: bool = False,
         guid: Optional[str] = None,
@@ -571,16 +578,16 @@ class BimModelManager:
             context=self.context_body,
             length=float(width),
             height=float(height),
-            thickness=float(wall_thickness + 0.1),
+            thickness=float(wall_thickness + INCHES_4),
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=opening, representation=op_rep
         )
 
         # Placement follows the host wall's own baseline/angle (world coords).
-        op_matrix = self._hosted_placement_matrix(wall_meta, offset_along_wall, local_y=-0.05)
+        op_matrix = self._hosted_placement_matrix(wall_meta, offset_along_wall, local_y=-INCHES_0_625)
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=opening, matrix=op_matrix
+            "geometry.edit_object_placement", self.model, product=opening, matrix=op_matrix, is_si=False
         )
 
         # Cut the wall
@@ -603,14 +610,14 @@ class BimModelManager:
             context=self.context_body,
             length=float(width),
             height=float(height),
-            thickness=0.045,  # 45mm panel
+            thickness=DOOR_PANEL_THICKNESS,
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=door, representation=door_rep
         )
         door_matrix = self._hosted_placement_matrix(wall_meta, offset_along_wall, local_y=0.0)
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=door, matrix=door_matrix
+            "geometry.edit_object_placement", self.model, product=door, matrix=door_matrix, is_si=False
         )
 
         # Link door as filling of opening
@@ -630,8 +637,8 @@ class BimModelManager:
             "opening_entity": opening,
             "type_properties": {
                 "Type Name": name,
-                "Width": f"{int(width * 1000)} mm",
-                "Height": f"{int(height * 1000)} mm",
+                "Width": format_feet_inches(width),
+                "Height": format_feet_inches(height),
                 "Fire Rating": "90 MIN",
                 "Operation": "Single Swing Left",
             },
@@ -644,9 +651,9 @@ class BimModelManager:
         self,
         host_wall_guid: str,
         offset_along_wall: float,
-        width: float = 1.2,
-        height: float = 1.2,
-        sill_height: float = 0.9,
+        width: float = WINDOW_WIDTH_48,
+        height: float = WINDOW_HEIGHT_48,
+        sill_height: float = WINDOW_SILL_36,
         name: str = "Fixed Window : 48\" x 48\"",
         guid: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -670,17 +677,17 @@ class BimModelManager:
             context=self.context_body,
             length=float(width),
             height=float(height),
-            thickness=float(wall_thickness + 0.1),
+            thickness=float(wall_thickness + INCHES_4),
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=opening, representation=op_rep
         )
 
         op_matrix = self._hosted_placement_matrix(
-            wall_meta, offset_along_wall, local_y=-0.05, local_z=sill_height
+            wall_meta, offset_along_wall, local_y=-INCHES_0_625, local_z=sill_height
         )
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=opening, matrix=op_matrix
+            "geometry.edit_object_placement", self.model, product=opening, matrix=op_matrix, is_si=False
         )
 
         ifcopenshell.api.run("feature.add_feature", self.model, feature=opening, element=wall)
@@ -701,7 +708,7 @@ class BimModelManager:
             context=self.context_body,
             length=float(width),
             height=float(height),
-            thickness=0.06,  # 60mm frame
+            thickness=WINDOW_FRAME_THICKNESS,
         )
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=window, representation=win_rep
@@ -710,7 +717,7 @@ class BimModelManager:
             wall_meta, offset_along_wall, local_y=0.0, local_z=sill_height
         )
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=window, matrix=win_matrix
+            "geometry.edit_object_placement", self.model, product=window, matrix=win_matrix, is_si=False
         )
 
         ifcopenshell.api.run("feature.add_filling", self.model, opening=opening, element=window)
@@ -729,9 +736,9 @@ class BimModelManager:
             "opening_entity": opening,
             "type_properties": {
                 "Type Name": name,
-                "Width": f"{int(width * 1000)} mm",
-                "Height": f"{int(height * 1000)} mm",
-                "Sill Height": f"{int(sill_height * 1000)} mm",
+                "Width": format_feet_inches(width),
+                "Height": format_feet_inches(height),
+                "Sill Height": format_feet_inches(sill_height),
                 "Glazing": "Double Glazed Low-E",
             },
         }
@@ -742,8 +749,8 @@ class BimModelManager:
     def add_slab(
         self,
         polygon_pts: List[Tuple[float, float]],
-        thickness: float = 0.25,
-        elevation: float = 0.0,
+        thickness: float = INCHES_10,
+        elevation: float = FEET_0,
         level_id: Optional[str] = None,
         name: str = "Floor : 10\" Concrete Slab",
         guid: Optional[str] = None,
@@ -789,7 +796,7 @@ class BimModelManager:
         matrix[1, 3] = min_y
         matrix[2, 3] = elevation - thickness  # top of slab at elevation
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=slab, matrix=matrix
+            "geometry.edit_object_placement", self.model, product=slab, matrix=matrix, is_si=False
         )
 
         meta = {
@@ -803,7 +810,7 @@ class BimModelManager:
             "entity": slab,
             "type_properties": {
                 "Type Name": name,
-                "Thickness": f"{int(thickness * 1000)} mm",
+                "Thickness": format_feet_inches(thickness),
                 "Material": "Cast-in-Place Concrete",
                 "Structural": "True",
             },
@@ -814,8 +821,8 @@ class BimModelManager:
     def add_roof(
         self,
         polygon_pts: List[Tuple[float, float]],
-        thickness: float = 0.3,
-        elevation: float = 6.0,
+        thickness: float = INCHES_12,
+        elevation: float = FEET_10,
         pitch_degrees: float = 15.0,
         level_id: Optional[str] = None,
         name: str = "Roof : Pitched Metal Deck",
@@ -857,7 +864,7 @@ class BimModelManager:
         matrix[1, 3] = min_y
         matrix[2, 3] = elevation
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=roof, matrix=matrix
+            "geometry.edit_object_placement", self.model, product=roof, matrix=matrix, is_si=False
         )
 
         meta = {
@@ -873,7 +880,7 @@ class BimModelManager:
             "type_properties": {
                 "Type Name": name,
                 "Pitch": f"{pitch_degrees}°",
-                "Thickness": f"{int(thickness * 1000)} mm",
+                "Thickness": format_feet_inches(thickness),
                 "Finish": "Standing Seam Metal",
             },
         }
@@ -931,6 +938,7 @@ class BimModelManager:
             grid_axis=axis,
             p1=[float(start_pt[0]), float(start_pt[1]), 0.0],
             p2=[float(end_pt[0]), float(end_pt[1]), 0.0],
+            is_si=False,
         )
 
         meta = {
@@ -1079,17 +1087,17 @@ class BimModelManager:
             sill = float(meta.get("sill_height", 0.0))
 
             op_matrix = self._hosted_placement_matrix(
-                host_meta, meta["offset_along_wall"], local_y=-0.05, local_z=sill
+                host_meta, meta["offset_along_wall"], local_y=-INCHES_0_625, local_z=sill
             )
             ifcopenshell.api.run(
-                "geometry.edit_object_placement", self.model, product=opening, matrix=op_matrix
+                "geometry.edit_object_placement", self.model, product=opening, matrix=op_matrix, is_si=False
             )
 
             dw_matrix = self._hosted_placement_matrix(
                 host_meta, meta["offset_along_wall"], local_y=0.0, local_z=sill
             )
             ifcopenshell.api.run(
-                "geometry.edit_object_placement", self.model, product=door_win, matrix=dw_matrix
+                "geometry.edit_object_placement", self.model, product=door_win, matrix=dw_matrix, is_si=False
             )
             translated = True
 
@@ -1175,7 +1183,7 @@ class BimModelManager:
         return [[0, i, i + 1] for i in range(1, n - 1)]
 
     @staticmethod
-    def _build_flat_slab_mesh(poly, elevation=0.0, thickness=0.25):
+    def _build_flat_slab_mesh(poly, elevation=FEET_0, thickness=INCHES_10):
         """Builds triangulated 3D mesh for flat slab."""
         n = len(poly)
         verts = []
@@ -1196,7 +1204,7 @@ class BimModelManager:
         return verts, faces
 
     @staticmethod
-    def _build_pitched_roof_mesh(poly, elevation=6.0, thickness=0.3, pitch_deg=15.0):
+    def _build_pitched_roof_mesh(poly, elevation=FEET_10, thickness=INCHES_12, pitch_deg=15.0):
         """Builds triangulated 3D mesh for pitched roof."""
         n = len(poly)
         rad = math.radians(pitch_deg)
@@ -1226,7 +1234,7 @@ class BimModelManager:
         return verts, faces
 
     @staticmethod
-    def _build_wall_mesh(sp, ep, height=3.0, thickness=0.2):
+    def _build_wall_mesh(sp, ep, height=FEET_10, thickness=INCHES_8):
         """Builds triangulated 3D mesh for wall solid."""
         dx = ep[0] - sp[0]
         dy = ep[1] - sp[1]
@@ -1329,7 +1337,7 @@ class BimModelManager:
 
             sp = meta["start"]
             ep = meta["end"]
-            h = meta.get("height", 3.0)
+            h = meta.get("height", FEET_10)
             th = meta.get("thickness", 0.2)
             meta["length"] = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
             meta["angle"] = math.atan2(ep[1] - sp[1], ep[0] - sp[0])
@@ -1359,7 +1367,7 @@ class BimModelManager:
             "name": meta.get("name"),
             "elevation": meta.get("elevation", 0.0),
             "thickness": meta.get("thickness", 0.2),
-            "height": meta.get("height", 3.0),
+            "height": meta.get("height", FEET_10),
             "pitch": meta.get("pitch", 15.0),
             "length": meta.get("length", 0.0),
             "start": meta.get("start"),
@@ -1839,7 +1847,7 @@ class BimModelManager:
         matrix[1, 0], matrix[1, 1] = sin_a, cos_a
         matrix[0, 3], matrix[1, 3], matrix[2, 3] = sp[0], sp[1], sp[2]
         ifcopenshell.api.run(
-            "geometry.edit_object_placement", self.model, product=wall, matrix=matrix
+            "geometry.edit_object_placement", self.model, product=wall, matrix=matrix, is_si=False
         )
 
     def _rebuild_wall_representation(self, guid):
@@ -2022,7 +2030,7 @@ class BimModelManager:
                     return False
                 meta = self.add_wall(
                     start_pt=tuple(start), end_pt=tuple(end),
-                    height=float(rec.get("height", 3.0)),
+                    height=float(rec.get("height", FEET_10)),
                     thickness=float(rec.get("thickness", 0.2)),
                     level_id=level_id, name=name, guid=guid,
                 )
@@ -2325,7 +2333,7 @@ class BimModelManager:
     # 2D VECTOR SLICING & HIDDEN LINE REMOVAL (HLR) PIPELINE
     # =========================================================================
 
-    def slice_2d_vector_plan(self, cut_elevation: float = 1.2) -> Dict[str, Any]:
+    def slice_2d_vector_plan(self, cut_elevation: float = FEET_4) -> Dict[str, Any]:
         """
         Slices the BIM model at a specified cut elevation (e.g. 4'-0" / 1.2m above storey).
         Generates 2D SVG vector paths decorated with semantic CSS classes:
@@ -2346,12 +2354,12 @@ class BimModelManager:
                 th = meta["thickness"]
                 length = meta["length"]
                 ang = meta["angle"]
-                wall_h = meta.get("height", 3.0)
+                wall_h = meta.get("height", FEET_10)
 
                 # Revit View Range Rule (Spec §1.6 & §4.1):
-                # Walls shorter than 6 ft (1.8288 m) are NOT cut, even if intersecting cut plane;
+                # Walls shorter than 6 ft are NOT cut, even if intersecting the cut plane;
                 # they render in projection style without hatch poché.
-                is_wall_cut = wall_h >= 1.8288
+                is_wall_cut = wall_h >= FEET_6
                 wall_class = "IfcWall cut" if is_wall_cut else "IfcWall projection"
                 wall_fill = "url(#hatch-concrete)" if is_wall_cut else "none"
                 target_paths = svg_cut_paths if is_wall_cut else svg_projection_paths
@@ -2440,7 +2448,7 @@ class BimModelManager:
 
                             door_name = (op_meta.get("name") or "").lower()
                             is_sliding = "slide" in door_name or "pocket" in door_name or "closet" in door_name
-                            is_overhead = "garage" in door_name or "overhead" in door_name or w > 2.5
+                            is_overhead = "garage" in door_name or "overhead" in door_name or w > FEET_8
 
                             if is_sliding or is_overhead:
                                 # Sliding / Pocket / Overhead door: drawn along wall opening centerline
@@ -3119,7 +3127,7 @@ class BimModelManager:
             self.levels["level_2"] = {
                 "id": "level_2",
                 "name": "Level 2",
-                "elevation": 3.0,
+                "elevation": FEET_10,
             }
             self.levels["roof"] = {
                 "id": "roof",
@@ -3128,7 +3136,23 @@ class BimModelManager:
             }
 
         # 4. Grids
-        unit_scale = unit_util.calculate_unit_scale(self.model) or 1.0
+        # `calculate_unit_scale` returns metres-per-file-unit and does not know
+        # about imperial files (it yields 1.0 for a foot-based model). Everything
+        # the manager stores is decimal feet, so scale into feet explicitly: a
+        # metre-based foreign file (sample_building.ifc) must convert by
+        # 1/0.3048, and a foot-based one by 1.0.
+        try:
+            length_unit = unit_util.get_project_unit(self.model, "LENGTHUNIT")
+            if getattr(length_unit, "is_a", lambda *_: False)("IfcConversionBasedUnit"):
+                # Conversion-based unit: read its factor to SI metres.
+                metres_per_unit = float(
+                    length_unit.ConversionFactor.ValueComponent.wrappedValue
+                )
+            else:
+                metres_per_unit = unit_util.calculate_unit_scale(self.model) or 1.0
+        except Exception:
+            metres_per_unit = unit_util.calculate_unit_scale(self.model) or 1.0
+        unit_scale = metres_per_unit / METRES_PER_FOOT
         seen_grid_tags = set()
         for grid in self.model.by_type("IfcGrid"):
             grid_guid = grid.GlobalId
@@ -3299,7 +3323,7 @@ class BimModelManager:
                     "start": sp,
                     "end": ep,
                     "thickness": max(resolved_thickness, 0.10),
-                    "height": max(dz, 2.5),
+                    "height": max(dz, FEET_8),
                     "length": length,
                     "angle": angle,
                     "parametrized": guid not in bbox_derived_walls,
@@ -3366,7 +3390,7 @@ class BimModelManager:
 
                 if ifc_class == "IfcSlab":
                     meta.update({
-                        "thickness": profile_thickness_2d or max(dz, 0.1),
+                        "thickness": profile_thickness_2d or max(dz, INCHES_4),
                         "elevation": min_z,
                         "polygon": footprint,
                     })

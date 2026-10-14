@@ -21,23 +21,24 @@ def test_v2_core():
     assert len(bim_manager.element_meta) == 0
 
     print("2. Testing CommandBus execution (WallCreate, DoorInsert)...")
-    # Wall 1: 10m long, 3.0m high
+    # Wall 1: 10 ft long, 10 ft high
     res_w1 = command_bus.execute_single_command("WallCreate", {
         "start": [0.0, 0.0, 0.0],
         "end": [10.0, 0.0, 0.0],
-        "height": 3.0,
-        "thickness": 0.25,
+        "height": 10.0,
+        "thickness": 0.8333,
         "name": 'Basic Wall : Exterior - 10" CMU',
     })
     w1_guid = res_w1["guid"]
     assert w1_guid in bim_manager.element_meta
 
-    # Wall 2: Short wall (1.5m < 1.8288m / 6ft) to test 6-foot Revit view range rule
+    # Wall 2: short wall (4 ft < 6 ft) to test the 6-foot Revit view range rule
+    # (internal unit is decimal feet since P2)
     res_w2 = command_bus.execute_single_command("WallCreate", {
         "start": [10.0, 0.0, 0.0],
         "end": [10.0, 5.0, 0.0],
-        "height": 1.5,
-        "thickness": 0.2,
+        "height": 4.0,          # < 6 ft: must not be cut
+        "thickness": 0.6667,
         "name": 'Basic Wall : 4" Partition Low',
     })
     w2_guid = res_w2["guid"]
@@ -52,9 +53,9 @@ def test_v2_core():
     # Testing 2D slicing for 6-foot rule
     print("4. Testing 2D slicing and 6-foot wall view range rule...")
     slice_data = bim_manager.slice_2d_vector_plan(cut_elevation=1.2)
-    # Wall 1 (3m >= 1.8288m) should be in cut_paths
+    # Wall 1 (10 ft >= 6 ft) should be in cut_paths
     cut_guids = [p["guid"] for p in slice_data["cut_paths"]]
-    # Wall 2 (1.5m < 1.8288m) should be in projection_paths
+    # Wall 2 (4 ft < 6 ft) should be in projection_paths
     proj_guids = [p["guid"] for p in slice_data["projection_paths"]]
     assert w1_guid in cut_guids, f"Wall 1 should be cut, found in: {cut_guids}"
     assert w2_guid in proj_guids, f"Wall 2 (low wall < 6ft) should be in projection_paths, found in: {proj_guids}"
@@ -67,9 +68,9 @@ def test_v2_core():
             command="DoorInsert",
             params={
                 "host_wall_guid": w1_guid,
-                "offset_along_wall": 3.0,
-                "width": 1.0,
-                "height": 2.1,
+                "offset_along_wall": 8.0,
+                "width": 3.0,
+                "height": 7.0,
                 "name": 'Single Flush : 36" x 84"',
             },
             origin="ai",

@@ -15,7 +15,10 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
-import { formatLength, formatArea, formatVolume, metersToFeet } from '../../utils/units';
+import { formatLength, formatArea, formatVolume } from '../../utils/units';
+
+/** Nudge step in the engine's internal unit (decimal feet): 6 inches. */
+const NUDGE_FT = 0.5;
 import { measureMesh } from '../../utils/geometry';
 
 export const PropertiesPalette: React.FC = () => {
@@ -246,7 +249,7 @@ export const PropertiesPalette: React.FC = () => {
               {sketchSession.mode === 'roof' ? (
                 <>
                   <div>
-                    <label className="text-[10px] text-slate-300 block mb-1">Base Elevation (m)</label>
+                    <label className="text-[10px] text-slate-300 block mb-1">Base Elevation (ft)</label>
                     <input
                       type="number"
                       step="0.1"
@@ -256,7 +259,7 @@ export const PropertiesPalette: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] text-slate-300 block mb-1">Roof Thickness (m)</label>
+                    <label className="text-[10px] text-slate-300 block mb-1">Roof Thickness (in)</label>
                     <input
                       type="number"
                       step="0.05"
@@ -283,7 +286,7 @@ export const PropertiesPalette: React.FC = () => {
               ) : (
                 <>
                   <div>
-                    <label className="text-[10px] text-slate-300 block mb-1">Elevation from Level (m)</label>
+                    <label className="text-[10px] text-slate-300 block mb-1">Elevation from Level (ft)</label>
                     <input
                       type="number"
                       step="0.1"
@@ -293,7 +296,7 @@ export const PropertiesPalette: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] text-slate-300 block mb-1">Floor Slab Thickness (m)</label>
+                    <label className="text-[10px] text-slate-300 block mb-1">Floor Slab Thickness (in)</label>
                     <input
                       type="number"
                       step="0.05"
@@ -324,7 +327,7 @@ export const PropertiesPalette: React.FC = () => {
                     </button>
                   </div>
                   <div className="text-[11px] text-slate-300">
-                    Length: <span className="text-white font-mono">{len.toFixed(2)}m</span>
+                    Length: <span className="text-white font-mono">{len.toFixed(2)}'</span>
                   </div>
                   {sketchSession.mode === 'roof' && (
                     <label className="flex items-center space-x-2 cursor-pointer mt-1">
@@ -369,7 +372,7 @@ export const PropertiesPalette: React.FC = () => {
                     <td className="py-1 text-[#858585]">Unconnected Height</td>
                     <td className="py-1 text-right text-white font-mono">
                       {typeof params?.height === 'number'
-                        ? `${formatLength(metersToFeet(params.height), displayUnit)} (${params.height.toFixed(2)}m)`
+                        ? formatLength(params.height, displayUnit)
                         : '—'}
                     </td>
                   </tr>
@@ -388,14 +391,14 @@ export const PropertiesPalette: React.FC = () => {
                     <td className="py-1 text-[#858585]">Length</td>
                     <td className="py-1 text-right text-[#38bdf8] font-mono">
                       {params?.length != null
-                        ? `${formatLength(metersToFeet(params.length), displayUnit)} (${params.length.toFixed(2)}m)`
+                        ? formatLength(params.length, displayUnit)
                         : selectedMesh?.bbox
                           ? (() => {
-                              const lenM = Math.hypot(
+                              const lenFt = Math.hypot(
                                 selectedMesh.bbox.max[0] - selectedMesh.bbox.min[0],
                                 selectedMesh.bbox.max[1] - selectedMesh.bbox.min[1]
                               );
-                              return `${formatLength(metersToFeet(lenM), displayUnit)} (${lenM.toFixed(2)}m)`;
+                              return formatLength(lenFt, displayUnit);
                             })()
                           : '—'}
                     </td>
@@ -525,7 +528,7 @@ export const PropertiesPalette: React.FC = () => {
 
                   <div className="grid grid-cols-2 gap-2 pt-1">
                     <div>
-                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Plate Elevation (m)</label>
+                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Plate Elevation (ft)</label>
                       <input
                         type="number"
                         step="0.25"
@@ -535,7 +538,7 @@ export const PropertiesPalette: React.FC = () => {
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Thickness (m)</label>
+                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Thickness (ft)</label>
                       <input
                         type="number"
                         step="0.05"
@@ -604,7 +607,7 @@ export const PropertiesPalette: React.FC = () => {
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Thickness (m)</label>
+                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Thickness (ft)</label>
                       <input
                         type="number"
                         step="0.05"
@@ -660,7 +663,7 @@ export const PropertiesPalette: React.FC = () => {
                 <div className="space-y-2">
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Elevation (m)</label>
+                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Elevation (ft)</label>
                       <input
                         type="number"
                         step="0.1"
@@ -670,7 +673,7 @@ export const PropertiesPalette: React.FC = () => {
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Thickness (m)</label>
+                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Thickness (ft)</label>
                       <input
                         type="number"
                         step="0.05"
@@ -744,37 +747,37 @@ export const PropertiesPalette: React.FC = () => {
               </div>
               <div className="grid grid-cols-3 gap-1 text-[10px] font-mono">
                 <button
-                  onClick={() => handleNudge(-0.5, 0, 0)}
+                  onClick={() => handleNudge(-NUDGE_FT, 0, 0)}
                   className="py-1 bg-[#2a2d2e] hover:bg-[#3c3c3c] text-white rounded border border-[#444]"
                 >
-                  -X (0.5m)
+                  -X (6")
                 </button>
                 <button
-                  onClick={() => handleNudge(0, 0.5, 0)}
+                  onClick={() => handleNudge(0, NUDGE_FT, 0)}
                   className="py-1 bg-[#2a2d2e] hover:bg-[#3c3c3c] text-white rounded border border-[#444]"
                 >
-                  +Y (0.5m)
+                  +Y (6")
                 </button>
                 <button
-                  onClick={() => handleNudge(0.5, 0, 0)}
+                  onClick={() => handleNudge(NUDGE_FT, 0, 0)}
                   className="py-1 bg-[#2a2d2e] hover:bg-[#3c3c3c] text-white rounded border border-[#444]"
                 >
-                  +X (0.5m)
+                  +X (6")
                 </button>
                 <button
-                  onClick={() => handleNudge(0, 0, -0.5)}
+                  onClick={() => handleNudge(0, 0, -NUDGE_FT)}
                   className="py-1 bg-[#2a2d2e] hover:bg-[#3c3c3c] text-white rounded border border-[#444]"
                 >
                   -Z (Down)
                 </button>
                 <button
-                  onClick={() => handleNudge(0, -0.5, 0)}
+                  onClick={() => handleNudge(0, -NUDGE_FT, 0)}
                   className="py-1 bg-[#2a2d2e] hover:bg-[#3c3c3c] text-white rounded border border-[#444]"
                 >
-                  -Y (0.5m)
+                  -Y (6")
                 </button>
                 <button
-                  onClick={() => handleNudge(0, 0, 0.5)}
+                  onClick={() => handleNudge(0, 0, NUDGE_FT)}
                   className="py-1 bg-[#2a2d2e] hover:bg-[#3c3c3c] text-white rounded border border-[#444]"
                 >
                   +Z (Up)
@@ -846,7 +849,7 @@ export const PropertiesPalette: React.FC = () => {
                   <td className="py-1 text-[#858585]">View Range — Cut Plane</td>
                   <td className="py-1 text-right text-[#38bdf8] font-mono">
                     {activeView
-                      ? `${formatLength(metersToFeet(activeView.viewRange.cut), displayUnit)} (${activeView.viewRange.cut.toFixed(2)}m)`
+                      ? formatLength(activeView.viewRange.cut, displayUnit)
                       : '—'}
                   </td>
                 </tr>

@@ -997,7 +997,7 @@ export const PlanViewport2D: React.FC = () => {
                         {`${Math.hypot(
                           currentPoint[0] - sketchStartPoint[0],
                           currentPoint[1] - sketchStartPoint[1]
-                        ).toFixed(2)}m (${(
+                        ).toFixed(2)}' (${(
                           Math.hypot(
                             currentPoint[0] - sketchStartPoint[0],
                             currentPoint[1] - sketchStartPoint[1]
@@ -1034,9 +1034,9 @@ export const PlanViewport2D: React.FC = () => {
                         stroke="#ffffff"
                         strokeWidth="0.08"
                       >
-                        {`${Math.abs(currentPoint[0] - sketchStartPoint[0]).toFixed(2)}m × ${Math.abs(
+                        {`${Math.abs(currentPoint[0] - sketchStartPoint[0]).toFixed(2)}' × ${Math.abs(
                           currentPoint[1] - sketchStartPoint[1]
-                        ).toFixed(2)}m`}
+                        ).toFixed(2)}'`}
                       </text>
                     </>
                   )}
@@ -1119,7 +1119,7 @@ export const PlanViewport2D: React.FC = () => {
                     stroke="#ffffff"
                     strokeWidth="0.08"
                   >
-                    {`${Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]).toFixed(2)}m (${(
+                    {`${Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]).toFixed(2)}' (${(
                       Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]) * 3.28084
                     ).toFixed(1)}')`}
                   </text>
@@ -1257,9 +1257,9 @@ export const PlanViewport2D: React.FC = () => {
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#094771]/95 text-white px-4 py-2 rounded-lg border border-[#38bdf8] text-xs shadow-xl flex items-center space-x-3 z-30 animate-fade-in">
           <span className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-ping" />
           <span className="font-medium">
-            {activeTool === 'WA' && (!firstPoint ? 'WALL TOOL (WA): Click 1st point for wall baseline' : `Click 2nd point to place wall (${Math.hypot((currentPoint?.[0] || 0) - firstPoint[0], (currentPoint?.[1] || 0) - firstPoint[1]).toFixed(2)}m)`)}
-            {activeTool === 'RF' && (!firstPoint ? 'ROOF TOOL (RF): Click 1st corner for roof footprint' : `Click opposite corner to place pitched roof (${Math.abs((currentPoint?.[0] || 0) - firstPoint[0]).toFixed(1)}m × ${Math.abs((currentPoint?.[1] || 0) - firstPoint[1]).toFixed(1)}m)`)}
-            {activeTool === 'SB' && (!firstPoint ? 'FLOOR SLAB TOOL (SB): Click 1st corner for floor slab' : `Click opposite corner to place floor slab (${Math.abs((currentPoint?.[0] || 0) - firstPoint[0]).toFixed(1)}m × ${Math.abs((currentPoint?.[1] || 0) - firstPoint[1]).toFixed(1)}m)`)}
+            {activeTool === 'WA' && (!firstPoint ? 'WALL TOOL (WA): Click 1st point for wall baseline' : `Click 2nd point to place wall (${Math.hypot((currentPoint?.[0] || 0) - firstPoint[0], (currentPoint?.[1] || 0) - firstPoint[1]).toFixed(2)}')`)}
+            {activeTool === 'RF' && (!firstPoint ? 'ROOF TOOL (RF): Click 1st corner for roof footprint' : `Click opposite corner to place pitched roof (${Math.abs((currentPoint?.[0] || 0) - firstPoint[0]).toFixed(1)}' × ${Math.abs((currentPoint?.[1] || 0) - firstPoint[1]).toFixed(1)}')`)}
+            {activeTool === 'SB' && (!firstPoint ? 'FLOOR SLAB TOOL (SB): Click 1st corner for floor slab' : `Click opposite corner to place floor slab (${Math.abs((currentPoint?.[0] || 0) - firstPoint[0]).toFixed(1)}' × ${Math.abs((currentPoint?.[1] || 0) - firstPoint[1]).toFixed(1)}')`)}
             {activeTool === 'DR' && 'DOOR TOOL (DR): Click near any wall to place door'}
             {activeTool === 'WN' && 'WINDOW TOOL (WN): Click near any wall to place window'}
           </span>

@@ -34,7 +34,19 @@ import zipfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend")))
 
+import ifcopenshell
+
 from ifc_service import BimModelManager, OVERLAY_SCHEMA_VERSION, CONTAINER_FORMAT_ID
+
+# Scenario dimensions in decimal feet (the internal unit since P2).
+FEET_SLAB_T = 0.8333    # 10" slab
+FEET_ROOF_T = 1.0       # 12" roof
+# Thicknesses the sample_building.ifc profile/layer sets actually carry. The
+# foreign file is metric, so the importer converts them into the internal feet.
+from units import metres_to_feet
+
+PROFILE_WALL_T = metres_to_feet(0.25)   # 0.25 m CMU
+PROFILE_SLAB_T = metres_to_feet(0.25)   # 0.25 m slab
 
 CHECKS = {"passed": 0, "failed": 0}
 
@@ -73,15 +85,15 @@ def load(path, m=None):
 def scenario():
     """A model that exercises every element class and both fidelity traps."""
     m = fresh()
-    wall = m.add_wall((0, 0, 0), (10, 10, 0), height=3.0, thickness=0.25, name="Diagonal Wall")
-    wall2 = m.add_wall((10, 10, 0), (10, 0, 0), height=3.0, thickness=0.25, name="Join Partner")
+    wall = m.add_wall((0, 0, 0), (10, 10, 0), height=10.0, thickness=0.8333, name="Diagonal Wall")
+    wall2 = m.add_wall((10, 10, 0), (10, 0, 0), height=10.0, thickness=0.8333, name="Join Partner")
     door = m.add_door(wall["guid"], offset_along_wall=4.0, width=0.95, height=2.13, name="D1")
     window = m.add_window(wall["guid"], offset_along_wall=7.0, width=1.4, height=1.5,
                           sill_height=0.9, name="W1")
     # concave polygon: a bounding-box reconstruction would turn this into a rectangle
     concave = [(0, 0), (7, 0), (7, 5), (3, 3), (0, 5)]
-    slab = m.add_slab(concave, thickness=0.25, elevation=0.0, name="Concave Slab")
-    roof = m.add_roof([(0, 0), (6, 0), (6, 4), (0, 4)], thickness=0.3, elevation=3.0,
+    slab = m.add_slab(concave, thickness=FEET_SLAB_T, elevation=0.0, name="Concave Slab")
+    roof = m.add_roof([(0, 0), (6, 0), (6, 4), (0, 4)], thickness=FEET_ROOF_T, elevation=10.0,
                       pitch_degrees=22.5, name="Pitched Roof")
     grid1 = m.add_grid("1", (-2.0, 0.0), (14.0, 0.0))
     grid2 = m.add_grid("A", (0.0, -2.0), (0.0, 11.0))
@@ -135,7 +147,7 @@ def main():
     slab = manager.element_meta[ids["slab"]["guid"]]
     check("concave slab polygon intact", [tuple(p) for p in slab["polygon"]] == ids["concave"],
           slab["polygon"])
-    check("slab thickness intact", slab["thickness"] == 0.25)
+    check("slab thickness intact", slab["thickness"] == FEET_SLAB_T)
     roof = manager.element_meta[ids["roof"]["guid"]]
     check("roof pitch intact", roof["pitch"] == 22.5, roof.get("pitch"))
     check("roof polygon intact", len(roof["polygon"]) == 4)
@@ -188,7 +200,7 @@ def main():
     ghost_guid = "0GhostGuid0000000000000"
     ov["elements"][ghost_guid] = {
         "ifc_class": "IfcWallStandardCase", "name": "Ghost Wall",
-        "start": [0, 0, 0], "end": [3, 0, 0], "height": 3.0, "thickness": 0.2,
+        "start": [0, 0, 0], "end": [3, 0, 0], "height": 10.0, "thickness": 0.6667,
     }
     members["parametric.json"] = json.dumps(ov).encode()
     buf = io.BytesIO()
@@ -268,7 +280,7 @@ def main():
         check("wall baselines are at their real locations, not all at the origin",
               len(spans) >= 3, sorted(spans))
         check("wall thickness read from the profile/layer set, not defaulted",
-              any(abs(w["thickness"] - 0.25) < 1e-6 for w in walls),
+              any(abs(w["thickness"] - PROFILE_WALL_T) < 1e-6 for w in walls),
               sorted({round(w["thickness"], 3) for w in walls}))
         check("import report classifies elements",
               len(rep_f["parametrized"]) + len(rep_f["geometry_only"]) == res_f["elements_count"],
@@ -285,53 +297,58 @@ def main():
               slabs and len({tuple(p) for p in slabs[0]["polygon"]}) >= 4,
               slabs and slabs[0].get("polygon"))
         check("foreign slab thickness read from profile depth, not the bbox",
-              slabs and abs(slabs[0]["thickness"] - 0.25) < 1e-6,
+              slabs and abs(slabs[0]["thickness"] - PROFILE_SLAB_T) < 1e-6,
               slabs and slabs[0].get("thickness"))
         check("foreign roof reconstructed with a pitch",
               any(x["ifc_class"] == "IfcRoof" and x.get("pitch") is not None
                   for x in foreign.element_meta.values()))
 
-    print("12. Section 11: the units declaration matches the IFC ...")
-    # The overlay and meta.json used to claim `decimal_feet` while every stored
-    # number was metres, so an exported model was mislabelled in both directions.
-    # This keeps the declaration and the IFC's own unit from drifting apart
-    # silently until the real conversion to decimal feet lands.
-    m_u, _ = scenario()
+    print("12. Section 11: internals are decimal feet, end to end ...")
+    # The spec (§11.3) locks decimal feet as the internal unit. Before P2 the
+    # engine was metric while the overlay *claimed* feet, so every stored number
+    # was mislabelled. Now the IFC itself carries a conversion-based foot unit and
+    # all stored lengths agree with it.
+    m_u, ids_u = scenario()
     p_u = save(m_u)
-    ov_u, _ = overlay_of(p_u)
+    ov_u, meta_u = overlay_of(p_u)
     declared = ov_u.get("units", {}).get("internal")
-    check("overlay declares an internal unit", bool(declared), ov_u.get("units"))
-    import ifcopenshell
     with zipfile.ZipFile(p_u) as z:
         tmp_ifc = os.path.join(os.path.dirname(p_u), "_units_probe.ifc")
         with open(tmp_ifc, "wb") as f:
             f.write(z.read("model.ifc"))
     probe = ifcopenshell.open(tmp_ifc)
-    # IFC serialises the SI length unit as `METRE` even though the API's `raw`
-    # argument is "METERS", so compare on the unit name's first four letters.
+    os.unlink(tmp_ifc)
+
+    from ifc_service import IFC_LENGTH_UNIT, UNIT_CONVERSION_SOURCE, INTERNAL_UNIT
+    from units import METRES_PER_FOOT
+
     length_unit = next(
-        (u for u in probe.by_type("IfcSIUnit")
+        (u for u in probe.by_type("IfcConversionBasedUnit")
          if "LENGTHUNIT" in str(getattr(u, "UnitType", ""))),
         None,
     )
-    os.unlink(tmp_ifc)
-    from ifc_service import IFC_LENGTH_UNIT, UNIT_CONVERSION_SOURCE, INTERNAL_UNIT
-    check("declared internal unit equals the engine's constant", declared == INTERNAL_UNIT, declared)
-    check("IFC model carries a length unit", length_unit is not None)
-    # "METRE" (IFC serialisation) and "METERS" (API argument) are the same unit;
-    # the metre stem is what has to agree, and it distinguishes metre from
-    # millimetre/centimetre because those carry an SI prefix.
-    check("IFC length unit matches the declared IFC length unit",
+    check("overlay declares decimal feet", declared == "decimal_feet", declared)
+    check("engine constant agrees", INTERNAL_UNIT == "decimal_feet", INTERNAL_UNIT)
+    check("IFC length unit is a conversion-based foot", length_unit is not None
+          and str(length_unit.Name).lower().startswith("foot"),
+          length_unit and length_unit.Name)
+    check("foot conversion factor is exactly 0.3048 m",
           length_unit is not None
-          and str(length_unit.Name).upper().startswith("MET")
-          and str(getattr(length_unit, "Prefix", "") or "") == "",
-          f"{length_unit.Name!r}(prefix={getattr(length_unit, 'Prefix', None)!r}) vs {IFC_LENGTH_UNIT!r}")
-    check("no unit conversion is claimed while none is applied",
+          and abs(float(length_unit.ConversionFactor.ValueComponent.wrappedValue)
+                  - METRES_PER_FOOT) < 1e-12,
+          length_unit and length_unit.ConversionFactor.ValueComponent.wrappedValue)
+    check("no unit conversion is applied on top (overlay is already feet)",
           UNIT_CONVERSION_SOURCE == "none", UNIT_CONVERSION_SOURCE)
-    check("overlay and meta agree on units",
-          ov_u.get("units", {}).get("ifc_length") == IFC_LENGTH_UNIT)
-    check("meta.json no longer contradicts the overlay",
-          json.loads(zipfile.ZipFile(p_u).read("meta.json"))["internal_units"] == INTERNAL_UNIT)
+
+    # A stored dimension must be a foot value, not a metre value: a 10 ft wall is
+    # 10.0, not 3.048. This is what "units labels match internals" means.
+    wall_rec = ov_u["elements"][ids_u["wall"]["guid"]]
+    check("a 10 ft wall is stored as 10, not 3.05 (feet, not metres)",
+          abs(float(wall_rec["height"]) - 10.0) < 1e-9, wall_rec.get("height"))
+    check("wall baseline length matches its feet coordinates",
+          abs(float(wall_rec["length"]) - 14.1421) < 1e-3, wall_rec.get("length"))
+    check("meta.json declares the same unit",
+          json.loads(zipfile.ZipFile(p_u).read("meta.json"))["internal_units"] == "decimal_feet")
 
     print(f"\nRESULT: {CHECKS['passed']} passed, {CHECKS['failed']} failed")
     if CHECKS["failed"]:

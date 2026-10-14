@@ -39,9 +39,9 @@ bus = CommandBusEngine(mgr)
 # ---------------------------------------------------- 1. L-corner, butt (default)
 print("1. L-corner butt join (default): wall A along +X, wall B along +Y, shared corner")
 ra = bus.execute_transaction([CommandRequest(command="WallCreate", params={
-    "start": [0.0, 0.0, 0.0], "end": [10.0, 0.0, 0.0], "height": 3.0, "thickness": 0.3})])
+    "start": [0.0, 0.0, 0.0], "end": [10.0, 0.0, 0.0], "height": 10.0, "thickness": 0.3})])
 rb = bus.execute_transaction([CommandRequest(command="WallCreate", params={
-    "start": [0.0, 0.0, 0.0], "end": [0.0, 8.0, 0.0], "height": 3.0, "thickness": 0.3})])
+    "start": [0.0, 0.0, 0.0], "end": [0.0, 8.0, 0.0], "height": 10.0, "thickness": 0.3})])
 ga = ra["results"][0]["result"]["guid"]
 gb = rb["results"][0]["result"]["guid"]
 fa = mgr.element_meta[ga]["footprint"]
@@ -89,7 +89,7 @@ check("disallow join: B untrimmed (full area)", abs(poly_area(fb) - 8.0 * 0.3) <
 # ---------------------------------------------------------- 5. T-junction
 print("5. T-junction: wall C ends on wall A's baseline")
 rc = bus.execute_transaction([CommandRequest(command="WallCreate", params={
-    "start": [5.0, 0.0, 0.0], "end": [5.0, 6.0, 0.0], "height": 3.0, "thickness": 0.3})])
+    "start": [5.0, 0.0, 0.0], "end": [5.0, 6.0, 0.0], "height": 10.0, "thickness": 0.3})])
 gc = rc["results"][0]["result"]["guid"]
 fc = mgr.element_meta[gc]["footprint"]
 check("tee: C trimmed back to A's face", abs(poly_area(fc) - (6.0 - 0.15) * 0.3) < 1e-6, f"{poly_area(fc):.4f}")
