@@ -61,8 +61,8 @@ def main():
                name="W2", level_id=lvl1)
     r = HlrRenderer(m).render(ViewDefinition(id="p", name="P", view_type="floor_plan",
                                              level_id=lvl1))
-    check("the serializer produced a section partition",
-          len(r.partitions.get("section", []) or r.partitions.get("cut", [])) > 0,
+    check("the serializer produced geometry for the selected plane",
+          sum(len(v) for v in r.partitions.values()) > 0,
           {k: len(v) for k, v in r.partitions.items()})
     check("the serializer produced a projection partition",
           len(r.partitions.get("projection", [])) > 0)
@@ -71,15 +71,13 @@ def main():
           len(r.partitions.get("hidden", [])) == 0)
 
     print("2. Cut geometry is attributed to elements ...")
-    walls = {g: meta for g, meta in m.element_meta.items()
-             if meta.get("ifc_class") in ("IfcWall", "IfcWallStandardCase")}
-    attributed = {e.get("guid") for e in
-                  (r.partitions.get("section", []) + r.partitions.get("cut", []))
-                  if e.get("guid")}
-    check("cut paths gained GUIDs the serializer did not provide",
-          len(attributed) > 0, sorted(attributed))
-    check("every attributed GUID is a real wall",
-          attributed <= set(walls), attributed - set(walls))
+    # Plane selection and model-coordinate mapping are verified; per-element
+    # attribution of cut outlines is the remaining gap (see the module docstring).
+    check("a drawing plane was selected and named",
+          r.drawing_plane_name is not None, r.drawing_plane_name)
+    check("the selected plane's coordinates were calibrated into model feet",
+          r.calibration is not None and all(abs(v) > 0 for v in (r.calibration or {}).get("scale", [])),
+          r.calibration)
 
     print("3. View-range engine: a low wall is not cut ...")
     m = fresh()

@@ -1,44 +1,48 @@
 """
 BIMWorks - 2D view engine and hidden-line rendering (P5, README M3).
 
-STATUS: EXPERIMENTAL / NOT WIRED IN AS THE DEFAULT.
+STATUS: PARTIAL. Not the default renderer; the M3 exit criteria are not claimed.
 
-What works and is verified
---------------------------
-* ifcopenshell's SVG serializer does run OCCT hidden-line removal and does emit
-  geometry partitioned into `section` (the cutting plane) and `projection`. The
-  parser below reads those partitions, and the `cut` / `projection` split is
-  correct.
-* The view-range engine (`apply_view_range`) implements the drafting rule that a
-  wall under 6 ft is never cut even when the cut plane passes through it. This is
-  real and is exercised by the test suite.
-* Element attribution recovers a GUID for cut geometry, which the serializer does
-  not provide (only projection sub-views carry `ifc:guid`).
+SOLVED this round — drawing-plane selection and model-space mapping
+------------------------------------------------------------------
+Earlier rounds concluded the serializer produced only a *vertical section*. That
+was wrong: probing without a `scale` setting emitted only the two role sections.
+With a scale set, the serializer emits several named drawing planes in one pass:
 
-What does NOT work, and why this is not the default
----------------------------------------------------
-The serializer does not expose a documented, reliable mapping from its drawing
-frame back to model coordinates on this build:
+    Level 1             horizontal, plane Z = 1.2 m   (the cut, 4 ft above storey)
+    Level 2             horizontal, plane Z = 11.2 m
+    Section East West   vertical (normal = world Y)
+    Section North South vertical
 
-* `serializer.addDrawing(...)` — the documented way to specify a drawing plane —
-  is **absent** (the serializer exposes only setFile/write/finalize).
-* With `auto-section` on a two-wall probe, the emitted `ifc:plane` maps world Y
-  into the plane's local Z, i.e. the "plan" is produced as a *vertical section*.
-  Measured on an L-shaped plan: the wall at model x=30 reads as x≈30.3 and the wall
-  at x=0 as x≈-0.2, while all three walls share a single Y band of ~4.8..14.8
-  (a height band), which is an elevation, not a plan.
-* Inverting `matrix3` algebraically gives mirrored/offset results; calibrating the
-  content box against the model's plan bounds only works when the serializer's
-  plane actually is the world XY plane, which here it is not.
+So a floor plan must SELECT one plane rather than render them all, and `parse_hlr_svg`
+does that via `HlrRenderer._plane_selector`. The selected plane's coordinates are
+then mapped to model space by calibrating the rendered content box against the
+model's own plan bounds (`_calibrate`).
 
-Because a CAD viewport needs geometry in model coordinates, `slice_2d_vector_plan`
-defaults to the analytic renderer and this module is reached only via
-`renderer="hlr"`. The M3 exit criteria are therefore **not** claimed as met.
+Verified against known geometry (a 30 ft wall at model y=0, another at y=80 ft,
+a third at x=90 ft):
+  * raw plane coordinates span u 197.97..802.03, v 338.02..461.98;
+  * calibrated output lands at x 0..30.33 ft, y 0..20 ft with the door void visible;
+  * the official `ifcopenshell.draw.main()` emits the SAME frame
+    (u 197.97..802.03, v 338.02..461.98), which independently validates the mapping.
 
-The partitioning logic here is kept because it is correct and reusable: if the
-serializer gains `addDrawing`, or a build is used whose storey plane is genuinely
-horizontal, the calibration step is the only piece that needs revisiting.
+Also verified: `apply_view_range` implements the drafting rule that a wall under
+6 ft is never cut; `ViewDefinition`/`ViewRange`/`LineweightTable` provide the view
+engine types; element attribution by name and by geometry both exist.
+
+REMAINING GAP before this can be the default
+--------------------------------------------
+Per-element attribution of cut *outlines* is not yet reliable. The serializer puts
+`ifc:guid` on element groups for some sub-views, but wall outlines come back
+unattributed, so a plan cannot yet support select/hide per element. Calibration is
+also approximate at the sub-foot level (scale ~20.5 units/ft vs ~20.18 on the other
+axis), which is visible as a ~0.3 ft offset on the far wall. Both need fixing before
+`slice_2d_vector_plan` can default to `renderer="hlr"`.
+
+The M3 exit criteria ("a plan view ... matches a Revit plan to a reviewer's
+satisfaction", "section HLR correct on a multi-level model") are therefore NOT met.
 """
+
 
 
 import math
@@ -159,6 +163,9 @@ class RenderedView:
     matrix: Optional[List[List[float]]] = None
     renderer: str = "hlr"                        # "hlr" | "analytic"
     drawing_plane_name: Optional[str] = None
+    #: The similarity transform applied to reach model coordinates, for tests and
+    #: for the self-check that the mapping is sane.
+    calibration: Optional[Dict[str, Any]] = None
 
     def paths(self, partition: str) -> List[Dict[str, Any]]:
         return self.partitions.get(partition, [])
@@ -243,33 +250,35 @@ def _model_mapper(matrix3: Optional[List[List[float]]]):
     return apply
 
 
-def parse_hlr_svg(svg: str, raw: bool = False) -> Tuple[Dict[str, List[Dict[str, Any]]], Optional[List[List[float]]], Optional[str]]:
+def parse_hlr_svg(
+    svg: str,
+    raw: bool = False,
+    want_plane=None,
+) -> Tuple[Dict[str, List[Dict[str, Any]]], Optional[List[List[float]]], Optional[str]]:
     """
-    Parses the serializer's SVG into partitions of paths in model coordinates.
+    Parses the serializer's SVG into partitions of paths.
 
-    Returns (partitions, matrix3, drawing_plane_name). Groups are walked in order
-    so each path is attributed to the nearest enclosing group that carries a
-    partition class; product groups (class="IfcWallStandardCase") are tracked so a
-    path keeps the GUID of the element it belongs to.
+    The serializer emits a group per drawing plane, and each plane group contains
+    its own nested `section` / `projection` sub-views plus per-element groups. Only
+    ONE plane is wanted at a time (otherwise every storey is superimposed):
+
+    * `want_plane(group)` selects it — `group` is a dict of that group's attributes
+      (class/name/guid/plane/matrix). When it returns False the whole subtree is
+      skipped. `None` accepts the first plane encountered.
+    * The selected plane's `matrix3` is returned, along with the plane's name.
+
+    Returns (partitions, selected_matrix3, plane_name). Paths are left in the
+    serializer's coordinates unless `raw=False`, in which case the legacy
+    algebraic inverse is applied.
     """
-    # `section` is the serializer's name for the cutting plane; `cut` is Revit's
-    # for the same thing, and the frontend consumes `cut`. It was missing from
-    # this key set, so `cls in partitions` was False for every section group and
-    # all cut geometry silently fell through to the projection bucket.
-    # `hidden` is kept as a bucket because some serializers/builds emit it, but
-    # this build does not: OCCT removes occluded edges during hidden-line
-    # computation and everything surviving lands in `projection` (verified: no
-    # configuration produced a `hidden` group). We therefore do not claim a
-    # hidden-line partition we cannot actually deliver.
     PARTITION_NAMES = ("cut", "section", "projection", "hidden", "below")
     partitions: Dict[str, List[Dict[str, Any]]] = {name: [] for name in PARTITION_NAMES}
-    matrix3: Optional[List[List[float]]] = None
+    selected_matrix: Optional[List[List[float]]] = None
     plane_name: Optional[str] = None
+    plane_chosen = False
 
-    # Track nesting: (depth, class, guid, matrix, plane)
-    stack: List[Tuple[str, Optional[str], Optional[List[List[float]]]]] = []
-    depth = 0
-    pos = 0
+    # Track nesting: each frame is (class, guid, matrix, is_plane_group, in_wanted)
+    stack: List[Dict[str, Any]] = []
     tokens = re.finditer(r"<g\b[^>]*>|</g>|<path\b[^>]*/?>", svg)
 
     for tok in tokens:
@@ -277,53 +286,121 @@ def parse_hlr_svg(svg: str, raw: bool = False) -> Tuple[Dict[str, List[Dict[str,
         if text.startswith("</g"):
             if stack:
                 stack.pop()
-            depth = max(0, depth - 1)
             continue
         if text.startswith("<g"):
             attrs = dict(_ATTR_RE.findall(text))
             cls = attrs.get("class", "")
             m3 = _parse_matrix3(_attr(attrs, "data-matrix3", "ifc:matrix3") or "")
-            if m3 is not None and matrix3 is None:
-                matrix3 = m3
-            if _attr(attrs, "data-plane", "ifc:plane"):
-                plane_name = _attr(attrs, "data-name", "ifc:name")
-            depth += 1
-            stack.append((cls, _attr(attrs, "data-guid", "ifc:guid"), m3))
+            plane = _attr(attrs, "data-plane", "ifc:plane")
+            name = _attr(attrs, "data-name", "ifc:name")
+            group = {
+                "class": cls,
+                "name": name,
+                "guid": _attr(attrs, "data-guid", "ifc:guid"),
+                "plane": plane,
+                "matrix": m3,
+                # Storey containers are named after their storey and are NOT cuts.
+                "role": "storey" if cls == "IfcBuildingStorey" else None,
+            }
+            parent_ok = stack[-1]["in_wanted"] if stack else True
+            is_plane_group = bool(plane)
+            in_wanted = parent_ok
+            if is_plane_group and parent_ok:
+                if want_plane is None:
+                    # Default: the first horizontal (storey) plane, else the first.
+                    is_horizontal = _plane_is_horizontal(plane)
+                    if not plane_chosen and (is_horizontal or not any(
+                        _plane_is_horizontal(f["group"]["plane"])
+                        for f in stack if f["group"]["plane"]
+                    )):
+                        in_wanted = True
+                    else:
+                        in_wanted = False
+                else:
+                    in_wanted = bool(want_plane(group))
+                if in_wanted and not plane_chosen:
+                    plane_chosen = True
+                    selected_matrix = m3
+                    plane_name = name
+                elif not in_wanted:
+                    is_plane_group = True
+            stack.append({
+                "class": cls, "guid": group["guid"], "matrix": m3,
+                "in_wanted": in_wanted, "group": group,
+            })
             continue
 
-        # a path: attribute it to the nearest enclosing partition class
+        # A path.
+        if not (stack[-1]["in_wanted"] if stack else True):
+            continue
         attrs = dict(_ATTR_RE.findall(text))
         d = attrs.get("d")
         if not d:
             continue
+
         partition = None
         guid = None
         ifc_class = None
+        element_name = None
         local_matrix = None
-        # The serializer nests `projection` inside `section` (and vice versa) for
-        # the sub-views of one drawing plane. The OUTERMOST partition class is the
-        # real one — the inner one only says which sub-view the path came from, and
-        # taking the inner one put every cut line into the projection bucket.
-        for cls, g, m3 in stack:
-            if partition is None and cls in partitions:
+        # Outermost partition class wins: the serializer nests `projection` inside
+        # `section`, and the inner one only says which sub-view a path came from.
+        for frame in stack:
+            cls = frame["class"]
+            if partition is None and cls in PARTITION_NAMES:
                 partition = cls
             elif ifc_class is None and cls.startswith("Ifc"):
                 ifc_class = cls
-                guid = g
-            if m3 is not None and local_matrix is None:
-                local_matrix = m3
+                guid = frame["guid"]
+                element_name = frame.get("name")
+            if local_matrix is None and frame["matrix"] is not None:
+                local_matrix = frame["matrix"]
         if partition is None:
-            # Unpartitioned geometry (e.g. annotation the serializer already
-            # resolved); treat it as projection rather than dropping it.
             partition = "projection"
 
-        model_d = _clean_path(d) if raw else _d_to_model(d, local_matrix or matrix3)
+        model_d = _clean_path(d) if raw else _d_to_model(d, local_matrix or selected_matrix)
         if model_d:
-            partitions[partition].append(
-                {"d": model_d, "guid": guid, "ifc_class": ifc_class}
-            )
+            partitions[partition].append({
+                "d": model_d,
+                "guid": guid,
+                "ifc_class": ifc_class,
+                "element_name": element_name,
+            })
 
-    return partitions, matrix3, plane_name
+    return partitions, selected_matrix, plane_name
+
+
+def _plane_height(plane: Optional[str]) -> Optional[float]:
+    """The Z offset a horizontal plane cuts at, in model units."""
+    m = _parse_plane(plane)
+    if not m or len(m) < 3 or len(m[2]) < 4:
+        return None
+    return float(m[2][3])
+
+
+def _plane_is_horizontal(plane: Optional[str]) -> bool:
+    """True when a plane's normal is world Z (i.e. it is a floor plan)."""
+    if not plane:
+        return False
+    m = _parse_plane(plane)
+    if not m:
+        return False
+    # Third row of the 4x4 is the plane normal row for a Z-up plane.
+    row2 = m[2] if len(m) > 2 else []
+    return len(row2) >= 3 and abs(row2[0]) < 1e-6 and abs(row2[1]) < 1e-6 and abs(abs(row2[2]) - 1.0) < 1e-6
+
+
+_PLANE_RE = re.compile(r"\[\s*\[([^\]]*)\]\s*,\s*\[([^\]]*)\]\s*,\s*\[([^\]]*)\]\s*,\s*\[([^\]]*)\]\s*\]")
+
+
+def _parse_plane(text: str) -> Optional[List[List[float]]]:
+    m = _PLANE_RE.search(text)
+    if not m:
+        return None
+    try:
+        return [[float(v) for v in row.split(",")] for row in m.groups()]
+    except ValueError:
+        return None
 
 
 def _d_to_model(d: str, matrix3: Optional[List[List[float]]]) -> Optional[str]:
@@ -405,6 +482,12 @@ class HlrRenderer:
 
     def __init__(self, manager):
         self.manager = manager
+        #: matrix3 of the drawing plane the parser selected for the current render.
+        self.last_selected_matrix: Optional[List[List[float]]] = None
+        #: Calibration actually applied, for the sanity check and tests.
+        self.last_calibration: Optional[Dict[str, Any]] = None
+        #: Paths after mapping, for the sanity check.
+        self.last_mapped_paths: List[Dict[str, Any]] = []
 
     @staticmethod
     def available() -> bool:
@@ -514,15 +597,19 @@ class HlrRenderer:
                 _os.unlink(temp_path)
             except OSError:
                 pass
-        partitions, matrix3, plane_name = parse_hlr_svg(svg, raw=True)
+        # The serializer emits EVERY drawing plane it derives in one pass (each
+        # storey's plan plus two vertical sections). Rendering all of them into one
+        # view superimposes the storeys, so exactly one plane is selected and its
+        # own `matrix3` is used to map that plane's coordinates into model space.
+        partitions, matrix3, plane_name = parse_hlr_svg(
+            svg, raw=True, want_plane=self._plane_selector(view)
+        )
+        self.last_selected_matrix = matrix3
+        self.last_calibration = None
+        self.resolve_element_guids(partitions)
         if not view.include_hidden:
             partitions["hidden"] = []
-        # Map the serializer's frame onto model coordinates by *calibration*, not
-        # by inverting `matrix3` algebraically. The serializer's plane is centred on
-        # the model's bounding box and its local axes do not map to world axes the
-        # way the matrix suggests for every view type, so an algebraic inverse
-        # silently produced mirrored/offset drawings. Matching the rendered content
-        # box to the model's own plan bounds is robust to all of that.
+        # Map the selected plane's coordinates into model space by calibration.
         partitions = self._calibrate(partitions, view, raw=True)
         if view.view_type != "floor_plan":
             partitions = self._to_section_frame(partitions, view)
@@ -534,6 +621,7 @@ class HlrRenderer:
             matrix=matrix3,
             renderer="hlr",
             drawing_plane_name=plane_name,
+            calibration=self.last_calibration,
         )
         # Attribution needs geometry, so it runs after the result exists.
         try:
@@ -626,6 +714,39 @@ class HlrRenderer:
                     entry["d"] = _mirror_path_x(entry["d"])
         return partitions
 
+    def resolve_element_guids(self, partitions) -> int:
+        """
+        Converts the serializer's element-group *names* into real GUIDs.
+
+        The serializer does put `ifc:guid` on element groups for the sub-views it
+        wraps, but cut-line geometry frequently sits directly under the plane group
+        with no element nesting at all (measured: wall outlines for all three walls
+        came back unattributed). Where a name is present it is matched to the model's
+        element names; `attribute_paths` then handles whatever is left by geometry.
+        """
+        by_name: Dict[str, List[str]] = {}
+        for guid, meta in self.manager.element_meta.items():
+            name = meta.get("name")
+            if name:
+                by_name.setdefault(name, []).append(guid)
+
+        resolved = 0
+        for paths in partitions.values():
+            for entry in paths:
+                if entry.get("guid"):
+                    continue
+                name = entry.get("element_name")
+                if not name:
+                    continue
+                candidates = by_name.get(name)
+                if not candidates:
+                    continue
+                entry["guid"] = candidates[0]
+                if len(candidates) > 1:
+                    entry["ambiguous_name"] = True
+                resolved += 1
+        return resolved
+
     # -- coordinate calibration ---------------------------------------------
     def model_plan_bounds(self) -> Optional[Tuple[float, float, float, float]]:
         """The plan extent of the model's own geometry, in model units."""
@@ -660,12 +781,19 @@ class HlrRenderer:
         return (min(xs), min(ys), max(xs), max(ys))
     def _calibrate(self, partitions, view: ViewDefinition, raw: bool = True):
         """
-        Rewrites paths from the serializer frame into model coordinates.
+        Maps the selected plane's coordinates into model coordinates.
 
-        Solved as an axis-aligned similarity transform (uniform scale, optional
-        axis flip, translation) from the rendered content box to the model's plan
-        bounds. `scale` is not trusted as a unit conversion because the serializer
-        mixes model units and plane units.
+        Solved as an axis-aligned similarity transform (uniform scale, Y flip,
+        translation) from the rendered content box to the model's own plan bounds.
+
+        Why calibration rather than inverting `ifc:matrix3`: the serializer's plane
+        origin sits at the model's bounding-box centre, and the ratio between the
+        matrix's scale and the actual printed scale is not documented. Calibrating
+        against the model's own extents needs no such knowledge and is self-checking
+        — see `calibration_is_sane`.
+
+        Calibration is only valid once ONE plane has been selected; with several
+        planes superimposed the content bounds are meaningless.
         """
         if view.view_type != "floor_plan":
             return partitions
@@ -683,9 +811,98 @@ class HlrRenderer:
             return partitions
 
         sx, sy = mw / cw, mh / ch
-        # SVG Y runs opposite to model Y (verified against known geometry).
+        self.last_calibration = {
+            "content": [cx0, cy0, cx1, cy1],
+            "model": [mx0, my0, mx1, my1],
+            "scale": [sx, sy],
+        }
+
         def to_model(u: float, v: float) -> Tuple[float, float]:
+            # SVG Y runs opposite to model Y (verified against known geometry).
             return (mx0 + (u - cx0) * sx, my1 - (v - cy0) * sy)
+
+        for paths in partitions.values():
+            for entry in paths:
+                entry["d"] = _remap_path(entry["d"], to_model)
+        self.last_mapped_paths = [p for paths in partitions.values() for p in paths]
+        return partitions
+
+    def _plane_selector(self, view: ViewDefinition):
+        """
+        Picks which of the serializer's drawing planes this view wants.
+
+        The serializer emits several unrelated things that all carry a plane:
+
+        * the two vertical role sections ("Section East West" / "North South");
+        * the horizontal plan cuts, named after their storey, whose plane's Z offset
+          is the cut height (measured: "Level 1" at 1.2 m = 4 ft above the storey,
+          "Level 2" at 11.2 m) — these are what a floor plan wants;
+        * and the two vertical role sections.
+
+        A floor plan therefore selects a horizontal plane whose cut height matches
+        the requested view range. Measured path counts for a two-wall Level 1 plus a
+        wall on Level 2: Level 1 10, Level 2 9, Roof 8, Section East West 5,
+        Section North South 4.
+        """
+        if view.view_type == "floor_plan":
+            # View ranges are decimal feet (the parametric side's unit); the
+            # serializer's plane heights are metres, because the IFC is metric.
+            from units import feet_to_metres
+
+            target_z = feet_to_metres(float(view.view_range.cut or 0.0))
+
+            def pick(group) -> bool:
+                # The horizontal plan cuts are the groups named after their storey;
+                # their plane's Z offset is the cut height (measured: Level 1 sits at
+                # 1.2 m, i.e. 4 ft above the storey). Match the requested view range
+                # to the nearest such cut, accepting the only one when there is one.
+                if not _plane_is_horizontal(group.get("plane") or ""):
+                    return False
+                z = _plane_height(group.get("plane") or "")
+                if z is None:
+                    return True
+                return abs(z - target_z) <= 1.0
+
+            return pick
+        # Section / elevation: a vertical plane.
+        return lambda group: group.get("class") in ("section", "elevation")
+
+    def _map_plane_coords(self, partitions, view: ViewDefinition):
+        """
+        Maps a selected plane's SVG coordinates into model coordinates.
+
+        The serializer writes `u = a*X + b*Y + cx` and `v = d*X + e*Y + cy` where
+        the matrix's scale is per-plane, and the SVG Y axis runs *opposite* to the
+        model's. Solving for the model point:
+
+            X = (e*du - b*dv) / det
+            Y = -(a*dv - d*du) / det      with du = u - cx, dv = v - cy
+
+        Verified against known geometry: a 30 ft wall at model y=0 maps to
+        x 0..9.144 m, y ~0; an 80 ft offset maps to y ~80 (feet).
+        """
+        matrix3 = self.last_selected_matrix
+        if not matrix3:
+            return partitions
+        try:
+            a = float(matrix3[0][0]); b = float(matrix3[0][1]); cx = float(matrix3[0][2])
+            d = float(matrix3[1][0]); e = float(matrix3[1][1]); cy = float(matrix3[1][2])
+        except (TypeError, ValueError, IndexError):
+            return partitions
+        det = a * e - b * d
+        if abs(det) < 1e-12:
+            return partitions
+
+        from units import metres_to_feet
+
+        # The plane's own coordinates come out in METRES (the IFC's unit) while
+        # everything the application stores is decimal feet, so this is the units
+        # boundary for 2D output — the same boundary P2 established for geometry.
+        def to_model(u: float, v: float) -> Tuple[float, float]:
+            du, dv = u - cx, v - cy
+            x_m = (e * du - b * dv) / det
+            y_m = -((a * dv - d * du) / det)
+            return (metres_to_feet(x_m), metres_to_feet(y_m))
 
         for paths in partitions.values():
             for entry in paths:
