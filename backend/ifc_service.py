@@ -3553,6 +3553,70 @@ class BimModelManager:
         # Annotation for every view type, not just plans.
         return self._annotate_view(contract, cut_elevation, view_type)
 
+    def _plan_rotation(self) -> float:
+        """
+        The angle to rotate a plan by so the building's own axes are the drawing axes.
+
+        A plan is drawn in the building's frame, not the world's. A real Revit export
+        often has a rotated site/building placement (this house is 17 degrees off), so
+        rendering world coordinates directly gives a skewed drawing. The rotation is
+        taken from the building placement's x-axis and applied to the finished linework,
+        which keeps the projector in world coordinates and only orients the output.
+        """
+        import math
+
+        ref = self.building or self.site
+        placement = getattr(ref, "ObjectPlacement", None) if ref else None
+        if placement is None:
+            return 0.0
+        try:
+            import ifcopenshell.util.placement as _plc
+
+            matrix = _plc.get_local_placement(placement)
+            x_axis = (float(matrix[0][0]), float(matrix[1][0]))
+        except Exception:
+            return 0.0
+        if abs(x_axis[0]) < 1e-9 and abs(x_axis[1]) < 1e-9:
+            return 0.0
+        return math.atan2(x_axis[1], x_axis[0])
+
+    def _orient_plan(self, contract: Dict[str, Any], angle: float) -> Dict[str, Any]:
+        """
+        Rotates a plan's linework so the building is axis-aligned.
+
+        Applied to the whole contract after rendering, so the cut, projection and hidden
+        partitions cannot drift apart.
+        """
+        import math
+        import re as _re
+
+        if abs(angle) < 1e-9:
+            contract["plan_rotation"] = 0.0
+            return contract
+        cos_a, sin_a = math.cos(-angle), math.sin(-angle)
+
+        def rotate_path(d: str) -> str:
+            out = []
+            for cmd, args in _re.findall(r"([MLZ])([^MLZ]*)", d):
+                if cmd == "Z":
+                    out.append("Z")
+                    continue
+                nums = [float(v) for v in _re.findall(r"-?\d+\.?\d*", args)]
+                pts = []
+                for i in range(0, len(nums) - 1, 2):
+                    x, y = nums[i], nums[i + 1]
+                    pts.append((x * cos_a - y * sin_a, x * sin_a + y * cos_a))
+                if pts:
+                    out.append(cmd + " " + " L ".join(f"{x:.4f} {y:.4f}" for x, y in pts))
+            return " ".join(out)
+
+        for key in ("cut_paths", "projection_paths", "hidden_paths"):
+            for entry in contract.get(key, []) or []:
+                if entry.get("d"):
+                    entry["d"] = rotate_path(entry["d"])
+        contract["plan_rotation"] = angle
+        return contract
+
     def _resolve_plan_level(self, level_id: Optional[str],
                             cut_elevation: Optional[float]) -> Optional[str]:
         """
@@ -3664,6 +3728,9 @@ class BimModelManager:
         contract["level_id"] = resolved_level
         contract["level_name"] = (level_meta or {}).get("name")
         contract["level_elevation"] = base
+        # Orient the plan into the building's frame before measuring anything, so the
+        # drawing is axis-aligned and its dimensions are square to the building.
+        contract = self._orient_plan(contract, self._plan_rotation())
         # Overall dimensions come from the drawing's own extents (see the method).
         contract["dimensions"] = self._overall_dimensions(contract)
         return contract
