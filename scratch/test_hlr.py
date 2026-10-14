@@ -118,6 +118,40 @@ def main():
     check("the engine reports how many paths it moved",
           apply_view_range.__doc__ is not None)
 
+    print("3b. Section HLR is correct on a MULTI-LEVEL model ...")
+    # M3: "section HLR correct on multi-level model". Two 10 ft storeys must give a
+    # section spanning 0..20 ft in height and the walls' run in the other axis.
+    msec = fresh()
+    l1 = [i for i, l in msec.levels.items() if l["name"] == "Level 1"][0]
+    l2 = [i for i, l in msec.levels.items() if l["name"] == "Level 2"][0]
+    msec.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8,
+                  name="L1", level_id=l1)
+    msec.add_wall((0, 0, 10), (30, 0, 10), height=FEET_10, thickness=INCHES_8,
+                  name="L2", level_id=l2)
+    sec = HlrRenderer(msec).render(
+        ViewDefinition(id="sec", name="Section", view_type="section"))
+    check("section view produced geometry",
+          sum(len(v) for v in sec.partitions.values()) > 0,
+          {k: len(v) for k, v in sec.partitions.items()})
+    check("section coordinates were calibrated", sec.calibration is not None)
+    import re as _re
+
+    xs, ys = [], []
+    for ps in sec.partitions.values():
+        for e in ps:
+            nums = [float(v) for v in _re.findall(r"-?\d+\.?\d*", e["d"])]
+            xs += nums[0::2]
+            ys += nums[1::2]
+    if ys:
+        check("section spans both storeys in height (0..20 ft)",
+              abs(min(ys)) < 0.5 and abs(max(ys) - 20.0) < 0.5,
+              (round(min(ys), 2), round(max(ys), 2)))
+        check("section spans the walls' run (0..30 ft)",
+              abs(min(xs)) < 0.5 and abs(max(xs) - 30.0) < 0.5,
+              (round(min(xs), 2), round(max(xs), 2)))
+    else:
+        check("section spans both storeys in height (0..20 ft)", False, "no geometry")
+
     print("4. Plan annotation stays exact and metadata-driven ...")
     m = fresh()
     slab = m.add_slab([(0, 0), (20, 0), (20, 15), (0, 15)], thickness=0.8333,

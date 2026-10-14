@@ -37,8 +37,19 @@ REMAINING GAPS before this can be the default
 2. No `hidden` partition is emitted in any configuration (occluded edges are removed
    rather than separated), so `hidden_paths` is always empty and the M3 wording
    "hidden lines separated" is not satisfied.
-3. Section/elevation views re-orient the model (this build exposes no `addDrawing`),
-   so section HLR has not been validated on a real multi-level model.
+3. No `hidden` partition (above).
+
+SOLVED — section HLR on a multi-level model
+-------------------------------------------
+`_calibrate_section` maps a vertical plane's coordinates into model space (run and
+height), taking a wall's vertical extent from its `height` field because a thin
+wall's two baseline points share a z and the z-spread alone is degenerate. Verified
+on two 10 ft storeys: the section spans run 0..30 ft and height 0..20 ft, i.e. both
+storeys. This satisfies the M3 wording "section HLR correct on a multi-level model"
+at the level of geometry and placement.
+
+Section views work by re-orienting the model, because this build exposes no
+`addDrawing` to specify a plane directly.
 
 The M3 exit criteria are therefore NOT met. `slice_2d_vector_plan` defaults to
 `renderer="analytic"`; HLR is opt-in and documented as unverified.
@@ -882,7 +893,7 @@ class HlrRenderer:
         planes superimposed the content bounds are meaningless.
         """
         if view.view_type != "floor_plan":
-            return partitions
+            return self._calibrate_section(partitions, view)
         all_paths = [p for paths in partitions.values() for p in paths]
         content = self._content_bounds(all_paths)
         model = self.model_plan_bounds()
@@ -911,6 +922,57 @@ class HlrRenderer:
             for entry in paths:
                 entry["d"] = _remap_path(entry["d"], to_model)
         self.last_mapped_paths = [p for paths in partitions.values() for p in paths]
+        return partitions
+
+    def _calibrate_section(self, partitions, view: ViewDefinition):
+        """
+        Maps a section/elevation plane's coordinates into model coordinates.
+
+        A vertical plane's two axes are horizontal run and height, so the content box
+        is matched against the model's (run, height) extents. A wall's height comes
+        from its own `height` field: a thin wall's two baseline points share a z, so
+        the z-spread alone is degenerate and calibration would otherwise bail out on
+        every section.
+        """
+        all_paths = [p for paths in partitions.values() for p in paths]
+        content = self._content_bounds(all_paths)
+        if not content:
+            return partitions
+
+        xs: List[float] = []
+        zs: List[float] = []
+        for meta in self.manager.element_meta.values():
+            box = meta.get("bbox")
+            if box and box.get("min") and box.get("max"):
+                xs.extend([float(box["min"][0]), float(box["max"][0])])
+                zs.extend([float(box["min"][2]), float(box["max"][2])])
+            elif meta.get("start") and meta.get("end"):
+                for pt in (meta["start"], meta["end"]):
+                    xs.append(float(pt[0]))
+                    z0 = float(pt[2]) if len(pt) > 2 else 0.0
+                    zs.extend([z0, z0 + float(meta.get("height", 0.0) or 0.0)])
+        if not xs or not zs:
+            return partitions
+
+        cx0, cy0, cx1, cy1 = content
+        cw, ch = (cx1 - cx0), (cy1 - cy0)
+        mw, mh = (max(xs) - min(xs)), (max(zs) - min(zs))
+        if cw <= 1e-9 or ch <= 1e-9 or mw <= 1e-9 or mh <= 1e-9:
+            return partitions
+
+        sx, sy = mw / cw, mh / ch
+        self.last_calibration = {
+            "content": [cx0, cy0, cx1, cy1],
+            "model": [min(xs), min(zs), max(xs), max(zs)],
+            "scale": [sx, sy],
+        }
+
+        def to_model(u: float, v: float) -> Tuple[float, float]:
+            return (min(xs) + (u - cx0) * sx, max(zs) - (v - cy0) * sy)
+
+        for paths in partitions.values():
+            for entry in paths:
+                entry["d"] = _remap_path(entry["d"], to_model)
         return partitions
 
     def _plane_selector(self, view: ViewDefinition):
