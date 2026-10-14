@@ -15,6 +15,9 @@ import {
   CommandPayload,
   AiPlan,
   TransactionJournalEntry,
+  SketchSession,
+  SketchLine,
+  SketchDrawTool,
 } from '../types/bim';
 import { UnitSystem } from '../utils/units';
 
@@ -82,6 +85,73 @@ function planHostedOffset(
   if (!Number.isFinite(offset) || offset < 0) offset = 0;
   if (maxOffset !== null) offset = Math.min(offset, maxOffset);
   return offset;
+}
+
+/**
+ * Validates that lines form a connected closed loop (Revit CurveLoop topology)
+ * and returns the ordered 2D polygon vertices.
+ */
+function extractPolygonFromLines(lines: SketchLine[]): { polygon: [number, number][] | null; error: string | null } {
+  if (lines.length < 3) {
+    return { polygon: null, error: 'Sketch requires at least 3 connected lines to form a closed boundary.' };
+  }
+
+  const tol = 0.35; // 35cm endpoint snap tolerance
+  const dist = (p1: [number, number], p2: [number, number]) => Math.hypot(p1[0] - p2[0], p1[1] - p2[1]);
+
+  const unused = new Set(lines.map((_, i) => i));
+  const poly: [number, number][] = [];
+
+  unused.delete(0);
+  let currentStart = lines[0].start;
+  let currentEnd = lines[0].end;
+  poly.push(currentStart);
+
+  const loopStart = currentStart;
+
+  while (unused.size > 0) {
+    let nextIdx = -1;
+    let nextReversed = false;
+
+    for (const idx of unused) {
+      const l = lines[idx];
+      if (dist(l.start, currentEnd) <= tol) {
+        nextIdx = idx;
+        nextReversed = false;
+        break;
+      } else if (dist(l.end, currentEnd) <= tol) {
+        nextIdx = idx;
+        nextReversed = true;
+        break;
+      }
+    }
+
+    if (nextIdx === -1) {
+      return {
+        polygon: null,
+        error: `Open boundary detected: segment at (${currentEnd[0].toFixed(1)}m, ${currentEnd[1].toFixed(1)}m) does not connect to another line. All magenta lines must form a continuous closed loop.`,
+      };
+    }
+
+    unused.delete(nextIdx);
+    const nextLine = lines[nextIdx];
+    if (!nextReversed) {
+      poly.push(nextLine.start);
+      currentEnd = nextLine.end;
+    } else {
+      poly.push(nextLine.end);
+      currentEnd = nextLine.start;
+    }
+  }
+
+  if (dist(currentEnd, loopStart) > tol) {
+    return {
+      polygon: null,
+      error: `Boundary loop is not closed (gap between start and end is ${(dist(currentEnd, loopStart) * 100).toFixed(0)}cm). Close the loop by snapping to the starting point.`,
+    };
+  }
+
+  return { polygon: poly, error: null };
 }
 
 interface BimStoreState {
@@ -200,6 +270,9 @@ interface BimStoreState {
   createWall: (start: [number, number, number], end: [number, number, number], name?: string) => Promise<void>;
   createDoor: (hostWallGuid: string, offset: number, name?: string) => Promise<void>;
   createWindow: (hostWallGuid: string, offset: number, name?: string) => Promise<void>;
+  createRoof: (polygon: [number, number][], thickness?: number, elevation?: number, pitch_degrees?: number, name?: string) => Promise<void>;
+  createSlab: (polygon: [number, number][], thickness?: number, elevation?: number, name?: string) => Promise<void>;
+  updateElement: (guid: string, updates: Partial<BimElement>) => Promise<void>;
   deleteElement: (guid: string) => Promise<void>;
   translateElement: (guid: string, dx: number, dy: number, dz?: number) => Promise<void>;
   updateGeoreferencing: (data: BimStoreState['georeference']) => Promise<void>;
@@ -231,6 +304,20 @@ interface BimStoreState {
 
   exportProjectContainer: () => Promise<void>;
   loadProjectContainer: (file: File) => Promise<boolean>;
+
+  // Sketch Mode Subsystem (Revit Edit Boundary / Edit Footprint / Create)
+  sketchSession: SketchSession | null;
+  startSketchMode: (mode: 'floor' | 'roof', targetGuid?: string) => void;
+  cancelSketchMode: () => void;
+  finishSketchMode: () => Promise<boolean>;
+  addSketchLine: (start: [number, number], end: [number, number]) => void;
+  addSketchRectangle: (p1: [number, number], p2: [number, number]) => void;
+  addSketchFromWall: (wallGuid: string) => void;
+  deleteSelectedSketchLine: () => void;
+  selectSketchLine: (id: string | null) => void;
+  updateSketchLine: (id: string, updates: Partial<SketchLine>) => void;
+  setSketchDrawTool: (tool: SketchDrawTool) => void;
+  setSketchParam: (key: 'elevation' | 'thickness' | 'pitch' | 'defaultDefinesSlope' | 'defaultSlopeAngle' | 'defaultOverhang', value: any) => void;
 }
 
 export const useBimStore = create<BimStoreState>((set, get) => ({
@@ -275,6 +362,16 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       detailLevel: 'medium',
       visualStyle: 'hidden_line',
       viewRange: { top: 2.3, cut: 1.2, bottom: 0.0, viewDepth: 0.0 },
+    },
+    {
+      id: 'view-roof-plan',
+      name: 'Roof Plan',
+      type: 'floor_plan',
+      levelId: 'lvl-roof',
+      scale: '1/4" = 1\'-0"',
+      detailLevel: 'medium',
+      visualStyle: 'hidden_line',
+      viewRange: { top: 15.0, cut: 8.0, bottom: 0.0, viewDepth: 0.0 },
     },
     {
       id: 'view-section-1',
@@ -375,6 +472,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   aiPlanPreview: null,
   setAiPlanPreview: (plan: AiPlan | null) => set({ aiPlanPreview: plan }),
 
+  // Sketch Mode Subsystem State
+  sketchSession: null,
+
   // Actions
   setActiveRibbonTab: (tab) => set({ activeRibbonTab: tab }),
   setActiveTool: (tool) => {
@@ -390,9 +490,17 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     const state = get();
     const upperKey = key.toUpperCase();
 
-    // Escape cancels tool and clears selection
+    // Escape cancels tool and clears selection / cancels sketch session
     if (key === 'Escape') {
       get().clearKeyBuffer();
+      if (state.sketchSession) {
+        if (state.sketchSession.selectedLineId) {
+          get().selectSketchLine(null);
+          return;
+        }
+        get().cancelSketchMode();
+        return;
+      }
       set({
         activeTool: 'select',
         selectedGuid: null,
@@ -402,13 +510,28 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       return;
     }
 
+    // Enter commits active sketch mode
+    if (key === 'Enter' && state.sketchSession) {
+      get().finishSketchMode();
+      return;
+    }
+
     // Hotkey lookup table
     const hotkeys: Record<string, () => void> = {
       WA: () => set({ activeTool: 'WA', activeRibbonTab: 'Architecture' }),
       DR: () => set({ activeTool: 'DR', activeRibbonTab: 'Architecture' }),
       WN: () => set({ activeTool: 'WN', activeRibbonTab: 'Architecture' }),
-      SB: () => set({ activeTool: 'SB', activeRibbonTab: 'Architecture' }),
-      RF: () => set({ activeTool: 'RF', activeRibbonTab: 'Architecture' }),
+      SB: () => get().startSketchMode('floor'),
+      RF: () => get().startSketchMode('roof'),
+      LI: () => {
+        if (get().sketchSession) get().setSketchDrawTool('line');
+      },
+      RE: () => {
+        if (get().sketchSession) get().setSketchDrawTool('rectangle');
+      },
+      PW: () => {
+        if (get().sketchSession) get().setSketchDrawTool('pick_walls');
+      },
       GR: () => set({ activeTool: 'GR', activeRibbonTab: 'Architecture' }),
       LL: () => set({ activeTool: 'LL', activeRibbonTab: 'Architecture' }),
       DI: () => set({ activeTool: 'DI', activeRibbonTab: 'Annotate' }),
@@ -853,10 +976,13 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           projectName: data.project_name || filename,
           isLoadingFile: false,
           statusMessage: `Successfully loaded ${filename} (${data.elements_count} elements, ${data.levels_count} levels)`,
+          selectedGuid: null,
+          hoveredGuid: null,
         });
         await get().fetchGeometry();
         await get().fetch2DSlice();
         await get().fetchProjectState();
+        await get().fetchConstraints();
         return true;
       } else {
         const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
@@ -953,6 +1079,56 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       }
     } catch (e) {
       console.error('Failed to insert window', e);
+    }
+  },
+
+  createRoof: async (polygon, thickness = 0.3, elevation = 6.0, pitch_degrees = 15.0, name = 'Roof : Pitched Metal Deck') => {
+    try {
+      const res = await fetch(`${API_BASE}/roof`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ polygon, thickness, elevation, pitch_degrees, name }),
+      });
+      if (res.ok) {
+        await get().fetchGeometry();
+        await get().fetch2DSlice();
+        set({ activeTool: 'select' });
+      }
+    } catch (e) {
+      console.error('Failed to create roof', e);
+    }
+  },
+
+  createSlab: async (polygon, thickness = 0.25, elevation = 0.0, name = 'Floor : 10" Concrete Slab') => {
+    try {
+      const res = await fetch(`${API_BASE}/slab`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ polygon, thickness, elevation, name }),
+      });
+      if (res.ok) {
+        await get().fetchGeometry();
+        await get().fetch2DSlice();
+        set({ activeTool: 'select' });
+      }
+    } catch (e) {
+      console.error('Failed to create slab', e);
+    }
+  },
+
+  updateElement: async (guid: string, updates: Partial<BimElement>) => {
+    try {
+      const res = await fetch(`${API_BASE}/element/${guid}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+      if (res.ok) {
+        await get().fetchGeometry();
+        await get().fetch2DSlice();
+      }
+    } catch (e) {
+      console.error('Failed to update element', e);
     }
   },
 
@@ -1447,6 +1623,288 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   discardAiPlan: () => {
     set({ aiPlanPreview: null });
+  },
+
+  // =========================================================================
+  // SKETCH MODE SUBSYSTEM (Revit Edit Boundary / Edit Footprint / Create)
+  // =========================================================================
+
+  startSketchMode: (mode: 'floor' | 'roof', targetGuid?: string) => {
+    let existingPolygon: [number, number][] | null = null;
+    let elevation = mode === 'roof' ? 6.0 : 0.0;
+    let thickness = mode === 'roof' ? 0.3 : 0.25;
+    let pitch = 15.0;
+    let targetName = mode === 'roof' ? 'Roof : Pitched Metal Deck' : 'Floor : 10" Concrete Slab';
+    let isEditingExisting = false;
+
+    if (targetGuid) {
+      isEditingExisting = true;
+      const el = get().elements[targetGuid];
+      const mesh = get().meshes.find((m) => m.guid === targetGuid);
+      if (el) {
+        if (el.elevation !== undefined) elevation = el.elevation;
+        if (el.thickness !== undefined) thickness = el.thickness;
+        if (el.pitch !== undefined) pitch = el.pitch;
+        if (el.name) targetName = el.name;
+        if (el.polygon && el.polygon.length >= 3) {
+          existingPolygon = el.polygon;
+        }
+      }
+      if (!existingPolygon && mesh && mesh.bbox) {
+        const { min, max } = mesh.bbox;
+        existingPolygon = [
+          [min[0], min[1]],
+          [max[0], min[1]],
+          [max[0], max[1]],
+          [min[0], max[1]],
+        ];
+        if (mesh.name) targetName = mesh.name;
+      }
+    }
+
+    const lines: SketchLine[] = [];
+    if (existingPolygon && existingPolygon.length >= 3) {
+      for (let i = 0; i < existingPolygon.length; i++) {
+        const next = (i + 1) % existingPolygon.length;
+        lines.push({
+          id: `sk-${Date.now()}-${i}`,
+          start: [existingPolygon[i][0], existingPolygon[i][1]],
+          end: [existingPolygon[next][0], existingPolygon[next][1]],
+          definesSlope: mode === 'roof',
+          slopeAngle: pitch,
+          overhang: 0.3,
+        });
+      }
+    }
+
+    set({
+      sketchSession: {
+        mode,
+        elementType: mode,
+        isEditingExisting,
+        targetGuid,
+        targetName,
+        elevation,
+        thickness,
+        pitch,
+        lines,
+        selectedLineId: null,
+        drawTool: 'line',
+        defaultDefinesSlope: mode === 'roof',
+        defaultSlopeAngle: pitch,
+        defaultOverhang: 0.3,
+        validationError: null,
+      },
+      activeTool: 'sketch',
+      statusMessage: isEditingExisting
+        ? `Sketch Mode: Edit ${mode === 'roof' ? 'Roof Footprint' : 'Floor Boundary'} (${targetName})`
+        : `Sketch Mode: Create ${mode === 'roof' ? 'Roof Footprint' : 'Floor Boundary'}`,
+    });
+  },
+
+  cancelSketchMode: () => {
+    set({
+      sketchSession: null,
+      activeTool: 'select',
+      statusMessage: 'Canceled sketch mode',
+    });
+  },
+
+  finishSketchMode: async () => {
+    const { sketchSession, executeTransaction, createSlab, createRoof } = get();
+    if (!sketchSession) return false;
+
+    const { lines, mode, isEditingExisting, targetGuid, thickness, elevation, pitch, targetName } = sketchSession;
+
+    if (lines.length < 3) {
+      set((s) => ({
+        sketchSession: s.sketchSession
+          ? { ...s.sketchSession, validationError: 'Boundary must contain at least 3 connected lines.' }
+          : null,
+      }));
+      return false;
+    }
+
+    const result = extractPolygonFromLines(lines);
+    if (!result.polygon) {
+      set((s) => ({
+        sketchSession: s.sketchSession
+          ? { ...s.sketchSession, validationError: result.error || 'Lines must form a closed loop.' }
+          : null,
+      }));
+      return false;
+    }
+
+    const polygon = result.polygon;
+
+    try {
+      if (isEditingExisting && targetGuid) {
+        await executeTransaction(
+          [
+            {
+              command: 'ElementUpdate',
+              params: {
+                guid: targetGuid,
+                updates: {
+                  polygon,
+                  thickness,
+                  elevation,
+                  pitch: mode === 'roof' ? pitch : undefined,
+                },
+              },
+            },
+          ],
+          'ui',
+          `Edit ${mode === 'roof' ? 'Roof Footprint' : 'Floor Boundary'}`
+        );
+        set({
+          statusMessage: `Successfully updated ${targetName || (mode === 'roof' ? 'Roof' : 'Floor')} boundary`,
+        });
+      } else if (mode === 'floor') {
+        await createSlab(polygon, thickness, elevation, targetName || 'Floor : 10" Concrete Slab');
+        set({ statusMessage: 'Successfully created Floor slab from sketch' });
+      } else if (mode === 'roof') {
+        await createRoof(polygon, thickness, elevation, pitch, targetName || 'Roof : Pitched Metal Deck');
+        set({ statusMessage: 'Successfully created Roof from sketch' });
+      }
+
+      set({
+        sketchSession: null,
+        activeTool: 'select',
+      });
+      await get().fetchGeometry();
+      await get().fetch2DSlice();
+      return true;
+    } catch (e: any) {
+      console.error('Failed to finish sketch:', e);
+      set((s) => ({
+        sketchSession: s.sketchSession
+          ? { ...s.sketchSession, validationError: e.message || 'Failed to generate 3D geometry from sketch' }
+          : null,
+      }));
+      return false;
+    }
+  },
+
+  addSketchLine: (start: [number, number], end: [number, number]) => {
+    const len = Math.hypot(end[0] - start[0], end[1] - start[1]);
+    if (len < 0.05) return;
+    set((s) => {
+      if (!s.sketchSession) return {};
+      const newLine: SketchLine = {
+        id: `sk-line-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        start,
+        end,
+        definesSlope: s.sketchSession.defaultDefinesSlope,
+        slopeAngle: s.sketchSession.defaultSlopeAngle,
+        overhang: s.sketchSession.defaultOverhang,
+      };
+      return {
+        sketchSession: {
+          ...s.sketchSession,
+          lines: [...s.sketchSession.lines, newLine],
+          validationError: null,
+        },
+      };
+    });
+  },
+
+  addSketchRectangle: (p1: [number, number], p2: [number, number]) => {
+    const minX = Math.min(p1[0], p2[0]);
+    const maxX = Math.max(p1[0], p2[0]);
+    const minY = Math.min(p1[1], p2[1]);
+    const maxY = Math.max(p1[1], p2[1]);
+    if (maxX - minX < 0.2 || maxY - minY < 0.2) return;
+
+    set((s) => {
+      if (!s.sketchSession) return {};
+      const defSlope = s.sketchSession.defaultDefinesSlope;
+      const slope = s.sketchSession.defaultSlopeAngle;
+      const now = Date.now();
+      const newLines: SketchLine[] = [
+        { id: `sk-r-${now}-1`, start: [minX, minY], end: [maxX, minY], definesSlope: defSlope, slopeAngle: slope },
+        { id: `sk-r-${now}-2`, start: [maxX, minY], end: [maxX, maxY], definesSlope: defSlope, slopeAngle: slope },
+        { id: `sk-r-${now}-3`, start: [maxX, maxY], end: [minX, maxY], definesSlope: defSlope, slopeAngle: slope },
+        { id: `sk-r-${now}-4`, start: [minX, maxY], end: [minX, minY], definesSlope: defSlope, slopeAngle: slope },
+      ];
+      return {
+        sketchSession: {
+          ...s.sketchSession,
+          lines: [...s.sketchSession.lines, ...newLines],
+          validationError: null,
+        },
+      };
+    });
+  },
+
+  addSketchFromWall: (wallGuid: string) => {
+    const el = get().elements[wallGuid];
+    if (!el || !el.start || !el.end) return;
+    const s: [number, number] = [el.start[0], el.start[1]];
+    const e: [number, number] = [el.end[0], el.end[1]];
+    get().addSketchLine(s, e);
+  },
+
+  deleteSelectedSketchLine: () => {
+    set((s) => {
+      if (!s.sketchSession || !s.sketchSession.selectedLineId) return {};
+      return {
+        sketchSession: {
+          ...s.sketchSession,
+          lines: s.sketchSession.lines.filter((l) => l.id !== s.sketchSession!.selectedLineId),
+          selectedLineId: null,
+          validationError: null,
+        },
+      };
+    });
+  },
+
+  selectSketchLine: (id: string | null) => {
+    set((s) => {
+      if (!s.sketchSession) return {};
+      return {
+        sketchSession: {
+          ...s.sketchSession,
+          selectedLineId: id,
+        },
+      };
+    });
+  },
+
+  updateSketchLine: (id: string, updates: Partial<SketchLine>) => {
+    set((s) => {
+      if (!s.sketchSession) return {};
+      return {
+        sketchSession: {
+          ...s.sketchSession,
+          lines: s.sketchSession.lines.map((l) => (l.id === id ? { ...l, ...updates } : l)),
+        },
+      };
+    });
+  },
+
+  setSketchDrawTool: (tool: SketchDrawTool) => {
+    set((s) => {
+      if (!s.sketchSession) return {};
+      return {
+        sketchSession: {
+          ...s.sketchSession,
+          drawTool: tool,
+        },
+      };
+    });
+  },
+
+  setSketchParam: (key, value) => {
+    set((s) => {
+      if (!s.sketchSession) return {};
+      return {
+        sketchSession: {
+          ...s.sketchSession,
+          [key]: value,
+        },
+      };
+    });
   },
 }));
 

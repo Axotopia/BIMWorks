@@ -95,6 +95,17 @@ export interface Sliced2DData {
   projection_paths: Array<{ guid: string; class: string; d: string }>;
   swing_paths: Array<{ guid: string; class: string; d: string }>;
   slabs: Array<{ guid: string; d: string; class: string }>;
+  roofs?: Array<{
+    guid: string;
+    name: string;
+    d: string;
+    ridge_d?: string;
+    pitch: number;
+    pitch_text?: string;
+    center?: [number, number];
+    class: string;
+    is_overhead?: boolean;
+  }>;
   grids: Array<{ guid: string; tag: string; d: string; circle_center: [number, number] }>;
   dimensions: Array<{
     guid: string;
@@ -195,7 +206,39 @@ export type ActiveTool =
   | 'SHT' // Sheet
   | 'BX' // Section Box
   | 'AL' // Align & Lock
-  | 'EQ'; // Equalize
+  | 'EQ' // Equalize
+  | 'sketch'; // Revit Sketch Mode (Edit Boundary / Edit Footprint / Create)
+
+export interface SketchLine {
+  id: string;
+  start: [number, number];
+  end: [number, number];
+  definesSlope?: boolean; // For roof sketch lines
+  slopeAngle?: number;    // Slope angle in degrees (e.g. 15.0 or 30.0)
+  overhang?: number;      // Overhang offset in meters
+  pickedWallGuid?: string; // Associated wall constraint
+}
+
+export type SketchDrawTool = 'line' | 'rectangle' | 'pick_walls';
+
+export interface SketchSession {
+  mode: 'floor' | 'roof';
+  elementType: 'floor' | 'roof';
+  isEditingExisting: boolean;
+  targetGuid?: string;
+  targetName?: string;
+  elevation: number;
+  thickness: number;
+  pitch: number;
+  lines: SketchLine[];
+  selectedLineId: string | null;
+  drawTool: SketchDrawTool;
+  defaultDefinesSlope: boolean;
+  defaultSlopeAngle: number;
+  defaultOverhang: number;
+  spanDirection?: [number, number];
+  validationError?: string | null;
+}
 
 export interface WallJoinPolicy {
   allow_join: boolean;
