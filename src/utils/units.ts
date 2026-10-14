@@ -105,6 +105,28 @@ export function formatLength(feet: number, system: UnitSystem = 'imperial_fracti
 }
 
 /**
+ * Formats a decimal-feet² area according to the specified display style.
+ */
+export function formatArea(squareFeet: number, system: UnitSystem = 'imperial_fractional'): string {
+  if (!isFinite(squareFeet)) return '—';
+  if (system === 'metric_mm' || system === 'metric_m') {
+    return `${(squareFeet * FEET_TO_METERS * FEET_TO_METERS).toFixed(2)} m²`;
+  }
+  return `${squareFeet.toFixed(2)} ft²`;
+}
+
+/**
+ * Formats a decimal-feet³ volume according to the specified display style.
+ */
+export function formatVolume(cubicFeet: number, system: UnitSystem = 'imperial_fractional'): string {
+  if (!isFinite(cubicFeet)) return '—';
+  if (system === 'metric_mm' || system === 'metric_m') {
+    return `${(cubicFeet * FEET_TO_METERS ** 3).toFixed(3)} m³`;
+  }
+  return `${cubicFeet.toFixed(2)} ft³`;
+}
+
+/**
  * Parses user input strings into decimal feet.
  * Examples accepted:
  * - "12' 6"" -> 12.5

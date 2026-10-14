@@ -1,7 +1,8 @@
 import React from 'react';
 import { Settings, Trash2, Box, Info } from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
-import { formatLength, metersToFeet } from '../../utils/units';
+import { formatLength, formatArea, formatVolume, metersToFeet } from '../../utils/units';
+import { measureMesh } from '../../utils/geometry';
 
 export const PropertiesPalette: React.FC = () => {
   const {
@@ -10,9 +11,21 @@ export const PropertiesPalette: React.FC = () => {
     deleteElement,
     setEditTypeModalOpen,
     displayUnit,
+    views,
+    activeViewId,
+    activeScale,
+    activeDetailLevel,
   } = useBimStore();
 
   const selectedMesh = meshes.find((m) => m.guid === selectedGuid);
+  const activeView = views.find((v) => v.id === activeViewId);
+
+  // The engine's parametric record for this element (baseline, host, type data).
+  // Absent on a foreign IFC import, which is why every row below is optional.
+  const params = selectedMesh?.params;
+
+  // Area/Volume are measured from the tessellated surface, never hardcoded.
+  const measure = selectedMesh ? measureMesh(selectedMesh) : null;
 
   // Default values when nothing is selected (shows View Properties)
   const isElementSelected = Boolean(selectedMesh);
@@ -50,7 +63,10 @@ export const PropertiesPalette: React.FC = () => {
       <div className="flex-1 overflow-y-auto p-2 space-y-3">
         {isElementSelected ? (
           <>
-            {/* Constraints Group */}
+            {/* Constraints Group.
+                No constraint/level-driver plumbing exists yet, so these rows
+                report only what the engine actually tracks ("—" otherwise)
+                instead of printing Revit-looking defaults for every element. */}
             <div>
               <div className="text-[10px] uppercase font-bold text-[#969696] mb-1 tracking-wider border-b border-[#333333] pb-0.5">
                 Constraints
@@ -58,26 +74,30 @@ export const PropertiesPalette: React.FC = () => {
               <table className="w-full text-[11px]">
                 <tbody>
                   <tr className="border-b border-[#2d2d2d]">
-                    <td className="py-1 text-[#858585]">Base Constraint</td>
-                    <td className="py-1 text-right text-white font-mono">Level 1</td>
+                    <td className="py-1 text-[#858585]">Base Level</td>
+                    <td className="py-1 text-right text-white font-mono">{params?.level_id ?? '—'}</td>
                   </tr>
                   <tr className="border-b border-[#2d2d2d]">
-                    <td className="py-1 text-[#858585]">Base Offset</td>
-                    <td className="py-1 text-right text-white font-mono">0'-0" (0 mm)</td>
+                    <td className="py-1 text-[#858585]">Base Constraint</td>
+                    <td className="py-1 text-right text-[#858585] font-mono">Not tracked</td>
                   </tr>
                   <tr className="border-b border-[#2d2d2d]">
                     <td className="py-1 text-[#858585]">Top Constraint</td>
-                    <td className="py-1 text-right text-white font-mono">Up to Level 2</td>
+                    <td className="py-1 text-right text-[#858585] font-mono">Not tracked</td>
                   </tr>
                   <tr className="border-b border-[#2d2d2d]">
                     <td className="py-1 text-[#858585]">Unconnected Height</td>
-                    <td className="py-1 text-right text-white font-mono">10'-0" (3000 mm)</td>
+                    <td className="py-1 text-right text-white font-mono">
+                      {typeof params?.height === 'number'
+                        ? `${formatLength(metersToFeet(params.height), displayUnit)} (${params.height.toFixed(2)}m)`
+                        : '—'}
+                    </td>
                   </tr>
                 </tbody>
               </table>
             </div>
 
-            {/* Dimensions Group */}
+            {/* Dimensions Group — measured from the tessellated surface */}
             <div>
               <div className="text-[10px] uppercase font-bold text-[#969696] mb-1 tracking-wider border-b border-[#333333] pb-0.5">
                 Dimensions
@@ -87,25 +107,30 @@ export const PropertiesPalette: React.FC = () => {
                   <tr className="border-b border-[#2d2d2d]">
                     <td className="py-1 text-[#858585]">Length</td>
                     <td className="py-1 text-right text-[#38bdf8] font-mono">
-                      {selectedMesh?.bbox
-                        ? (() => {
-                            const lenM = Math.hypot(
-                              selectedMesh.bbox.max[0] - selectedMesh.bbox.min[0],
-                              selectedMesh.bbox.max[1] - selectedMesh.bbox.min[1]
-                            );
-                            const lenFt = metersToFeet(lenM);
-                            return `${formatLength(lenFt, displayUnit)} (${lenM.toFixed(2)}m)`;
-                          })()
-                        : '10\'-0"'}
+                      {params?.length != null
+                        ? `${formatLength(metersToFeet(params.length), displayUnit)} (${params.length.toFixed(2)}m)`
+                        : selectedMesh?.bbox
+                          ? (() => {
+                              const lenM = Math.hypot(
+                                selectedMesh.bbox.max[0] - selectedMesh.bbox.min[0],
+                                selectedMesh.bbox.max[1] - selectedMesh.bbox.min[1]
+                              );
+                              return `${formatLength(metersToFeet(lenM), displayUnit)} (${lenM.toFixed(2)}m)`;
+                            })()
+                          : '—'}
                     </td>
                   </tr>
                   <tr className="border-b border-[#2d2d2d]">
                     <td className="py-1 text-[#858585]">Area</td>
-                    <td className="py-1 text-right text-[#38bdf8] font-mono">13.50 m²</td>
+                    <td className="py-1 text-right text-[#38bdf8] font-mono">
+                      {measure ? formatArea(measure.areaFt2, displayUnit) : '—'}
+                    </td>
                   </tr>
                   <tr className="border-b border-[#2d2d2d]">
                     <td className="py-1 text-[#858585]">Volume</td>
-                    <td className="py-1 text-right text-[#38bdf8] font-mono">2.70 m³</td>
+                    <td className="py-1 text-right text-[#38bdf8] font-mono">
+                      {measure ? formatVolume(measure.volumeFt3, displayUnit) : '—'}
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -130,7 +155,7 @@ export const PropertiesPalette: React.FC = () => {
                   </tr>
                   <tr className="border-b border-[#2d2d2d]">
                     <td className="py-1 text-[#858585]">Phase Created</td>
-                    <td className="py-1 text-right text-white">New Construction</td>
+                    <td className="py-1 text-right text-[#858585] font-mono">Not tracked</td>
                   </tr>
                 </tbody>
               </table>
@@ -148,7 +173,7 @@ export const PropertiesPalette: React.FC = () => {
             </div>
           </>
         ) : (
-          /* View Properties when nothing is selected */
+          /* View Properties when nothing is selected — read from the active view */
           <div>
             <div className="text-[10px] uppercase font-bold text-[#969696] mb-1 tracking-wider border-b border-[#333333] pb-0.5">
               Graphics &amp; Extents
@@ -156,20 +181,28 @@ export const PropertiesPalette: React.FC = () => {
             <table className="w-full text-[11px]">
               <tbody>
                 <tr className="border-b border-[#2d2d2d]">
+                  <td className="py-1 text-[#858585]">View Name</td>
+                  <td className="py-1 text-right text-white font-mono">{activeView?.name ?? '—'}</td>
+                </tr>
+                <tr className="border-b border-[#2d2d2d]">
                   <td className="py-1 text-[#858585]">View Scale</td>
-                  <td className="py-1 text-right text-white font-mono">1/4" = 1'-0"</td>
+                  <td className="py-1 text-right text-white font-mono">{activeScale}</td>
                 </tr>
                 <tr className="border-b border-[#2d2d2d]">
                   <td className="py-1 text-[#858585]">Detail Level</td>
-                  <td className="py-1 text-right text-white">Medium</td>
+                  <td className="py-1 text-right text-white capitalize">{activeDetailLevel}</td>
                 </tr>
                 <tr className="border-b border-[#2d2d2d]">
                   <td className="py-1 text-[#858585]">Discipline</td>
                   <td className="py-1 text-right text-white">Architectural</td>
                 </tr>
                 <tr className="border-b border-[#2d2d2d]">
-                  <td className="py-1 text-[#858585]">Cut Plane Elevation</td>
-                  <td className="py-1 text-right text-[#38bdf8] font-mono">4'-0" (1200 mm)</td>
+                  <td className="py-1 text-[#858585]">View Range — Cut Plane</td>
+                  <td className="py-1 text-right text-[#38bdf8] font-mono">
+                    {activeView
+                      ? `${formatLength(metersToFeet(activeView.viewRange.cut), displayUnit)} (${activeView.viewRange.cut.toFixed(2)}m)`
+                      : '—'}
+                  </td>
                 </tr>
               </tbody>
             </table>

@@ -20,6 +20,70 @@ import { UnitSystem } from '../utils/units';
 
 const API_BASE = '/api';
 
+/** Feet -> metres; the engine's internals are metric (spec §11.3 fixes this in P2). */
+const FEET_TO_M = 0.3048;
+
+const WALL_CLASSES = ['IfcWallStandardCase', 'IfcWall'];
+
+/**
+ * Chooses the wall that should host a planned door/window: the current
+ * selection when it is a wall, otherwise the first wall in the model.
+ * Reads the real element record, so it returns null when no wall exists yet.
+ */
+function pickHostWall(
+  elements: Record<string, BimElement>,
+  selectedGuid: string | null
+): string | null {
+  const wallGuids = Object.keys(elements).filter((g) => WALL_CLASSES.includes(elements[g].ifc_class));
+  if (selectedGuid && wallGuids.includes(selectedGuid)) return selectedGuid;
+  return wallGuids[0] ?? null;
+}
+
+/**
+ * Resolves an offset-along-wall for a planned hosted element.
+ *
+ * An explicit "at 10 feet" / "10'" / "3000 mm" in the prompt wins; otherwise the
+ * element is placed at the wall's centre (doors) or near its start (windows).
+ * The result is always clamped so the opening fits inside the wall — previously
+ * a fixed 3 m offset was emitted, which silently hangs the door past the end of
+ * any wall shorter than that. Requires the host's real baseline length.
+ */
+function planHostedOffset(
+  text: string,
+  host: BimElement | undefined,
+  elementWidth: number,
+  fallback: 'centered' | 'start'
+): number {
+  const wallLength = typeof host?.length === 'number' && host.length > 0 ? host.length : null;
+  const maxOffset = wallLength !== null ? Math.max(0, wallLength - elementWidth) : null;
+  const preferred = fallback === 'centered' && maxOffset !== null ? maxOffset / 2 : 0;
+
+  // An explicit offset phrase: "at 10 feet", "offset 3m", "3000 mm from the
+  // start". Deliberately NOT a bare number: "36x84 door" and "36 inch door" are
+  // sizes, and treating their digits as a position parks the door at nonsense
+  // offsets. Without a phrase the fallback placement is used instead.
+  const atMatch = text.match(
+    /(?:at|offset|distance|position)\s*(\d+(?:\.\d+)?)\s*(mm|millimet\w*|ft|feet|foot|'|m|met\w*)?/
+  ) ?? text.match(
+    /(\d+(?:\.\d+)?)\s*(mm|millimet\w*|ft|feet|foot|'|m|met\w*)\s+(?:from|along)\b/
+  );
+
+  let offset = preferred;
+  if (atMatch) {
+    const value = parseFloat(atMatch[1]);
+    const unit = (atMatch[2] || (value > 100 ? 'mm' : 'ft')).toLowerCase();
+    if (Number.isFinite(value)) {
+      if (unit.startsWith('mm') || unit.startsWith('millimet')) offset = value / 1000;
+      else if (unit === 'm' || unit.startsWith('met')) offset = value;
+      else offset = value * FEET_TO_M;
+    }
+  }
+
+  if (!Number.isFinite(offset) || offset < 0) offset = 0;
+  if (maxOffset !== null) offset = Math.min(offset, maxOffset);
+  return offset;
+}
+
 interface BimStoreState {
   // Navigation & Tools
   activeRibbonTab: 'Architecture' | 'Annotate' | 'View' | 'Manage' | 'Modify';
@@ -73,6 +137,8 @@ interface BimStoreState {
   isGeoreferenceModalOpen: boolean;
   isEditTypeModalOpen: boolean;
   isViewRangeModalOpen: boolean;
+  /** Legal notice modal (LEGAL.md §1–§5, spec §13). */
+  isLegalModalOpen: boolean;
 
   // File Loading & Status
   isLoadingFile: boolean;
@@ -112,6 +178,7 @@ interface BimStoreState {
   setGeoreferenceModalOpen: (open: boolean) => void;
   setEditTypeModalOpen: (open: boolean) => void;
   setViewRangeModalOpen: (open: boolean) => void;
+  setLegalModalOpen: (open: boolean) => void;
 
   // 1D/2D Parametric Constraint Actions
   fetchConstraints: () => Promise<void>;
@@ -162,8 +229,8 @@ interface BimStoreState {
   commitAiPlan: () => Promise<void>;
   discardAiPlan: () => void;
 
-  exportOrltProject: () => Promise<void>;
-  loadOrltFile: (file: File) => Promise<boolean>;
+  exportProjectContainer: () => Promise<void>;
+  loadProjectContainer: (file: File) => Promise<boolean>;
 }
 
 export const useBimStore = create<BimStoreState>((set, get) => ({
@@ -288,6 +355,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   isGeoreferenceModalOpen: false,
   isEditTypeModalOpen: false,
   isViewRangeModalOpen: false,
+  isLegalModalOpen: false,
 
   isLoadingFile: false,
   statusMessage: 'Ready (IFC4 Native BIM)',
@@ -410,21 +478,25 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       return;
     }
 
-    // Compute dynamic temporary dimension
+    // Temporary dimension from tessellation bounds.
+    //
+    // NOTE (honest limitation): the engine exposes no witness-line model yet, so
+    // this measures centre-to-centre distance to the nearest OTHER element's
+    // bbox centre. It is a real measured distance between real elements — not a
+    // fabricated default. When the element is the only one in the model there is
+    // nothing to measure against, so no dimension is created rather than
+    // inventing a 12'-0" reading.
     const mesh = get().meshes.find((m) => m.guid === guid);
     if (mesh) {
-      const min = mesh.bbox.min;
-      const max = mesh.bbox.max;
       const center: [number, number, number] = [
-        (min[0] + max[0]) / 2,
-        (min[1] + max[1]) / 2,
-        (min[2] + max[2]) / 2,
+        (mesh.bbox.min[0] + mesh.bbox.max[0]) / 2,
+        (mesh.bbox.min[1] + mesh.bbox.max[1]) / 2,
+        (mesh.bbox.min[2] + mesh.bbox.max[2]) / 2,
       ];
 
-      // Find nearest parallel element to compute witness line distance
       const otherMeshes = get().meshes.filter((m) => m.guid !== guid);
-      let nearestDist = 3.6576; // Default ~12'-0"
-      let nearestCenter: [number, number, number] = [center[0] - 3.6576, center[1], center[2]];
+      let nearestDist = Number.POSITIVE_INFINITY;
+      let nearestCenter: [number, number, number] | null = null;
 
       for (const other of otherMeshes) {
         const oCenter: [number, number, number] = [
@@ -439,9 +511,21 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         }
       }
 
+      if (!nearestCenter || !Number.isFinite(nearestDist)) {
+        set({ tempDimension: null });
+        return;
+      }
+
       const feet = Math.floor(nearestDist * 3.28084);
       const inches = Math.round((nearestDist * 3.28084 - feet) * 12);
       const display = `${feet}'-${inches}" (${(nearestDist * 1000).toFixed(0)} mm)`;
+
+      // Measure along the dominant axis of the witness pair, not a fixed 'x',
+      // so the pill and its edit gesture match the direction being measured.
+      const axis: 'x' | 'y' =
+        Math.abs(nearestCenter[0] - center[0]) >= Math.abs(nearestCenter[1] - center[1])
+          ? 'x'
+          : 'y';
 
       set({
         tempDimension: {
@@ -455,7 +539,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
             (nearestCenter[1] + center[1]) / 2,
             (nearestCenter[2] + center[2]) / 2,
           ],
-          axis: 'x',
+          axis,
         },
       });
     }
@@ -502,8 +586,12 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     const { tempDimension, translateElement } = get();
     if (!tempDimension) return;
 
+    // Move along the axis the dimension actually measures (set when the
+    // dimension was created) instead of always translating world X.
     const delta = newValue - tempDimension.distance;
-    await translateElement(tempDimension.elementGuid, delta, 0, 0);
+    const dx = tempDimension.axis === 'x' ? delta : 0;
+    const dy = tempDimension.axis === 'y' ? delta : 0;
+    await translateElement(tempDimension.elementGuid, dx, dy, 0);
     get().setSelectedGuid(tempDimension.elementGuid);
   },
 
@@ -514,6 +602,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   setGeoreferenceModalOpen: (open) => set({ isGeoreferenceModalOpen: open }),
   setEditTypeModalOpen: (open) => set({ isEditTypeModalOpen: open }),
   setViewRangeModalOpen: (open) => set({ isViewRangeModalOpen: open }),
+  setLegalModalOpen: (open) => set({ isLegalModalOpen: open }),
 
   // 1D/2D Parametric Constraints Implementation
   setAlignPickState: (state) => set({ alignPickState: state }),
@@ -623,18 +712,34 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   },
 
   equalizeSouthWallWindows: async () => {
-    const { meshes } = get();
+    const { meshes, elements } = get();
     const windows = meshes.filter((m) => m.ifc_class === 'IfcWindow');
-    const walls = meshes.filter((m) => m.ifc_class === 'IfcWallStandardCase');
-    if (windows.length >= 2 && walls.length > 0) {
-      const southWall = walls[0];
-      await get().equalizeSpan(
-        southWall.guid,
-        southWall.guid,
-        windows.map((w) => w.guid),
-        'x'
-      );
+    if (windows.length < 2) return;
+
+    // "South wall" is the host of the windows to equalize. There is no compass
+    // in the model yet, so instead of blindly taking store order (`walls[0]`),
+    // pick the wall that actually hosts the most windows, breaking ties by the
+    // longest baseline. That is a deterministic, geometry-derived choice.
+    const hostCounts = new Map<string, number>();
+    for (const w of windows) {
+      const host = elements[w.guid]?.host_wall_guid;
+      if (host) hostCounts.set(host, (hostCounts.get(host) ?? 0) + 1);
     }
+    const southWall =
+      [...hostCounts.entries()].sort((a, b) => {
+        if (b[1] !== a[1]) return b[1] - a[1];
+        return (elements[b[0]]?.length ?? 0) - (elements[a[0]]?.length ?? 0);
+      })[0]?.[0] ?? meshes.find((m) => WALL_CLASSES.includes(m.ifc_class))?.guid;
+
+    if (!southWall) return;
+
+    // Equalize the windows hosted on that wall (not every window in the model).
+    const hostedWindows = windows
+      .filter((w) => elements[w.guid]?.host_wall_guid === southWall)
+      .map((w) => w.guid);
+    const targets = hostedWindows.length >= 2 ? hostedWindows : windows.map((w) => w.guid);
+
+    await get().equalizeSpan(southWall, southWall, targets, 'x');
   },
 
   // API Callbacks
@@ -659,8 +764,40 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       const res = await fetch(`${API_BASE}/geometry`);
       if (res.ok) {
         const data = await res.json();
+        const meshes: MeshBufferData[] = data.meshes || [];
+        // The `elements` record mirrors the engine's `element_meta`, not the
+        // tessellation: baselines, host GUIDs, and door/window offsets only
+        // exist in the parametric payload. Previously this record was declared
+        // but never populated, so AI-planned door/window inserts saw zero walls.
+        const elements: Record<string, BimElement> = {};
+        for (const mesh of meshes) {
+          const params = mesh.params;
+          if (!params) continue;
+          elements[mesh.guid] = {
+            guid: mesh.guid,
+            ifc_class: (params.ifc_class || mesh.ifc_class) as BimElement['ifc_class'],
+            name: params.name || mesh.name,
+            start: params.start,
+            end: params.end,
+            length: params.length,
+            height: params.height,
+            thickness: params.thickness,
+            angle: params.angle,
+            level_id: params.level_id,
+            host_wall_guid: params.host_wall_guid,
+            offset_along_wall: params.offset_along_wall,
+            width: params.width,
+            sill_height: params.sill_height,
+            swing_flipped: params.swing_flipped,
+            elevation: params.elevation,
+            pitch: params.pitch,
+            tag: params.tag,
+            type_properties: params.type_properties,
+          };
+        }
         set({
-          meshes: data.meshes || [],
+          meshes,
+          elements,
           levels: data.levels || get().levels,
           grids: data.grids || get().grids,
         });
@@ -937,35 +1074,35 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   // GLM MASTER SPEC v2.1 IMPLEMENTATIONS
   // =========================================================================
 
-  exportOrltProject: async () => {
+  exportProjectContainer: async () => {
     try {
-      set({ statusMessage: 'Exporting .orlt Hybrid Project Container...' });
-      const res = await fetch(`${API_BASE}/project/export-orlt`);
+      set({ statusMessage: 'Exporting .bimworks Project Container...' });
+      const res = await fetch(`${API_BASE}/project/export-bimworks`);
       if (res.ok) {
         const blob = await res.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         const pName = get().projectName.replace(/[^a-zA-Z0-9_-]/g, '_') || 'BIMWorks_Project';
-        a.download = `${pName}.orlt`;
+        a.download = `${pName}.bimworks`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         window.URL.revokeObjectURL(url);
-        set({ statusMessage: `Exported ${pName}.orlt (Hybrid Container)` });
+        set({ statusMessage: `Exported ${pName}.bimworks (Project Container)` });
       }
     } catch (e) {
-      console.error('Failed to export .orlt project', e);
-      set({ statusMessage: 'Error exporting .orlt project' });
+      console.error('Failed to export .bimworks project', e);
+      set({ statusMessage: 'Error exporting .bimworks project' });
     }
   },
 
-  loadOrltFile: async (file: File) => {
-    set({ isLoadingFile: true, statusMessage: `Unpacking .orlt hybrid container: ${file.name}...` });
+  loadProjectContainer: async (file: File) => {
+    set({ isLoadingFile: true, statusMessage: `Unpacking project container: ${file.name}...` });
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const res = await fetch(`${API_BASE}/project/load-orlt`, {
+      const res = await fetch(`${API_BASE}/project/load-bimworks`, {
         method: 'POST',
         body: formData,
       });
@@ -974,7 +1111,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         const err = await res.json().catch(() => ({ detail: 'Network error' }));
         set({
           isLoadingFile: false,
-          statusMessage: `Error loading .orlt: ${err.detail || 'Failed to unpack'}`,
+          statusMessage: `Error loading container: ${err.detail || 'Failed to unpack'}`,
         });
         return false;
       }
@@ -987,11 +1124,11 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
       set({
         isLoadingFile: false,
-        statusMessage: `Successfully loaded ${file.name} (v2.1 Hybrid Container)`,
+        statusMessage: `Successfully loaded ${file.name} (BIMWorks Project Container)`,
       });
       return true;
     } catch (e) {
-      console.error('Error in loadOrltFile:', e);
+      console.error('Error in loadProjectContainer:', e);
       set({
         isLoadingFile: false,
         statusMessage: `Error: ${e instanceof Error ? e.message : 'Unknown failure'}`,
@@ -1171,21 +1308,18 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
     // Pattern 2: Door insertion: "insert door" or "add door at 10 feet"
     if (text.includes('door')) {
-      // Find host wall
-      const wallGuids = Object.keys(elements).filter(
-        (g) => elements[g].ifc_class === 'IfcWallStandardCase' || elements[g].ifc_class === 'IfcWall'
-      );
-      const targetWall = selectedGuid && wallGuids.includes(selectedGuid) ? selectedGuid : wallGuids[0];
-
+      // Host wall comes from the real element record (engine `element_meta`),
+      // so the baseline length below is a measured value, not a guess.
+      const targetWall = pickHostWall(elements, selectedGuid);
       if (!targetWall) {
         throw new Error('No wall available to host the door. Create walls first.');
       }
 
-      const offsetMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:'|ft|feet|m)?/);
-      const offsetVal = offsetMatch ? parseFloat(offsetMatch[1]) * 0.3048 : 3.0;
+      const doorWidth = 0.95;
+      const offsetVal = planHostedOffset(text, elements[targetWall], doorWidth, 'centered');
 
       return {
-        intentSummary: `Insert 36" × 84" Single Flush Door into host wall at ${offsetVal.toFixed(1)}m`,
+        intentSummary: `Insert 36" × 84" Single Flush Door into host wall at ${offsetVal.toFixed(2)}m from its start`,
         affectedGuids: [targetWall],
         commands: [
           {
@@ -1193,7 +1327,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
             params: {
               host_wall_guid: targetWall,
               offset_along_wall: offsetVal,
-              width: 0.95,
+              width: doorWidth,
               height: 2.13,
               name: 'Single Flush : 36" x 84"',
               swing_flipped: text.includes('flip'),
@@ -1205,25 +1339,24 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
     // Pattern 3: Window insertion: "insert window" or "add 48x48 window"
     if (text.includes('window')) {
-      const wallGuids = Object.keys(elements).filter(
-        (g) => elements[g].ifc_class === 'IfcWallStandardCase' || elements[g].ifc_class === 'IfcWall'
-      );
-      const targetWall = selectedGuid && wallGuids.includes(selectedGuid) ? selectedGuid : wallGuids[0];
-
+      const targetWall = pickHostWall(elements, selectedGuid);
       if (!targetWall) {
         throw new Error('No wall available to host window.');
       }
 
+      const winWidth = 1.2;
+      const winOffset = planHostedOffset(text, elements[targetWall], winWidth, 'start');
+
       return {
-        intentSummary: 'Insert 48" × 48" Fixed Window into wall',
+        intentSummary: `Insert 48" × 48" Fixed Window into host wall at ${winOffset.toFixed(2)}m from its start`,
         affectedGuids: [targetWall],
         commands: [
           {
             command: 'WindowInsert',
             params: {
               host_wall_guid: targetWall,
-              offset_along_wall: 2.5,
-              width: 1.2,
+              offset_along_wall: winOffset,
+              width: winWidth,
               height: 1.2,
               sill_height: 0.9,
               name: 'Fixed Window : 48" x 48"',

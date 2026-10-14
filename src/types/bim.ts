@@ -44,6 +44,36 @@ export interface MeshBufferData {
     min: [number, number, number];
     max: [number, number, number];
   };
+  /**
+   * Parametric definition of the element (baseline, hosting, offsets) as it
+   * exists in the engine's `element_meta`. A tessellated bbox cannot express
+   * these, so they are the authoritative source for the element record.
+   */
+  params?: ElementParams;
+}
+
+/** Serializable subset of the engine's per-element parametric metadata. */
+export interface ElementParams {
+  guid: string;
+  ifc_class: string;
+  name?: string;
+  start?: [number, number, number];
+  end?: [number, number, number];
+  length?: number;
+  height?: number;
+  thickness?: number;
+  angle?: number;
+  level_id?: string;
+  host_wall_guid?: string;
+  offset_along_wall?: number;
+  width?: number;
+  sill_height?: number;
+  swing_flipped?: boolean;
+  elevation?: number;
+  pitch?: number;
+  tag?: string;
+  type_properties?: Record<string, string>;
+  hosted_openings?: string[];
 }
 
 export interface LevelData {

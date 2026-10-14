@@ -11,10 +11,21 @@ export const SheetCanvas: React.FC = () => {
     addViewportToSheet,
     exportSheetPdf,
     sliced2D,
+    projectName,
+    activeScale,
+    georeference,
   } = useBimStore();
 
   const sheet = sheets.find((s) => s.id === activeSheetId) || sheets[0];
   const svgRef = useRef<SVGSVGElement>(null);
+
+  // Title-block metadata must reflect the live project, not store seed defaults.
+  // `georeference.projected_crs` is a full label ("EPSG:2285 - NAD83 / ..."),
+  // so only its code is shown in the title block.
+  const crsCode = (georeference?.projected_crs || '').split(' - ')[0] || 'Not georeferenced';
+  // Sheets are not persisted yet (P6), so the stored date is a seed value; a
+  // freshly created sheet has no authored date, so show today's.
+  const sheetDate = sheet.date || new Date().toISOString().slice(0, 10);
 
   // Sheet dimensions in points (ARCH D = 36" x 24" = 2592 x 1728 points / 1056 x 704 px)
   const sheetWidth = 1056;
@@ -156,7 +167,7 @@ export const SheetCanvas: React.FC = () => {
                 PROJECT NAME
               </text>
               <text x="0" y="16" fill="#0f172a" fontSize="13" fontWeight="bold">
-                {sheet.projectName}
+                {projectName || sheet.projectName}
               </text>
 
               <line x1="0" y1="30" x2="226" y2="30" stroke="#e2e8f0" strokeWidth="1" />
@@ -174,7 +185,7 @@ export const SheetCanvas: React.FC = () => {
                 DATE / DRAWN BY
               </text>
               <text x="0" y="114" fill="#0f172a" fontSize="11" fontFamily="JetBrains Mono, monospace">
-                {sheet.date} | {sheet.drawnBy}
+                {sheetDate} | {sheet.drawnBy}
               </text>
 
               <line x1="0" y1="128" x2="226" y2="128" stroke="#e2e8f0" strokeWidth="1" />
@@ -183,7 +194,7 @@ export const SheetCanvas: React.FC = () => {
                 SCALE / GEOREFERENCE
               </text>
               <text x="0" y="162" fill="#0f172a" fontSize="11" fontFamily="JetBrains Mono, monospace">
-                1/4" = 1'-0" (EPSG:2285)
+                {activeScale} ({crsCode})
               </text>
             </g>
 

@@ -166,7 +166,7 @@ class CommandBusEngine:
             schemas[cmd_name] = param_cls.model_json_schema()
         return {
             "version": "2.1",
-            "bus_protocol": "ORLT_CommandBus_v2.1",
+            "bus_protocol": "BIMWorks_CommandBus_v2.1",
             "commands": schemas,
         }
 

@@ -1,6 +1,6 @@
 """
 Test script for GLM Master Spec v2 implementation:
-- .orlt Hybrid Container export & load
+- .bimworks Hybrid Container export & load
 - Wall Join policy setting
 - CommandBus schema export & transaction execution (Tier 0)
 - 6-foot wall rule verification
@@ -78,28 +78,35 @@ def test_v2_core():
     assert tx_res["status"] == "committed"
     assert tx_res["origin"] == "ai"
 
-    # Test .orlt Hybrid Container export and reload
-    print("6. Testing .orlt Hybrid Container export & round-trip reload...")
-    orlt_path = bim_manager.save_orlt_project()
-    assert os.path.exists(orlt_path)
-    assert orlt_path.endswith(".orlt")
-    file_size = os.path.getsize(orlt_path)
-    print(f"   -> .orlt exported successfully ({file_size} bytes)")
+    # Test .bimworks Hybrid Container export and reload
+    print("6. Testing .bimworks Hybrid Container export & round-trip reload...")
+    project_path = bim_manager.save_orlt_project()
+    assert os.path.exists(project_path)
+    assert project_path.endswith(".bimworks"), f"expected .bimworks, got {project_path}"
+    file_size = os.path.getsize(project_path)
+    print(f"   -> .bimworks exported successfully ({file_size} bytes)")
 
     # Read bytes and reload
-    with open(orlt_path, "rb") as f:
-        orlt_bytes = f.read()
+    with open(project_path, "rb") as f:
+        project_bytes = f.read()
     
     # Reset model to empty
     bim_manager.reset_model()
     assert len(bim_manager.element_meta) == 0
 
-    # Load .orlt
-    load_res = bim_manager.load_orlt_project(orlt_bytes, "TestProject.orlt")
+    # Load .bimworks
+    load_res = bim_manager.load_orlt_project(project_bytes, "TestProject.bimworks")
     assert load_res["status"] == "loaded"
     assert len(bim_manager.element_meta) >= 2
     assert w1_guid in bim_manager.element_meta
-    print("   -> .orlt reloaded successfully! Elements restored:", len(bim_manager.element_meta))
+    print("   -> .bimworks reloaded successfully! Elements restored:", len(bim_manager.element_meta))
+
+    # Legacy `.orlt` container name must still load (pre-rename projects)
+    bim_manager.reset_model()
+    legacy_res = bim_manager.load_orlt_project(project_bytes, "TestProject.orlt")
+    assert legacy_res["status"] == "loaded"
+    assert w1_guid in bim_manager.element_meta
+    print("   -> legacy .orlt filename alias still loads (backward compatible)")
 
     print("7. Testing Command Schema Export...")
     schemas = command_bus.get_schemas()

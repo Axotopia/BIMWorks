@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from ifc_service import bim_manager
+from ifc_service import bim_manager, CONTAINER_EXTENSION, CONTAINER_EXTENSIONS
 from command_bus import command_bus, CommandRequest, TransactionRequest
 
 app = FastAPI(title="BIMWorks BIM Sidecar", version="2.1.0")
@@ -452,34 +452,48 @@ def delete_constraint(constraint_id: str):
 
 
 # ============================================================================
-# GLM SPEC v2.1 ENDPOINTS: HYBRID .ORLT CONTAINER, WALL JOINS, COMMAND BUS
+# PROJECT CONTAINER: HYBRID .BIMWORKS (zip), WALL JOINS, COMMAND BUS
 # ============================================================================
 
-@app.get("/api/project/export-orlt")
-def export_orlt_project():
-    """Exports full .orlt hybrid zip container per GLM Master Spec v2 §3.1."""
+@app.get("/api/project/export-bimworks")
+def export_bimworks_project():
+    """Exports the full .bimworks hybrid zip container per Master Spec §3.1."""
     try:
         filepath = bim_manager.save_orlt_project()
         with open(filepath, "rb") as f:
             data = f.read()
+        safe_name = "".join(
+            c for c in bim_manager.project_name if c.isalnum() or c in ("-", "_")
+        ).strip() or "Project"
         return Response(
             content=data,
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{bim_manager.project_name}.orlt"'},
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}{CONTAINER_EXTENSION}"'},
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/project/load-orlt")
-async def load_orlt_project(file: UploadFile = File(...)):
-    """Loads .orlt hybrid container (model.ifc + parametric.json overlay)."""
+@app.post("/api/project/load-bimworks")
+async def load_bimworks_project(file: UploadFile = File(...)):
+    """Loads a .bimworks hybrid container (legacy .orlt also accepted)."""
     try:
         raw_bytes = await file.read()
-        res = bim_manager.load_orlt_project(raw_bytes, file.filename or "Project.orlt")
-        return res
+        return bim_manager.load_orlt_project(raw_bytes, file.filename or f"Project{CONTAINER_EXTENSION}")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to load .orlt container: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to load project container: {str(e)}")
+
+
+@app.get("/api/project/export-orlt", deprecated=True)
+def export_orlt_project():
+    """Deprecated alias of /api/project/export-bimworks (pre-rename path)."""
+    return export_bimworks_project()
+
+
+@app.post("/api/project/load-orlt", deprecated=True)
+async def load_orlt_project(file: UploadFile = File(...)):
+    """Deprecated alias of /api/project/load-bimworks; accepts .orlt and .bimworks."""
+    return await load_bimworks_project(file)
 
 
 @app.get("/api/wall/joins")

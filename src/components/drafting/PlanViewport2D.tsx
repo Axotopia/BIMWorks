@@ -1,6 +1,106 @@
 import React, { useState, useRef } from 'react';
 import { useBimStore } from '../../store/useBimStore';
+import { BimElement, MeshBufferData } from '../../types/bim';
 import { Maximize2, ZoomIn, ZoomOut, Lock, Equal } from 'lucide-react';
+
+// ---------------------------------------------------------------------------
+// Alignment-guide geometry
+//
+// The overlay used to draw its dashed line at fixed coordinates (x -5..18,
+// y 0) regardless of what was aligned — a fake presented as model data. These
+// helpers derive the guide from the constrained elements' real extents so the
+// line lands on the shared coordinate and the padlock sits on the line.
+// ---------------------------------------------------------------------------
+
+type XYBounds = { min: [number, number]; max: [number, number] };
+
+function boundsFromElement(element: BimElement | undefined): XYBounds | null {
+  if (!element) return null;
+  const pts: Array<[number, number]> = [];
+  if (element.start) pts.push([element.start[0], element.start[1]]);
+  if (element.end) pts.push([element.end[0], element.end[1]]);
+  if (element.polygon) pts.push(...element.polygon);
+
+  // Openings carry no baseline, so fall back to the host wall's footprint.
+  if (pts.length === 0 && element.host_wall_guid) return null;
+
+  if (pts.length === 0) {
+    const cx = element.start?.[0];
+    return typeof cx === 'number' ? { min: [cx, 0], max: [cx, 0] } : null;
+  }
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  return { min: [Math.min(...xs), Math.min(...ys)], max: [Math.max(...xs), Math.max(...ys)] };
+}
+
+function boundsFromMesh(mesh: MeshBufferData | undefined): XYBounds | null {
+  if (!mesh) return null;
+  return { min: [mesh.bbox.min[0], mesh.bbox.min[1]], max: [mesh.bbox.max[0], mesh.bbox.max[1]] };
+}
+
+function unionBounds(a: XYBounds | null, b: XYBounds | null): XYBounds | null {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    min: [Math.min(a.min[0], b.min[0]), Math.min(a.min[1], b.min[1])],
+    max: [Math.max(a.max[0], b.max[0]), Math.max(a.max[1], b.max[1])],
+  };
+}
+
+function resolveBounds(
+  guid: string | undefined,
+  elements: Record<string, BimElement>,
+  meshes: MeshBufferData[]
+): XYBounds | null {
+  if (!guid) return null;
+  return (
+    boundsFromElement(elements[guid]) ??
+    boundsFromMesh(meshes.find((m) => m.guid === guid))
+  );
+}
+
+/**
+ * Position of an align-constraint guide: the shared coordinate along the
+ * constrained axis, spanning both elements, with a padlock anchor.
+ */
+function alignmentGuide(
+  c: { ref_guid?: string; target_guid?: string; axis?: 'x' | 'y' | 'z' },
+  elements: Record<string, BimElement>,
+  meshes: MeshBufferData[]
+): { x1: number; y1: number; x2: number; y2: number; anchor: [number, number]; vertical: boolean } | null {
+  const span = unionBounds(
+    resolveBounds(c.ref_guid, elements, meshes),
+    resolveBounds(c.target_guid, elements, meshes)
+  );
+  if (!span) return null;
+
+  const axis = c.axis === 'y' ? 'y' : 'x';
+  const pad = 0.75;
+
+  if (axis === 'x') {
+    // Shared X: a vertical guide from low Y to high Y.
+    const guide = (span.min[0] + span.max[0]) / 2;
+    return {
+      x1: guide,
+      y1: span.min[1] - pad,
+      x2: guide,
+      y2: span.max[1] + pad,
+      anchor: [guide, (span.min[1] + span.max[1]) / 2],
+      vertical: true,
+    };
+  }
+
+  // Shared Y: a horizontal guide from low X to high X.
+  const guide = (span.min[1] + span.max[1]) / 2;
+  return {
+    x1: span.min[0] - pad,
+    y1: guide,
+    x2: span.max[0] + pad,
+    y2: guide,
+    anchor: [(span.min[0] + span.max[0]) / 2, guide],
+    vertical: false,
+  };
+}
 
 export const PlanViewport2D: React.FC = () => {
   const {
@@ -18,6 +118,8 @@ export const PlanViewport2D: React.FC = () => {
     setAlignPickState,
     createAlignConstraint,
     setActiveTool,
+    elements,
+    meshes,
   } = useBimStore();
 
   const handleElementClick = (guid: string) => {
@@ -289,53 +391,60 @@ export const PlanViewport2D: React.FC = () => {
             );
           })}
 
-          {/* 7. Active Alignment Constraints Visual Lines with Padlocks */}
+          {/* 7. Active Alignment Constraints Visual Lines with Padlocks
+                 Geometry comes from the constrained elements' real extents. */}
           {constraints
             .filter((c) => c.type === 'align')
             .map((c) => {
+              const guide = alignmentGuide(c, elements, meshes);
+              if (!guide) return null;
+              const [ax, ay] = guide.anchor;
+              const perpendicularOffset = guide.vertical ? 0.35 : -0.35;
               return (
                 <g key={`align-${c.id}`}>
-                  {/* Alignment guide line */}
+                  {/* Alignment guide line at the shared coordinate */}
                   <line
-                    x1="-5"
-                    y1="0"
-                    x2="18"
-                    y2="0"
+                    x1={guide.x1}
+                    y1={guide.y1}
+                    x2={guide.x2}
+                    y2={guide.y2}
                     stroke="#38bdf8"
                     strokeWidth="0.03"
                     strokeDasharray="0.3, 0.2"
                   />
-                  {/* Alignment Padlock */}
-                  <g
-                    transform="translate(6, 0.4) scale(1, -1)"
-                    className="cursor-pointer"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleConstraintLock(c.id, !c.is_locked);
-                    }}
-                  >
-                    <circle
-                      cx="0"
-                      cy="0"
-                      r="0.25"
-                      fill={c.is_locked ? '#0284c7' : '#ffffff'}
-                      stroke="#0284c7"
-                      strokeWidth="0.03"
-                    />
-                    <rect
-                      x="-0.10"
-                      y="-0.09"
-                      width="0.20"
-                      height="0.18"
-                      rx="0.02"
-                      fill={c.is_locked ? '#ffffff' : '#0284c7'}
-                    />
-                    <path
-                      d="M -0.07 -0.09 A 0.07 0.07 0 0 1 0.07 -0.09"
-                      stroke={c.is_locked ? '#ffffff' : '#0284c7'}
-                      strokeWidth="0.03"
-                      fill="none"
-                    />
+                  {/* Alignment Padlock, sitting on the guide line */}
+                  <g transform={`translate(${ax}, ${ay}) scale(1, -1)`}>
+                    <g
+                      transform={`translate(0, ${perpendicularOffset})`}
+                      className="cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleConstraintLock(c.id, !c.is_locked);
+                      }}
+                    >
+                      <circle
+                        cx="0"
+                        cy="0"
+                        r="0.25"
+                        fill={c.is_locked ? '#0284c7' : '#ffffff'}
+                        stroke="#0284c7"
+                        strokeWidth="0.03"
+                      />
+                      <rect
+                        x="-0.10"
+                        y="-0.09"
+                        width="0.20"
+                        height="0.18"
+                        rx="0.02"
+                        fill={c.is_locked ? '#ffffff' : '#0284c7'}
+                      />
+                      <path
+                        d="M -0.07 -0.09 A 0.07 0.07 0 0 1 0.07 -0.09"
+                        stroke={c.is_locked ? '#ffffff' : '#0284c7'}
+                        strokeWidth="0.03"
+                        fill="none"
+                      />
+                    </g>
                   </g>
                 </g>
               );

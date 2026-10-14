@@ -25,6 +25,24 @@ export const ProjectBrowser: React.FC = () => {
     meshes,
   } = useBimStore();
 
+  // Real IFC class inventory with instance counts, derived from the loaded model.
+  // This block previously listed five fixed class/type names regardless of what
+  // was actually loaded — static text presented as model content.
+  const ifcClassCounts = meshes.reduce<Record<string, number>>((acc, m) => {
+    acc[m.ifc_class] = (acc[m.ifc_class] ?? 0) + 1;
+    return acc;
+  }, {});
+  const ifcClassEntries = Object.entries(ifcClassCounts).sort((a, b) => b[1] - a[1]);
+
+  const classIcon = (ifcClass: string) => {
+    if (ifcClass === 'IfcDoor') return <DoorClosed size={11} className="text-[#f97316]" />;
+    if (ifcClass === 'IfcWindow') return <AppWindow size={11} className="text-[#38bdf8]" />;
+    if (ifcClass === 'IfcSlab' || ifcClass === 'IfcRoof')
+      return <Square size={11} className="text-[#a855f7]" />;
+    if (ifcClass === 'IfcGrid') return <Grid size={11} className="text-[#eab308]" />;
+    return <Box size={11} className="text-[#60a5fa]" />;
+  };
+
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     views: true,
     floorPlans: true,
@@ -213,26 +231,17 @@ export const ProjectBrowser: React.FC = () => {
 
           {expandedSections.families && (
             <div className="pl-4 space-y-1 mt-0.5 border-l border-[#3a3a3a] ml-2 text-[10px] text-[#9ca3af]">
-              <div className="flex items-center space-x-1 py-0.5">
-                <Box size={11} className="text-[#60a5fa]" />
-                <span>IfcWallStandardCase (Basic Wall)</span>
-              </div>
-              <div className="flex items-center space-x-1 py-0.5">
-                <DoorClosed size={11} className="text-[#f97316]" />
-                <span>IfcDoor (Single Flush)</span>
-              </div>
-              <div className="flex items-center space-x-1 py-0.5">
-                <AppWindow size={11} className="text-[#38bdf8]" />
-                <span>IfcWindow (Fixed Window)</span>
-              </div>
-              <div className="flex items-center space-x-1 py-0.5">
-                <Square size={11} className="text-[#a855f7]" />
-                <span>IfcSlab (Floor Slab)</span>
-              </div>
-              <div className="flex items-center space-x-1 py-0.5">
-                <Grid size={11} className="text-[#eab308]" />
-                <span>IfcGrid (Datum Grid)</span>
-              </div>
+              {ifcClassEntries.length === 0 && (
+                <div className="py-0.5 italic text-[#6b7280]">No elements loaded</div>
+              )}
+              {ifcClassEntries.map(([ifcClass, count]) => (
+                <div key={ifcClass} className="flex items-center space-x-1 py-0.5">
+                  {classIcon(ifcClass)}
+                  <span>
+                    {ifcClass} ({count})
+                  </span>
+                </div>
+              ))}
             </div>
           )}
         </div>

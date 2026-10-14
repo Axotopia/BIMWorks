@@ -40,10 +40,10 @@ export const Ribbon: React.FC = () => {
     toggleSectionBox,
     sectionBox,
     exportIfc,
-    exportOrltProject,
+    exportProjectContainer,
     loadSampleProject,
     loadIfcFile,
-    loadOrltFile,
+    loadProjectContainer,
     undoTransaction,
     redoTransaction,
     setPromptBarOpen,
@@ -72,8 +72,11 @@ export const Ribbon: React.FC = () => {
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.name.toLowerCase().endsWith('.orlt')) {
-        await loadOrltFile(file);
+      const lower = file.name.toLowerCase();
+      // `.bimworks` is the container format; `.orlt` is the legacy pre-rename
+      // extension, still accepted so projects saved by the 10-13 prototype load.
+      if (lower.endsWith('.bimworks') || lower.endsWith('.orlt')) {
+        await loadProjectContainer(file);
       } else {
         await loadIfcFile(file);
       }
@@ -137,14 +140,14 @@ export const Ribbon: React.FC = () => {
             <button
               onClick={handleOpenFileClick}
               className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
-              title="Open IFC File (.ifc, .step) - Ctrl+O"
+              title="Open Project (.bimworks / .orlt) or IFC File (.ifc, .step) - Ctrl+O"
             >
               <FolderOpen size={14} className={isLoadingFile ? 'text-[#38bdf8] animate-pulse' : ''} />
             </button>
             <button
-              onClick={() => exportOrltProject()}
+              onClick={() => exportProjectContainer()}
               className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
-              title="Save Project Container (.orlt)"
+              title="Save Project Container (.bimworks)"
             >
               <Save size={14} className="text-[#38bdf8]" />
             </button>
@@ -255,18 +258,18 @@ export const Ribbon: React.FC = () => {
                 onClick={handleOpenFileClick}
                 disabled={isLoadingFile}
                 className="flex items-center space-x-1.5 px-3 py-2 bg-[#1e293b] hover:bg-[#334155] border border-[#0284c7] rounded text-xs text-white shadow-sm transition-colors cursor-pointer"
-                title="Open .orlt Hybrid Container or .ifc File (Ctrl+O)"
+                title="Open .bimworks Project Container (or legacy .orlt) or .ifc File (Ctrl+O)"
               >
                 <FolderOpen size={15} className="text-[#38bdf8]" />
                 <span className="font-medium">{isLoadingFile ? 'Opening...' : 'Open Project / IFC...'}</span>
               </button>
               <button
-                onClick={() => exportOrltProject()}
+                onClick={() => exportProjectContainer()}
                 className="flex items-center space-x-1.5 px-3 py-2 bg-[#064e3b] hover:bg-[#047857] border border-[#059669] rounded text-xs text-white shadow-sm transition-colors cursor-pointer"
-                title="Save BIMWorks .orlt Hybrid Container"
+                title="Save BIMWorks .bimworks Project Container"
               >
                 <Save size={14} className="text-[#34d399]" />
-                <span>Save Project (.orlt)</span>
+                <span>Save Project (.bimworks)</span>
               </button>
               <button
                 onClick={() => exportIfc()}
@@ -367,11 +370,11 @@ export const Ribbon: React.FC = () => {
         )}
       </div>
 
-      {/* Hidden Native File Input for Opening Local IFC Files */}
+      {/* Hidden Native File Input for Opening BIMWorks Containers or IFC Files */}
       <input
         ref={fileInputRef}
         type="file"
-        accept=".ifc,.stp,.step"
+        accept=".bimworks,.orlt,.ifc,.stp,.step"
         className="hidden"
         onChange={handleFileChange}
       />

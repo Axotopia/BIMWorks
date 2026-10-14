@@ -34,6 +34,16 @@ except ImportError:
     import fitz as pymupdf
 
 
+# Hybrid project container (zip: model.ifc + parametric.json + views + meta).
+# `.bimworks` is the canonical extension (spec §0.1 / §11.2). `.orlt` is the
+# pre-rename "Open-Revit-LT" leftover retained as a load-recognized alias so
+# projects saved by the 2026-10-13 prototype still open.
+CONTAINER_EXTENSION = ".bimworks"
+LEGACY_CONTAINER_EXTENSION = ".orlt"
+CONTAINER_EXTENSIONS = (CONTAINER_EXTENSION, LEGACY_CONTAINER_EXTENSION)
+CONTAINER_FORMAT_ID = "bimworks_hybrid_v3"
+
+
 class BimModelManager:
     """
     Manages an active IFC4 document in memory with parametric dependency graph,
@@ -295,6 +305,41 @@ class BimModelManager:
     # ARCHITECTURAL MODELING: WALLS, DOORS, WINDOWS, SLABS, ROOFS, GRIDS
     # =========================================================================
 
+    @staticmethod
+    def _hosted_placement_matrix(
+        host_meta: Dict[str, Any],
+        offset_along_wall: float,
+        local_y: float = 0.0,
+        local_z: float = 0.0,
+    ) -> np.ndarray:
+        """
+        Rigid placement for an element hosted on a wall, in world coordinates.
+
+        The host wall is placed at its baseline start, rotated by its baseline
+        angle. A hosted door/window/opening must follow the same convention or it
+        will not sit on the wall: the translation is `start + u * offset` and the
+        local X axis is rotated to the wall direction. Previously these elements
+        were placed with a bare `[offset, 0, 0]` translation and no rotation, so
+        a door on an angled wall floated off it in world space (only the metadata
+        offset was correct).
+
+        `local_y` is the element's own cross-wall offset from the baseline
+        (an opening is nudged to sit on the wall face), `local_z` its sill.
+        """
+        ang = float(host_meta.get("angle", 0.0))
+        ux, uy = math.cos(ang), math.sin(ang)
+        sp = host_meta.get("start", [0.0, 0.0, 0.0])
+        base_z = float(sp[2]) if len(sp) > 2 else 0.0
+
+        matrix = np.identity(4)
+        matrix[0, 0], matrix[0, 1] = ux, -uy
+        matrix[1, 0], matrix[1, 1] = uy, ux
+        # world position = baseline start + offset along u + local_y along the normal
+        matrix[0, 3] = float(sp[0]) + ux * offset_along_wall - uy * local_y
+        matrix[1, 3] = float(sp[1]) + uy * offset_along_wall + ux * local_y
+        matrix[2, 3] = base_z + local_z
+        return matrix
+
     def add_wall(
         self,
         start_pt: Tuple[float, float, float],
@@ -425,9 +470,8 @@ class BimModelManager:
             "geometry.assign_representation", self.model, product=opening, representation=op_rep
         )
 
-        # Placement relative to wall coordinates
-        op_matrix = np.identity(4)
-        op_matrix[:, 3] = [float(offset_along_wall), -0.05, 0.0, 1.0]
+        # Placement follows the host wall's own baseline/angle (world coords).
+        op_matrix = self._hosted_placement_matrix(wall_meta, offset_along_wall, local_y=-0.05)
         ifcopenshell.api.run(
             "geometry.edit_object_placement", self.model, product=opening, matrix=op_matrix
         )
@@ -457,8 +501,7 @@ class BimModelManager:
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=door, representation=door_rep
         )
-        door_matrix = np.identity(4)
-        door_matrix[:, 3] = [float(offset_along_wall), 0.0, 0.0, 1.0]
+        door_matrix = self._hosted_placement_matrix(wall_meta, offset_along_wall, local_y=0.0)
         ifcopenshell.api.run(
             "geometry.edit_object_placement", self.model, product=door, matrix=door_matrix
         )
@@ -525,8 +568,9 @@ class BimModelManager:
             "geometry.assign_representation", self.model, product=opening, representation=op_rep
         )
 
-        op_matrix = np.identity(4)
-        op_matrix[:, 3] = [float(offset_along_wall), -0.05, float(sill_height), 1.0]
+        op_matrix = self._hosted_placement_matrix(
+            wall_meta, offset_along_wall, local_y=-0.05, local_z=sill_height
+        )
         ifcopenshell.api.run(
             "geometry.edit_object_placement", self.model, product=opening, matrix=op_matrix
         )
@@ -554,8 +598,9 @@ class BimModelManager:
         ifcopenshell.api.run(
             "geometry.assign_representation", self.model, product=window, representation=win_rep
         )
-        win_matrix = np.identity(4)
-        win_matrix[:, 3] = [float(offset_along_wall), 0.0, float(sill_height), 1.0]
+        win_matrix = self._hosted_placement_matrix(
+            wall_meta, offset_along_wall, local_y=0.0, local_z=sill_height
+        )
         ifcopenshell.api.run(
             "geometry.edit_object_placement", self.model, product=window, matrix=win_matrix
         )
@@ -834,19 +879,34 @@ class BimModelManager:
             self.recompute_wall_joins()
 
         elif ifc_class in ("IfcDoor", "IfcWindow"):
-            # Move along wall
-            meta["offset_along_wall"] += dx
+            # Slide along the host wall.
+            #
+            # The incoming (dx, dy) is a WORLD delta, but `offset_along_wall` is a
+            # distance along the wall's own axis. Projecting the world delta onto
+            # the wall direction is what makes the slide follow the wall: on a
+            # wall running at 90° a world +X drag contributes nothing, and on a
+            # 45° wall a +X drag contributes only its 1/√2 component. The previous
+            # code added the raw world dx, so doors jumped off angled walls.
+            host_meta = self.element_meta.get(meta.get("host_wall_guid"))
+            if host_meta is None:
+                return False
+            host_angle = float(host_meta.get("angle", 0.0))
+            ux, uy = math.cos(host_angle), math.sin(host_angle)
+            meta["offset_along_wall"] += dx * ux + dy * uy
             opening = meta["opening_entity"]
             door_win = meta["entity"]
+            sill = float(meta.get("sill_height", 0.0))
 
-            op_matrix = np.identity(4)
-            op_matrix[:, 3] = [float(meta["offset_along_wall"]), -0.05, float(meta.get("sill_height", 0.0)), 1.0]
+            op_matrix = self._hosted_placement_matrix(
+                host_meta, meta["offset_along_wall"], local_y=-0.05, local_z=sill
+            )
             ifcopenshell.api.run(
                 "geometry.edit_object_placement", self.model, product=opening, matrix=op_matrix
             )
 
-            dw_matrix = np.identity(4)
-            dw_matrix[:, 3] = [float(meta["offset_along_wall"]), 0.0, float(meta.get("sill_height", 0.0)), 1.0]
+            dw_matrix = self._hosted_placement_matrix(
+                host_meta, meta["offset_along_wall"], local_y=0.0, local_z=sill
+            )
             ifcopenshell.api.run(
                 "geometry.edit_object_placement", self.model, product=door_win, matrix=dw_matrix
             )
@@ -1428,6 +1488,39 @@ class BimModelManager:
     # 3D GEOMETRY EXTRACTION (Three.js Buffer Geometry Generation)
     # =========================================================================
 
+    # Parametric fields that the shadow `element_meta` dict holds and that no
+    # mesh/bbox can reconstruct. Serialized to the frontend so the store's
+    # element record (and the AI planner) has real baselines and hosting info.
+    ELEMENT_PARAM_FIELDS = (
+        "ifc_class",
+        "name",
+        "start",
+        "end",
+        "length",
+        "height",
+        "thickness",
+        "angle",
+        "level_id",
+        "host_wall_guid",
+        "offset_along_wall",
+        "width",
+        "sill_height",
+        "swing_flipped",
+        "elevation",
+        "pitch",
+        "tag",
+        "type_properties",
+    )
+
+    def _serialize_element_params(self, guid: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        """Compact parametric record for one element (no live entity refs)."""
+        record: Dict[str, Any] = {"guid": guid}
+        for key in self.ELEMENT_PARAM_FIELDS:
+            if key in meta and meta[key] is not None:
+                record[key] = meta[key]
+        record["hosted_openings"] = list(meta.get("hosted_openings", []))
+        return record
+
     def get_geometry_buffers(self) -> Dict[str, Any]:
         """
         Extracts 3D triangulated meshes from active IFC entities using IfcGeom.
@@ -1506,6 +1599,9 @@ class BimModelManager:
                     "cut_color": style["cut_color"],
                     "opacity": style["opacity"],
                     "bbox": bbox,
+                    # Parametric definition (baseline, hosting, offsets) so the
+                    # frontend element record is real data, not a mesh guess.
+                    "params": self._serialize_element_params(guid, meta),
                 })
             except Exception as e:
                 # Fallback simple bounding geometry if shape creation fails
@@ -1755,18 +1851,23 @@ class BimModelManager:
 
     def save_orlt_project(self, filepath: Optional[str] = None) -> str:
         """
-        Exports the project as a BIMWorks hybrid container (.orlt zip).
+        Exports the project as a BIMWorks hybrid container (.bimworks zip).
+
         Per GLM Master Spec v2 §3.1:
-        myproject.orlt (zip container)
+        myproject.bimworks (zip container)
         ├── model.ifc          # IFC4 ADD2 STEP file — model of record
         ├── parametric.json    # overlay: constraints, join policies, parameters in decimal feet
         ├── views/default.json # view range, detail level, filters, templates
         └── meta.json          # schema version (2.1), license (GPL-3.0), units (decimal_feet)
+
+        The method name keeps its historical `_orlt_` spelling so existing callers
+        (CommandBus handlers, tests, scratch scripts) are unaffected; the emitted
+        container is `.bimworks`.
         """
         if not filepath:
             temp_dir = tempfile.gettempdir()
             safe_name = "".join(c for c in self.project_name if c.isalnum() or c in ("-", "_")).strip() or "Project"
-            filepath = os.path.join(temp_dir, f"{safe_name}.orlt")
+            filepath = os.path.join(temp_dir, f"{safe_name}{CONTAINER_EXTENSION}")
 
         # 1. Generate IFC4 STEP model of record
         ifc_temp = tempfile.NamedTemporaryFile(suffix=".ifc", delete=False)
@@ -1812,6 +1913,7 @@ class BimModelManager:
             "app": "BIMWorks",
             "version": "2.1",
             "spec": "GLM Master Spec v2.1",
+            "container_format": CONTAINER_FORMAT_ID,
             "license": "GPL-3.0",
             "internal_units": "decimal_feet",
             "project_name": self.project_name,
@@ -1832,27 +1934,44 @@ class BimModelManager:
 
         return filepath
 
-    def load_orlt_project(self, file_bytes_or_path: Any, filename: str = "Project.orlt") -> Dict[str, Any]:
+    def load_orlt_project(self, file_bytes_or_path: Any, filename: str = "Project.bimworks") -> Dict[str, Any]:
         """
-        Loads an .orlt hybrid container:
+        Loads a BIMWorks hybrid container (.bimworks; legacy .orlt also accepted):
         1. Reads and loads model.ifc as the geometric and spatial model of record.
         2. Parses parametric.json and binds constraints, join policies, and type properties to GUIDs.
         3. Stale overlay records (elements edited or removed externally) are gracefully ignored.
+
+        The `filename` argument is decorative only — the payload is identified by its
+        zip members, so a mislabelled extension still loads. It is used for the
+        imported IFC's display name and log messages.
         """
         if isinstance(file_bytes_or_path, (bytes, bytearray)):
             z_file = zipfile.ZipFile(io.BytesIO(file_bytes_or_path))
         elif isinstance(file_bytes_or_path, str):
             z_file = zipfile.ZipFile(file_bytes_or_path, "r")
         else:
-            raise ValueError("Invalid file input for .orlt project container")
+            raise ValueError("Invalid file input for project container")
+
+        # Normalize a display name with a real .ifc suffix for the IFC import path
+        # (works for .bimworks, legacy .orlt, and mislabelled/extensionless names).
+        display_name = filename or "Project.bimworks"
+        stem = display_name
+        for ext in CONTAINER_EXTENSIONS:
+            if stem.lower().endswith(ext):
+                stem = stem[: -len(ext)]
+                break
+        else:
+            if "." in os.path.basename(stem):
+                stem = os.path.splitext(stem)[0]
+        ifc_display_name = f"{stem}.ifc"
 
         with z_file as z:
             names = z.namelist()
             if "model.ifc" not in names:
-                raise ValueError(".orlt container missing required 'model.ifc'")
+                raise ValueError("Project container missing required 'model.ifc'")
 
             ifc_content = z.read("model.ifc").decode("utf-8", errors="replace")
-            load_res = self.load_ifc_content(ifc_content, filename.replace(".orlt", ".ifc"))
+            load_res = self.load_ifc_content(ifc_content, ifc_display_name)
 
             if "parametric.json" in names:
                 try:
@@ -1877,7 +1996,7 @@ class BimModelManager:
 
         return {
             "status": "loaded",
-            "container_format": "orlt_hybrid_v2",
+            "container_format": CONTAINER_FORMAT_ID,
             "project_name": self.project_name,
             "elements_count": len(self.element_meta),
             "constraints_count": len(self.constraints),

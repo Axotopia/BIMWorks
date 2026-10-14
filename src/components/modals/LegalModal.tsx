@@ -110,7 +110,7 @@ export const LegalModal: React.FC = () => {
               </div>
               <div className="space-y-2">
                 <p>
-                  <strong>1. Instruments of Service — Uncertified Drafts:</strong> All 2D plans, vector slices, 3D models, schedules, sheet layouts, dimension strings, and exports (.ifc, .orlt, .pdf, .svg) are uncertified instruments of service and do not constitute sealed or stamped construction documents.
+                  <strong>1. Instruments of Service — Uncertified Drafts:</strong> All 2D plans, vector slices, 3D models, schedules, sheet layouts, dimension strings, and exports (.ifc, .bimworks, .pdf, .svg) are uncertified instruments of service and do not constitute sealed or stamped construction documents.
                 </p>
                 <p>
                   <strong>2. Do Not Scale Drawings:</strong> Field verification of all dimensions, levels, clearances, structural bearings, and existing job-site conditions is mandatory prior to ordering materials, fabrication, or construction.
