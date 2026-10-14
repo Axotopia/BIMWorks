@@ -295,6 +295,52 @@ def main():
     else:
         print("   [note] sample_building.ifc not present; skipping the foreign-unit check")
 
+    print("8d. Plan conventions, as measurable properties ...")
+    # "Visually matches a Revit plan" is a human judgement, but the conventions it
+    # rests on are measurable, and these are them.
+    mc = fresh()
+    lc = [i for i, l in mc.levels.items() if l["name"] == "Level 1"][0]
+    sw = mc.add_wall((0, 0, 0), (40, 0, 0), height=FEET_10, thickness=INCHES_8,
+                     name="South", level_id=lc)["guid"]
+    mc.add_wall((40, 0, 0), (40, 24, 0), height=FEET_10, thickness=INCHES_8,
+                name="East", level_id=lc)
+    mc.add_wall((40, 24, 0), (0, 24, 0), height=FEET_10, thickness=INCHES_8,
+                name="North", level_id=lc)
+    mc.add_wall((0, 24, 0), (0, 0, 0), height=FEET_10, thickness=INCHES_8,
+                name="West", level_id=lc)
+    mc.add_door(sw, offset_along_wall=6.0, width=3.0)
+    mc.add_window(sw, offset_along_wall=20.0, width=6.0, height=4.0, sill_height=3.0)
+    mc.add_wall((20, 0, 0), (20, 24, 0), height=FEET_10, thickness=INCHES_8,
+                name="Partition", level_id=lc)
+    plan_c = mc.slice_2d_vector_plan(cut_elevation=4.0)
+    lw = plan_c["lineweights"]
+    check("cut is the heaviest linework and hidden the lightest",
+          lw["cut"]["weight_mm"] > lw["projection"]["weight_mm"] > lw["hidden"]["weight_mm"],
+          {k: v["weight_mm"] for k, v in lw.items()})
+    check("hidden linework is drawn dashed", lw["hidden"]["pattern"] == "dashed")
+
+    # Openings must read as gaps at their own positions, in feet.
+    import re as _re3
+
+    def _bbox(d):
+        n = [float(v) for v in _re3.findall(r"-?\d+\.?\d*", d)]
+        xs, ys = n[0::2], n[1::2]
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    wall_cut = [e for e in plan_c["cut_paths"] if "Wall" in (e.get("class") or "")]
+    front = sorted({(round(_bbox(e["d"])[0], 2), round(_bbox(e["d"])[2], 2))
+                    for e in wall_cut
+                    if abs(_bbox(e["d"])[1] - 0.333) < 0.02
+                    and abs(_bbox(e["d"])[3] - 0.333) < 0.02})
+    gaps = [(a[1], b[0]) for a, b in zip(front, front[1:]) if b[0] - a[1] > 1.0]
+    check("the door reads as a gap at 6..9 ft",
+          any(abs(g[0] - 6.0) < 0.3 and abs(g[1] - 9.0) < 0.3 for g in gaps), gaps)
+    check("the window reads as a gap at 20..26 ft",
+          any(abs(g[0] - 20.0) < 0.5 and abs(g[1] - 26.0) < 0.5 for g in gaps), gaps)
+    check("the partition is drawn as a cut wall",
+          any(e.get("guid") and "Wall" in (e.get("class") or "")
+              for e in plan_c["cut_paths"]), plan_c["partitions"])
+
     print("9. Drafting symbols and dimensions are produced ...")
     # A window drawn as a bare wall gap is not how a plan shows a window; the glazing
     # symbol is annotation, like the door swing, so it cannot come from HLR.
