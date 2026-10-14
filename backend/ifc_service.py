@@ -185,6 +185,12 @@ class BimModelManager:
 
         # 1D/2D Parametric Constraints Manager
         self.constraints: Dict[str, Dict[str, Any]] = {}
+        # Last over-constraint/conflict report from the solver (None when clean).
+        self.last_constraint_conflict: Optional[Dict[str, Any]] = None
+        # Counters from the most recent incremental recompute (P3), used by the
+        # latency measurement and to show the recompute is local.
+        self.last_join_stats: Dict[str, Any] = {}
+        self._dependency_graph = None
 
         # Wall Join Policies (Butt / Miter / Square-off and per-endpoint allowJoin)
         self.join_policies: Dict[str, Dict[str, Any]] = {}
@@ -348,6 +354,66 @@ class BimModelManager:
             "entity": storey,
         }
         return level_id
+
+    # =========================================================================
+    # LEVEL-DRIVEN ELEMENTS (P3 / README M2 gate)
+    # =========================================================================
+
+    def move_level(self, level_id: str, new_elevation: float) -> Dict[str, Any]:
+        """
+        Moves a storey and brings its elements with it.
+
+        Before P3 a level was inert: `add_level` wrote an IfcBuildingStorey and the
+        README M2 gate's "move Level 2 -> constrained walls follow" was simply not
+        implemented. Elements are now linked to their level in the dependency
+        graph, so moving the datum moves everything hosted on it and re-solves the
+        constraints that follow.
+
+        Elevation is the z datum, so elements translate in z; the constraint solver
+        then re-derives anything tied to them (a wall aligned to a moved wall, an
+        EQ span that must redistribute).
+        """
+        if level_id not in self.levels:
+            raise KeyError(f"Level {level_id} not found")
+        level = self.levels[level_id]
+        delta = float(new_elevation) - float(level["elevation"])
+        if abs(delta) < 1e-12:
+            return {"status": "unchanged", "level_id": level_id, "moved_elements": 0}
+
+        storey = level.get("entity")
+        if storey is not None:
+            storey.Elevation = float(new_elevation)
+        level["elevation"] = float(new_elevation)
+
+        # Every element on this storey follows. Explicit membership from the graph
+        # rather than "all elements": elements on other levels must not move.
+        members = [
+            g for g, m in self.element_meta.items()
+            if m.get("level_id") == level_id
+        ]
+        moved = 0
+        for guid in members:
+            if self.translate_element(guid, 0.0, 0.0, delta, _propagate=False):
+                moved += 1
+
+        # Recompute geometry for the affected neighbourhood only.
+        try:
+            from dependency_graph import DependencyGraph
+
+            graph = DependencyGraph.build(self)
+            graph.recompute(members)
+            self.last_join_stats = graph.last_stats
+        except Exception as e:
+            print(f"Notice: recompute after moving level failed: {e}")
+
+        return {
+            "status": "moved",
+            "level_id": level_id,
+            "name": level.get("name"),
+            "elevation": float(new_elevation),
+            "delta": delta,
+            "moved_elements": moved,
+        }
 
     def apply_georeferencing(self):
         """Applies buildingSMART IFC4 IfcProjectedCRS and IfcMapConversion."""
@@ -1054,7 +1120,13 @@ class BimModelManager:
         return True
 
     def translate_element(
-        self, guid: str, dx: float, dy: float, dz: float = 0.0, visited: Optional[set] = None
+        self,
+        guid: str,
+        dx: float,
+        dy: float,
+        dz: float = 0.0,
+        visited: Optional[set] = None,
+        _propagate: bool = True,
     ) -> bool:
         """
         Translates an element.
@@ -1160,29 +1232,77 @@ class BimModelManager:
             translated = True
 
         # =====================================================================
-        # CONSTRAINT PROPAGATION (Dependency Graph)
+        # CONSTRAINT PROPAGATION (P3: solved, not recursively delta-copied)
         # =====================================================================
-        if translated:
-            for cid, c in list(self.constraints.items()):
-                # 1. Align & Lock: Reference moves -> locked target moves by identical delta
-                if c.get("type") == "align" and c.get("is_locked", True):
-                    if c.get("ref_guid") == guid:
-                        target = c.get("target_guid")
-                        if target and target not in visited:
-                            self.translate_element(target, dx, dy, dz, visited)
-
-                # 2. Locked Dimension: Rigid delta binding between referenced elements
-                elif c.get("type") == "dimension_lock" and c.get("is_locked", True):
-                    if c.get("guid_a") == guid:
-                        other = c.get("guid_b")
-                        if other and other not in visited:
-                            self.translate_element(other, dx, dy, dz, visited)
-                    elif c.get("guid_b") == guid:
-                        other = c.get("guid_a")
-                        if other and other not in visited:
-                            self.translate_element(other, dx, dy, dz, visited)
+        # The old implementation copied the delta to "locked" partners and had no
+        # branch for `equalize` at all, so an EQ span held at creation and then
+        # silently stopped holding (review N6). Constraints are now equations
+        # solved by PlaneGCS, so EQ redistributes and conflicts are reported.
+        #
+        # `_propagate` is False when the solver is writing its own result back
+        # through this method: that pass has already been solved, so it must not
+        # start another solve. (Guarding on `visited` was wrong — `.add()` mutates
+        # it, so it is truthy on the first call and the hook never ran.)
+        if translated and _propagate:
+            try:
+                self._solve_constraints_after_move(guid)
+            except Exception as e:  # never let a solver problem corrupt an edit
+                print(f"Notice: constraint solve after moving {guid} failed: {e}")
 
         return translated
+
+    def _solve_constraints_after_move(self, moved_guid: str) -> None:
+        """
+        Re-solves the constraint system around a completed move.
+
+        Runs on both axes because a constraint may pin an element on the axis the
+        user did not drag.
+        """
+        from constraint_solver import ConstraintSolver
+
+        solver = ConstraintSolver(self)
+        scope = solver.affected_guids([moved_guid])
+        if len(scope) <= 1:
+            return
+        for axis in ("x", "y"):
+            pins = {
+                g: self.get_element_coord(g, axis)
+                for g in (moved_guid,)
+                if g in self.element_meta
+            }
+            result = solver.solve(axis=axis, pins=pins, scope=scope)
+            if result.ok:
+                solver.apply_solve(result)
+            elif result.status == "conflict":
+                self.last_constraint_conflict = {
+                    "axis": axis,
+                    "constraints": result.conflicting,
+                    "triggered_by": moved_guid,
+                }
+
+        # EQ is a relation over the whole span, so it is re-asserted last: if the
+        # user moved an interior element of an equalized span, the constraint wins
+        # and the span is re-equalized. (Moving an interior element of an EQ span
+        # is not a well-defined edit in parametric CAD — the constraint defines
+        # where it sits — so snapping it back is the honest behaviour rather than
+        # silently letting the constraint lapse, which is what the old code did.)
+        for c in list(self.constraints.values()):
+            if c.get("type") != "equalize" or not c.get("is_locked", True):
+                continue
+            span = {c.get("span_start_guid"), c.get("span_end_guid")}
+            interiors = set(c.get("interior_guids") or [])
+            if not ({moved_guid} | set(scope)) & (span | interiors):
+                continue
+            axis = c.get("axis", "x")
+            try:
+                eq = solver.equalize(
+                    c.get("span_start_guid"), c.get("span_end_guid"),
+                    list(c.get("interior_guids") or []), axis,
+                )
+                if eq.ok:
+                    solver.apply_solve(eq)
+            except Exception as e:
+                print(f"Notice: re-equalizing span {c.get('id')} failed: {e}")
 
     @staticmethod
     def _triangulate_polygon_2d(poly):
@@ -1551,13 +1671,28 @@ class BimModelManager:
                 dy = d if axis == "y" else 0.0
                 self.translate_element(int_guid, dx, dy, 0.0)
 
-        cid = f"eq_{uuid.uuid4().hex[:8]}"
+        # Re-use an existing EQ span over the same endpoints/axis instead of
+        # appending a duplicate. The old code created a new constraint on every
+        # call, so two identical calls left two constraints and wiring propagation
+        # into it would have accumulated one per drag.
+        cid = None
+        for existing_id, existing in self.constraints.items():
+            if (
+                existing.get("type") == "equalize"
+                and existing.get("span_start_guid") == span_start_guid
+                and existing.get("span_end_guid") == span_end_guid
+                and existing.get("axis", "x") == axis
+            ):
+                cid = existing_id
+                break
+        if cid is None:
+            cid = f"eq_{uuid.uuid4().hex[:8]}"
         constraint = {
             "id": cid,
             "type": "equalize",
             "span_start_guid": span_start_guid,
             "span_end_guid": span_end_guid,
-            "interior_guids": interior_guids,
+            "interior_guids": list(interior_guids),
             "axis": axis,
             "spacing": spacing,
             "is_equalized": True,
@@ -1740,14 +1875,31 @@ class BimModelManager:
         P = om["end"] if oe == 0 else om["start"]
         return (P[0], P[1])
 
-    def recompute_wall_joins(self):
-        """Global pass: recomputes trimmed footprint polygons for all walls
-        from baseline + thickness + join policies, and rebuilds 3D
-        representations where the footprint changed. Also refreshes placements."""
-        walls = {
+    def recompute_wall_joins(self, only: Optional[List[str]] = None):
+        """
+        Recomputes trimmed footprint polygons for walls from baseline + thickness +
+        join policies, and rebuilds 3D representations where the footprint changed.
+
+        `only` restricts the pass to a subset (P3). A join is a *pairwise*
+        relationship, so a subset must be widened by its join partners before the
+        pass is correct — `DependencyGraph` does that widening and passes the
+        result here. Without `only` this is the historical global pass.
+
+        Why it matters: this used to be O(N) work with an O(N) partner search per
+        wall (so O(N^2)) on *every* edit, which is what made the 2,000-element
+        budget unreachable. Restricting the wall set makes a local edit cost
+        local work; the partner search still scans `walls`, so the per-wall
+        partner lookup is bounded by the subset rather than the model.
+        """
+        all_walls = {
             g: m for g, m in self.element_meta.items()
             if m.get("ifc_class") == "IfcWallStandardCase" and "entity" in m
         }
+        if only is not None:
+            selected = set(only)
+            walls = {g: m for g, m in all_walls.items() if g in selected}
+        else:
+            walls = all_walls
         # creation order for deterministic butt "through wall" decisions
         order = {g: i for i, g in enumerate(self.element_meta.keys())}
 
@@ -1767,10 +1919,14 @@ class BimModelManager:
                 other = self._wall_rect_end_probe(meta, end_index)  # far-end centerline point
                 far = other
 
-                partner_guid, kind, oe = self._find_join_partner(guid, end_index, walls)
+                # Search the full wall set: a subset pass must still see partners
+                # that are not themselves being recomputed.
+                partner_guid, kind, oe = self._find_join_partner(guid, end_index, all_walls)
                 if not partner_guid:
                     continue
-                om = walls[partner_guid]
+                # partner was found in `all_walls`, which may include walls
+                # outside the subset being recomputed.
+                om = all_walls[partner_guid]
 
                 if kind == "tee":
                     # Butt into the partner's face (square-off cut: our end

@@ -117,6 +117,11 @@ class ElementUpdateParams(BaseModel):
     updates: Dict[str, Any] = Field(..., description="Element property updates (polygon, thickness, elevation, pitch, etc.)")
 
 
+class LevelMoveParams(BaseModel):
+    level_id: str = Field(..., description="Storey GUID to move")
+    elevation: float = Field(..., description="New storey elevation in decimal feet")
+
+
 class ConstraintLockToggleParams(BaseModel):
     constraint_id: str = Field(..., description="Constraint identifier to lock/unlock")
     is_locked: bool = Field(..., description="New padlock state")
@@ -141,6 +146,7 @@ COMMAND_REGISTRY = {
     "ConstraintAlign": ConstraintAlignParams,
     "ConstraintLockDim": ConstraintLockDimParams,
     "ConstraintEqualize": ConstraintEqualizeParams,
+    "LevelMove": LevelMoveParams,
     "ConstraintLockToggle": ConstraintLockToggleParams,
     "ConstraintDelete": ConstraintDeleteParams,
     "ElementUpdate": ElementUpdateParams,
@@ -308,6 +314,12 @@ class CommandBusEngine:
             p: ConstraintEqualizeParams = validated
             c = self.manager.equalize_span(p.span_start_guid, p.span_end_guid, p.interior_guids, p.axis)
             return {"status": "equalized", "constraint": c}
+
+        elif cmd_name == "LevelMove":
+            p: LevelMoveParams = validated
+            res = self.manager.move_level(p.level_id, p.elevation)
+            return {"status": res.get("status", "moved"), "level_id": p.level_id,
+                    "elevation": p.elevation, "moved_elements": res.get("moved_elements", 0)}
 
         elif cmd_name == "ConstraintLockToggle":
             p: ConstraintLockToggleParams = validated

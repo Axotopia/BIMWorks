@@ -6,3 +6,4 @@ numpy>=1.26
 pydantic>=2.7
 pymupdf>=1.24
 shapely>=2.0
+planegcs>=0.9.6
