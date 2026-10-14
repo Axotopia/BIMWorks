@@ -20,6 +20,56 @@ The full research-grounded master specification (evidence-graded, with sources) 
 
 ---
 
+## Running it
+
+There are **two processes**. The browser app talks to the Python sidecar, and neither
+one works alone — a blank or empty page is usually one of them missing.
+
+**1. Backend (Python + IfcOpenShell), port 8008.** Run it from the repository root:
+
+```bash
+python -m venv .venv                  # once
+./.venv/bin/pip install -r requirements.txt
+cd backend && ../.venv/bin/python main.py     # serves http://127.0.0.1:8008
+```
+
+Check it directly before blaming the browser: `curl http://127.0.0.1:8008/api/project`
+should return JSON.
+
+**2. Frontend, port 5173.**
+
+```bash
+npm install          # not `npm ci` across platforms — see below
+npm run dev          # http://localhost:5173
+```
+
+`vite.config.ts` proxies `/api` to `127.0.0.1:8008`, so the backend must be running for
+anything to load. For a production build use `npm run build` and serve `dist/`.
+
+### If the page is blank
+
+Run the diagnostic instead of guessing:
+
+```bash
+node scripts/diagnose-blank-page.mjs
+```
+
+It checks the two causes seen so far and reports which applies.
+
+**Blank cause 1 — no WebGL context.** The 3D viewport needs a GPU context. Headless,
+remote-desktop and VM sessions frequently have none. This used to take the entire page
+down; `ErrorBoundary` and a fallback in `Viewport3D` now keep the rest of the UI usable
+and say so, but if you are on such a machine, expect the 3D view to be replaced by a
+message and use the 2D plan view.
+
+**Blank cause 2 — `node_modules` copied between platforms.** `rolldown` and
+`lightningcss` ship **native** binaries (`binding-linux-x64-gnu`,
+`lightningcss-linux-x64-gnu`). A `node_modules` copied from macOS or Windows — or built
+on a different CPU — fails to load them and Vite never serves the app. Always run
+`npm install` on the machine you are running on; never copy `node_modules`.
+
+---
+
 ## Implementation status (code review, 2026-10-13)
 
 Current state: a working **M0/M1-class prototype** — FastAPI + IfcOpenShell sidecar (`backend/`), React 19 + Three.js + dockview frontend (`src/`), Tier-0 CommandBus with typed Pydantic schemas and transaction engine, `.bimworks` container save/load round-trip, and a passing core test suite (`scratch/test_v2_core.py`, 13 typed command schemas exported as JSON Schema 2020-12). What works was verified by running it, not by reading claims.
