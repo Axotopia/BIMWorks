@@ -123,6 +123,12 @@ export const UI_ACTION_COMMANDS = {
   trimExtendWall: 'WallTrimExtend',
   splitWall: 'WallSplit',
   moveLevel: 'LevelMove',
+  // P6 sheet & viewport commands (bus-backed, journaled, undoable)
+  createSheet: 'SheetCreate',
+  deleteSheet: 'SheetDelete',
+  addViewportToSheet: 'ViewportAdd',
+  removeViewportFromSheet: 'ViewportRemove',
+  moveViewport: 'ViewportMove',
 } as const;
 
 export type UiAction = keyof typeof UI_ACTION_COMMANDS;
@@ -439,6 +445,8 @@ interface BimStoreState {
   activeSheetId: string;
 
   // Model Data
+  rev?: number;
+  docId?: string;
   projectName: string;
   levels: LevelData[];
   elements: Record<string, BimElement>;
@@ -551,8 +559,13 @@ interface BimStoreState {
   deleteElement: (guid: string) => Promise<void>;
   translateElement: (guid: string, dx: number, dy: number, dz?: number) => Promise<void>;
   updateGeoreferencing: (data: BimStoreState['georeference']) => Promise<void>;
-  addViewportToSheet: (sheetId: string, viewId: string, x: number, y: number) => void;
+  createSheet: (sheetNumber: string, sheetTitle: string, paperSize?: 'ARCH_D' | 'ARCH_C' | 'ISO_A1') => Promise<void>;
+  deleteSheet: (sheetId: string) => Promise<void>;
+  addViewportToSheet: (sheetId: string, viewId: string, x: number, y: number) => Promise<void>;
+  removeViewportFromSheet: (viewportId: string, sheetId?: string) => Promise<void>;
+  moveViewport: (viewportId: string, x: number, y: number, sheetId?: string) => Promise<void>;
   exportSheetPdf: (sheetId: string, svgContent: string) => Promise<void>;
+  exportBatchPdf: (sheetsData: Array<{ sheetName: string; svgContent: string }>, filename?: string) => Promise<void>;
   exportIfc: () => Promise<void>;
 
   // GLM Spec v2 Additions
@@ -738,6 +751,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   ],
   activeSheetId: 'sheet-a101',
 
+  rev: undefined,
+  docId: undefined,
   elements: {},
   meshes: [],
   grids: [],
@@ -1229,6 +1244,14 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       // A view depth of 0 means "not set"; sending it would filter everything out.
       if (ctx.viewDepth) q.set('view_depth', String(ctx.viewDepth));
     }
+    const curRev = get().rev;
+    const curDocId = get().docId;
+    if (curRev !== undefined) {
+      q.set('since', String(curRev));
+    }
+    if (curDocId !== undefined) {
+      q.set('doc_id', curDocId);
+    }
 
     if (bundleUnsupported) {
       await refreshIndividually(get, cutElevation);
@@ -1257,8 +1280,119 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       // Two numbers, recorded separately and never reported as one another.
       recordRefresh(performance.now() - t0, data.engine_ms);
 
+      // Response A - unchanged
+      if (data.unchanged) {
+        if (data.doc_id && get().docId !== data.doc_id) {
+          set({ docId: data.doc_id });
+        }
+        return;
+      }
+
       const cur = get();
+
+      // Response B - delta
+      if (Array.isArray(data.upsert_meshes) || Array.isArray(data.remove_guids)) {
+        // If delta is based on wrong epoch or wrong base rev, trigger a full resync
+        if (
+          (cur.docId && data.doc_id && cur.docId !== data.doc_id) ||
+          (data.base_rev !== undefined && cur.rev !== undefined && data.base_rev !== cur.rev)
+        ) {
+          console.warn('Delta epoch or base revision mismatch; triggering full state resync');
+          set({ rev: undefined, docId: undefined });
+          await get().fetchStateBundle(cutElevation);
+          return;
+        }
+
+        const removeSet = new Set<string>(data.remove_guids || []);
+        const upsertMap = new Map<string, MeshBufferData>();
+        for (const m of (data.upsert_meshes || []) as MeshBufferData[]) {
+          upsertMap.set(m.guid, m);
+        }
+
+        const updatedMeshes: MeshBufferData[] = [];
+        for (const m of cur.meshes) {
+          if (removeSet.has(m.guid)) continue;
+          if (upsertMap.has(m.guid)) {
+            updatedMeshes.push(upsertMap.get(m.guid)!);
+            upsertMap.delete(m.guid);
+          } else {
+            updatedMeshes.push(m);
+          }
+        }
+        for (const newMesh of upsertMap.values()) {
+          updatedMeshes.push(newMesh);
+        }
+
+        const updatedElements = { ...cur.elements };
+        for (const guid of removeSet) {
+          delete updatedElements[guid];
+        }
+        for (const mesh of (data.upsert_meshes || []) as MeshBufferData[]) {
+          const params = mesh.params;
+          if (!params) continue;
+          updatedElements[mesh.guid] = {
+            guid: mesh.guid,
+            ifc_class: (params.ifc_class || mesh.ifc_class) as BimElement['ifc_class'],
+            name: params.name || mesh.name,
+            start: params.start,
+            end: params.end,
+            length: params.length,
+            height: params.height,
+            thickness: params.thickness,
+            angle: params.angle,
+            level_id: params.level_id,
+            host_wall_guid: params.host_wall_guid,
+            offset_along_wall: params.offset_along_wall,
+            width: params.width,
+            sill_height: params.sill_height,
+            swing_flipped: params.swing_flipped,
+            elevation: params.elevation,
+            pitch: params.pitch,
+            tag: params.tag,
+            type_properties: params.type_properties,
+          };
+        }
+
+        let updatedJournal = cur.transactionJournal;
+        if (data.journal_append && data.journal_append.length > 0) {
+          const existingIds = new Set(cur.transactionJournal.map((j) => j.transaction_id));
+          const newEntries = (data.journal_append as TransactionJournalEntry[]).filter(
+            (j) => !existingIds.has(j.transaction_id)
+          );
+          updatedJournal = [...cur.transactionJournal, ...newEntries];
+        }
+        if (updatedJournal.length > 50) {
+          updatedJournal = updatedJournal.slice(updatedJournal.length - 50);
+        }
+
+        set({
+          docId: data.doc_id ?? cur.docId,
+          rev: data.rev ?? cur.rev,
+          meshes: updatedMeshes,
+          elements: updatedElements,
+          ...(data.slice2d ? { sliced2D: data.slice2d } : {}),
+          transactionJournal: updatedJournal,
+          ...(cur.selectedGuid && removeSet.has(cur.selectedGuid) ? { selectedGuid: null } : {}),
+          ...(data.levels ? { levels: data.levels } : {}),
+          ...(data.grids ? { grids: data.grids } : {}),
+          ...(data.sheets ? { sheets: data.sheets } : {}),
+          ...(data.views ? { views: data.views } : {}),
+          ...(data.constraints ? { constraints: data.constraints } : {}),
+          ...(data.wall_joins ? { wallJoins: data.wall_joins } : {}),
+          ...(data.project
+            ? {
+                projectName: data.project.project_name || cur.projectName,
+                georeference: data.project.georeference || cur.georeference,
+              }
+            : {}),
+        });
+        return;
+      }
+
+      // Response C - full bundle
       set({
+        docId: data.doc_id ?? cur.docId,
+        rev: data.rev ?? cur.rev,
         ...(data.project
           ? {
               projectName: data.project.project_name || cur.projectName,
@@ -1271,7 +1405,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         // A failed slice returns null; keep the last good linework rather than
         // blanking the viewport.
         ...(data.slice2d ? { sliced2D: data.slice2d } : {}),
-        ...(data.journal ? { transactionJournal: data.journal } : {}),
+        ...(data.journal ? { transactionJournal: data.journal.slice(-50) } : {}),
+        ...(data.sheets ? { sheets: data.sheets } : {}),
+        ...(data.views ? { views: data.views } : {}),
       });
 
       if (data.errors) {
@@ -1402,6 +1538,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       set({ isLoadingFile: true, statusMessage: 'Loading Sample BIM Building...' });
       const res = await fetch(`${API_BASE}/sample`, { method: 'POST' });
       if (res.ok) {
+        set({ rev: undefined, docId: undefined });
         await get().fetchStateBundle();
         set({
           projectName: 'BIMWorks Prototype Building',
@@ -1432,6 +1569,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           statusMessage: `Successfully loaded ${filename} (${data.elements_count} elements, ${data.levels_count} levels)`,
           selectedGuid: null,
           hoveredGuid: null,
+          rev: undefined,
+          docId: undefined,
         });
         await get().fetchStateBundle();
         return true;
@@ -1645,27 +1784,74 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     }
   },
 
-  addViewportToSheet: (sheetId, viewId, x, y) => {
-    set((state) => {
-      const sheet = state.sheets.find((s) => s.id === sheetId);
-      if (!sheet) return state;
+  createSheet: async (sheetNumber, sheetTitle, paperSize = 'ARCH_D') => {
+    try {
+      await get().dispatchTransaction('createSheet', {
+        sheet_number: sheetNumber,
+        sheet_title: sheetTitle,
+        paper_size: paperSize,
+      }, `Create Sheet ${sheetNumber}`);
+    } catch (e) {
+      set({ statusMessage: `Failed to create sheet: ${failureMessage(e)}` });
+      console.error('Failed to create sheet', e);
+      throw e;
+    }
+  },
 
-      const newViewport: SheetViewport = {
-        id: `vp-${Date.now()}`,
-        viewId,
+  deleteSheet: async (sheetId) => {
+    try {
+      await get().dispatchTransaction('deleteSheet', { sheet_id: sheetId }, `Delete Sheet`);
+    } catch (e) {
+      set({ statusMessage: `Failed to delete sheet: ${failureMessage(e)}` });
+      console.error('Failed to delete sheet', e);
+      throw e;
+    }
+  },
+
+  addViewportToSheet: async (sheetId, viewId, x, y) => {
+    try {
+      await get().dispatchTransaction('addViewportToSheet', {
+        sheet_id: sheetId,
+        view_id: viewId,
         x,
         y,
         width: 480,
         height: 360,
-        scaleFactor: 1.0,
-      };
+        scale_factor: 1.0,
+      }, `Add Viewport to Sheet`);
+    } catch (e) {
+      set({ statusMessage: `Failed to add viewport: ${failureMessage(e)}` });
+      console.error('Failed to add viewport', e);
+      throw e;
+    }
+  },
 
-      return {
-        sheets: state.sheets.map((s) =>
-          s.id === sheetId ? { ...s, viewports: [...s.viewports, newViewport] } : s
-        ),
-      };
-    });
+  removeViewportFromSheet: async (viewportId, sheetId) => {
+    try {
+      await get().dispatchTransaction('removeViewportFromSheet', {
+        viewport_id: viewportId,
+        sheet_id: sheetId,
+      }, `Remove Viewport`);
+    } catch (e) {
+      set({ statusMessage: `Failed to remove viewport: ${failureMessage(e)}` });
+      console.error('Failed to remove viewport', e);
+      throw e;
+    }
+  },
+
+  moveViewport: async (viewportId, x, y, sheetId) => {
+    try {
+      await get().dispatchTransaction('moveViewport', {
+        viewport_id: viewportId,
+        x,
+        y,
+        sheet_id: sheetId,
+      }, `Move Viewport`);
+    } catch (e) {
+      set({ statusMessage: `Failed to move viewport: ${failureMessage(e)}` });
+      console.error('Failed to move viewport', e);
+      throw e;
+    }
   },
 
   exportSheetPdf: async (sheetId, svgContent) => {
@@ -1693,6 +1879,39 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     } catch (e) {
       set({ statusMessage: `Export vector sheet PDF failed: ${failureMessage(e)}` });
       console.error('Failed to export vector sheet PDF', e);
+    }
+  },
+
+  exportBatchPdf: async (sheetsData, filename = 'Batch_Sheets_Export') => {
+    try {
+      const payload = {
+        sheets: sheetsData.map((s) => ({
+          svg_content: s.svgContent,
+          sheet_name: s.sheetName,
+        })),
+        filename,
+      };
+
+      const res = await fetch(`${API_BASE}/export/batch-pdf`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${filename}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      }
+    } catch (e) {
+      set({ statusMessage: `Export batch vector PDF failed: ${failureMessage(e)}` });
+      console.error('Failed to export batch vector PDF', e);
     }
   },
 
@@ -1764,6 +1983,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         return false;
       }
 
+      set({ rev: undefined, docId: undefined });
       await get().fetchStateBundle();
 
       set({
@@ -2027,6 +2247,28 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   },
 
   generateAiPlan: async (promptText: string): Promise<AiPlan | null> => {
+    // 1. First attempt backend typesafe AI Driver planner
+    try {
+      const selected = get().selectedGuid ? [get().selectedGuid!] : [];
+      const res = await fetch(`${API_BASE}/ai/plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: promptText,
+          active_view_id: get().activeViewId,
+          selected_guids: selected,
+        }),
+      });
+      if (res.ok) {
+        const backendPlan = await res.json();
+        if (backendPlan && backendPlan.commands && backendPlan.commands.length > 0) {
+          return backendPlan as AiPlan;
+        }
+      }
+    } catch {
+      // Fallback to client planner if engine is offline or in mock test mode
+    }
+
     const text = promptText.trim().toLowerCase();
     const elements = get().elements;
     const selectedGuid = get().selectedGuid;

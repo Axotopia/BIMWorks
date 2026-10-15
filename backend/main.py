@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from ifc_service import bim_manager, CONTAINER_EXTENSION, CONTAINER_EXTENSIONS
 from command_bus import command_bus, CommandRequest, TransactionRequest, COMMAND_REGISTRY
+from ai_driver import ai_driver, AiPlan, AiContext
 
 app = FastAPI(title="BIMWorks BIM Sidecar", version="2.1.0")
 
@@ -220,6 +221,61 @@ class WallJoinRequest(BaseModel):
     mode: str = "butt"
 
 
+class SheetCreateRequest(BaseModel):
+    sheet_number: str
+    sheet_title: Optional[str] = "Unnamed Sheet"
+    paper_size: Optional[str] = "ARCH_D"
+    is_placeholder: bool = False
+    sheet_id: Optional[str] = None
+    drawn_by: Optional[str] = "BIMWorks Architect"
+    date: Optional[str] = None
+
+
+class ViewportAddRequest(BaseModel):
+    view_id: str
+    x: float
+    y: float
+    width: Optional[float] = 480.0
+    height: Optional[float] = 360.0
+    scale_factor: Optional[float] = 1.0
+    viewport_id: Optional[str] = None
+
+
+class ViewportMoveRequest(BaseModel):
+    x: float
+    y: float
+    sheet_id: Optional[str] = None
+
+
+class BatchSheetPdfRequest(BaseModel):
+    sheets: List[SheetPdfRequest]
+    filename: Optional[str] = "Batch_Sheets_Export"
+
+
+class AiPlanRequest(BaseModel):
+    prompt: str
+    active_view_id: Optional[str] = "view-level-1"
+    active_level_id: Optional[str] = None
+    selected_guids: List[str] = []
+
+
+class AiExecuteRequest(BaseModel):
+    plan: Optional[Dict[str, Any]] = None
+    prompt: Optional[str] = None
+    active_view_id: Optional[str] = "view-level-1"
+    selected_guids: List[str] = []
+
+
+class AiQueryRequest(BaseModel):
+    category: Optional[str] = None
+    level_id: Optional[str] = None
+    host_wall_guid: Optional[str] = None
+    min_x: Optional[float] = None
+    max_x: Optional[float] = None
+    min_y: Optional[float] = None
+    max_y: Optional[float] = None
+
+
 # Endpoints
 @app.get("/health")
 def health():
@@ -243,6 +299,7 @@ def load_path(req: LoadPathRequest):
         raise HTTPException(status_code=404, detail=f"File not found: {req.path}")
     try:
         res = bim_manager.load_ifc_file(req.path, os.path.basename(req.path))
+        command_bus.rev += 1
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to load IFC file from path: {str(e)}")
@@ -253,6 +310,7 @@ def load_file(req: LoadFileRequest):
     """Loads an arbitrary IFC STEP file from text content into the active workspace."""
     try:
         res = bim_manager.load_ifc_content(req.content, req.filename or "Imported.ifc")
+        command_bus.rev += 1
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to load IFC file: {str(e)}")
@@ -265,6 +323,7 @@ async def upload_ifc(file: UploadFile = File(...)):
         raw_bytes = await file.read()
         text_content = raw_bytes.decode("utf-8", errors="replace")
         res = bim_manager.load_ifc_content(text_content, file.filename or "Uploaded.ifc")
+        command_bus.rev += 1
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to upload IFC file: {str(e)}")
@@ -274,13 +333,20 @@ async def upload_ifc(file: UploadFile = File(...)):
 def reset_project(project_name: Optional[str] = "BIMWorks Project"):
     bim_manager.project_name = project_name
     bim_manager.reset_model()
-    return {"status": "reset", "levels": list(bim_manager.levels.values())}
+    command_bus.rev += 1
+    return {
+        "status": "reset",
+        "levels": list(bim_manager.levels.values()),
+        "doc_id": bim_manager.doc_id,
+        "rev": command_bus.rev,
+    }
 
 
 @app.post("/api/sample")
 def load_sample_building():
     """Populates a realistic architectural building with walls, doors, windows, slab, roof, grids."""
     bim_manager.reset_model()
+    command_bus.rev += 1
 
     # 4 Perimeter walls
     w1 = bim_manager.add_wall((0, 0, 0), (12, 0, 0), height=3.0, thickness=0.25, name="Basic Wall : Exterior - 10\" CMU")
@@ -537,6 +603,84 @@ def export_sheet_pdf(req: SheetPdfRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/export/batch-pdf")
+def export_batch_pdf(req: BatchSheetPdfRequest):
+    """Compiles multiple Sheet SVGs into a single multi-page vector PDF."""
+    try:
+        svg_list = [s.svg_content for s in req.sheets]
+        pdf_bytes = bim_manager.compile_batch_to_vector_pdf(svg_list)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{req.filename}.pdf"'},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/sheets")
+def get_sheets():
+    """Returns all sheets with placed viewports."""
+    return bim_manager.get_sheets()
+
+
+@app.get("/api/views")
+def get_views():
+    """Returns all views in the model."""
+    return bim_manager.get_views()
+
+
+@app.post("/api/sheet")
+def create_sheet(req: SheetCreateRequest):
+    """Creates a new sheet via CommandBus."""
+    return run_mutation(
+        [CommandRequest(command="SheetCreate", params=req.model_dump())],
+        description=f"Create Sheet {req.sheet_number}",
+    )
+
+
+@app.delete("/api/sheet/{sheet_id}")
+def delete_sheet(sheet_id: str):
+    """Deletes a sheet via CommandBus."""
+    return run_mutation(
+        [CommandRequest(command="SheetDelete", params={"sheet_id": sheet_id})],
+        description=f"Delete Sheet {sheet_id}",
+    )
+
+
+@app.post("/api/sheet/{sheet_id}/viewport")
+def add_viewport_to_sheet(sheet_id: str, req: ViewportAddRequest):
+    """Places a viewport on a sheet via CommandBus."""
+    params = req.model_dump()
+    params["sheet_id"] = sheet_id
+    return run_mutation(
+        [CommandRequest(command="ViewportAdd", params=params)],
+        description=f"Add Viewport to Sheet {sheet_id}",
+    )
+
+
+@app.delete("/api/sheet/viewport/{viewport_id}")
+def remove_viewport_from_sheet(viewport_id: str, sheet_id: Optional[str] = None):
+    """Removes a viewport from a sheet via CommandBus."""
+    return run_mutation(
+        [CommandRequest(command="ViewportRemove", params={"viewport_id": viewport_id, "sheet_id": sheet_id})],
+        description=f"Remove Viewport {viewport_id}",
+    )
+
+
+@app.post("/api/sheet/viewport/{viewport_id}/move")
+def move_viewport(viewport_id: str, req: ViewportMoveRequest):
+    """Moves a viewport on a sheet via CommandBus."""
+    params = req.model_dump()
+    params["viewport_id"] = viewport_id
+    if req.sheet_id:
+        params["sheet_id"] = req.sheet_id
+    return run_mutation(
+        [CommandRequest(command="ViewportMove", params=params)],
+        description=f"Move Viewport {viewport_id}",
+    )
+
+
 @app.get("/api/export/ifc")
 def export_ifc():
     """Generates and returns standard IFC4 STEP file."""
@@ -634,7 +778,9 @@ async def load_bimworks_project(file: UploadFile = File(...)):
     """Loads a .bimworks hybrid container (legacy .orlt also accepted)."""
     try:
         raw_bytes = await file.read()
-        return bim_manager.load_orlt_project(raw_bytes, file.filename or f"Project{CONTAINER_EXTENSION}")
+        res = bim_manager.load_orlt_project(raw_bytes, file.filename or f"Project{CONTAINER_EXTENSION}")
+        command_bus.rev += 1
+        return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to load project container: {str(e)}")
 
@@ -726,11 +872,80 @@ def get_transaction_journal(limit: int = 50):
     return command_bus.get_journal(limit=limit)
 
 
+# ============================================================================
+# TIER 1 & TIER 2 AI DRIVER ENDPOINTS
+# ============================================================================
+
+@app.get("/api/ai/tools")
+def get_ai_tools():
+    """Returns tools catalog and JSON Schema 2020-12 specifications for external AI agents and MCP."""
+    return ai_driver.get_tool_catalog()
+
+
+@app.get("/api/ai/describe")
+def describe_ai_scene():
+    """Returns semantic scene description (envelope bounds, cardinal walls, element counts)."""
+    return ai_driver.query_engine.describe_scene()
+
+
+@app.post("/api/ai/query")
+def query_ai_elements(req: AiQueryRequest):
+    """Executes semantic filter queries against active architectural model."""
+    return ai_driver.query_engine.query_elements(
+        category=req.category,
+        level_id=req.level_id,
+        host_wall_guid=req.host_wall_guid,
+        min_x=req.min_x,
+        max_x=req.max_x,
+        min_y=req.min_y,
+        max_y=req.max_y,
+    )
+
+
+@app.post("/api/ai/plan")
+def plan_ai_prompt(req: AiPlanRequest):
+    """Synthesizes and validates a typed plan against CommandBus schemas."""
+    try:
+        ctx = AiContext(
+            active_view_id=req.active_view_id,
+            active_level_id=req.active_level_id,
+            selected_guids=req.selected_guids,
+        )
+        plan = ai_driver.plan(req.prompt, ctx)
+        return plan.model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/ai/execute")
+def execute_ai_plan(req: AiExecuteRequest):
+    """Executes a plan (or plans and executes a prompt) with atomic rollback on assertion failure."""
+    try:
+        if req.plan:
+            plan = AiPlan(**req.plan)
+        elif req.prompt:
+            ctx = AiContext(
+                active_view_id=req.active_view_id,
+                selected_guids=req.selected_guids,
+            )
+            plan = ai_driver.plan(req.prompt, ctx)
+        else:
+            raise ValueError("Either 'plan' or 'prompt' must be provided")
+
+        return ai_driver.execute_plan(plan)
+    except AssertionError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # ---------------------------------------------------------------------------
 # Post-commit state bundle - SPECIFICATION-v0.2.md 6.3
 # ---------------------------------------------------------------------------
 @app.get("/api/state")
 def get_state_bundle(
+    since: Optional[str] = None,
+    doc_id: Optional[str] = None,
     cut_elevation: float = 4.0,
     level_id: Optional[str] = None,
     view_type: str = "floor_plan",
@@ -741,34 +956,40 @@ def get_state_bundle(
     journal_limit: int = 25,
 ):
     """
-    Post-commit state bundle: ONE round trip instead of the seven sequential
-    requests the UI used to issue after every transaction.
+    Post-commit state delta and bundle protocol (SPECIFICATION-v0.2.md §6.3).
 
-    Spec 3.2 says the frontend subscribes to delta events. The UI was instead
-    pulling full model state seven times in series per commit, and one of those
-    seven (/api/constraints) was fetched twice - once inside fetchProjectState and
-    again directly. Measured at roughly 30 ms of a p50 36.7 / p95 66.9 ms edit
-    round.
-
-    This does not implement deltas yet. It removes the serial round-trip
-    amplification and returns per-section timings so engine compute and protocol
-    cost can be told apart.
-
-    The 2D linework is routed the same way /api/slice/2d and /api/view/2d are:
-    plans go through slice_2d_vector_plan with a level-relative cut, while sections
-    and elevations need render_2d_view and the view-range fields. Routing it here
-    rather than in the UI keeps the two paths from disagreeing.
-
-    timings and engine_ms are ENGINE-SIDE ONLY. They are not interaction latency
-    and must never be reported as the drag result: what the user waits for includes
-    the protocol, the transfer and the store commit, and only the UI can measure
-    that. The two numbers belong in the log under separate names.
+    Supports since=<rev> for Response A (unchanged), Response B (delta with
+    upsert_meshes, remove_guids, and view-filtered slice2d), and Response C
+    (full-state resync).
     """
     import time as _time
 
     t_total = _time.perf_counter()
     timings: Dict[str, float] = {}
     errors: Dict[str, str] = {}
+    current_rev = command_bus.rev
+    current_doc_id = getattr(bim_manager, "doc_id", "")
+
+    parsed_since: Optional[int] = None
+    if since is not None and since != "":
+        try:
+            parsed_since = int(since)
+        except (ValueError, TypeError):
+            parsed_since = None
+
+    # Epoch mismatch or missing doc_id forces Response C (full resync)
+    if doc_id is None or doc_id != current_doc_id:
+        parsed_since = None
+
+    # Response A — nothing changed. This must be cheap; it is the common case.
+    if parsed_since is not None and parsed_since == current_rev:
+        return {
+            "rev": current_rev,
+            "doc_id": current_doc_id,
+            "unchanged": True,
+            "timings": timings,
+            "engine_ms": round((_time.perf_counter() - t_total) * 1000.0, 2),
+        }
 
     def timed(key, fn):
         t0 = _time.perf_counter()
@@ -777,8 +998,7 @@ def get_state_bundle(
         return value
 
     def timed_soft(key, fn):
-        """A failing section must not discard the sections that succeeded: a
-        transient slice error should not cost the caller its geometry update."""
+        """A failing section must not discard the sections that succeeded."""
         t0 = _time.perf_counter()
         try:
             value = fn()
@@ -806,6 +1026,89 @@ def get_state_bundle(
             cut_elevation=cut_elevation, level_id=level_id
         )
 
+    # Response B — a delta
+    if parsed_since is not None and 0 <= parsed_since < current_rev:
+        geom_delta = timed_soft("geometry", lambda: bim_manager.get_geometry_buffers(since=parsed_since))
+        upsert_meshes = geom_delta.get("upsert_meshes", []) if geom_delta else []
+        remove_guids = geom_delta.get("remove_guids", []) if geom_delta else []
+        removed_items = geom_delta.get("removed_items", []) if geom_delta else []
+
+        # D5: dirty-view slice filter (R5, N3)
+        needs_slice = True
+        if view_type == "floor_plan" and level_id:
+            req_storey = bim_manager.get_storey_by_id(level_id)
+            req_gid = req_storey.GlobalId if req_storey else level_id
+            affected_gids = set()
+            for m in upsert_meshes:
+                lid = (m.get("params") or {}).get("level_id")
+                if lid:
+                    st = bim_manager.get_storey_by_id(lid)
+                    affected_gids.add(st.GlobalId if st else lid)
+
+            unknown_removed_level = False
+            for item in removed_items:
+                lid = item.get("level_id")
+                if lid:
+                    st = bim_manager.get_storey_by_id(lid)
+                    affected_gids.add(st.GlobalId if st else lid)
+                else:
+                    unknown_removed_level = True
+
+            # If any removed item has unknown level, slice is needed.
+            # Only skip if we know all affected levels and req_gid is not among them:
+            if not unknown_removed_level and affected_gids and req_gid not in affected_gids:
+                needs_slice = False
+
+        slice2d = timed_soft("slice2d", _slice) if needs_slice else None
+        journal_append = timed_soft("journal", lambda: command_bus.get_journal(limit=journal_limit, since=parsed_since))
+
+        # Include non-mesh sections if modified since parsed_since (N4)
+        levels_section = list(bim_manager.levels.values()) if getattr(bim_manager, "levels_rev", 0) > parsed_since else None
+        grids_data = [
+            {
+                "guid": m["guid"],
+                "name": m["name"],
+                "tag": m["tag"],
+                "start": m["start"],
+                "end": m["end"],
+            }
+            for m in bim_manager.element_meta.values()
+            if m.get("ifc_class") == "IfcGrid"
+        ] if getattr(bim_manager, "grids_rev", 0) > parsed_since else None
+        sheets_section = bim_manager.get_sheets() if getattr(bim_manager, "sheets_rev", 0) > parsed_since else None
+        views_section = bim_manager.get_views() if getattr(bim_manager, "views_rev", 0) > parsed_since else None
+        constraints_section = list(bim_manager.constraints.values()) if getattr(bim_manager, "constraints_rev", 0) > parsed_since else None
+        wall_joins_section = bim_manager.get_wall_joins() if getattr(bim_manager, "wall_joins_rev", 0) > parsed_since else None
+        project_section = {
+            "project_name": bim_manager.project_name,
+            "levels": list(bim_manager.levels.values()),
+            "elements_count": len(bim_manager.element_meta),
+            "georeference": bim_manager.georeference_data,
+        } if getattr(bim_manager, "project_rev", 0) > parsed_since else None
+
+        total_ms = round((_time.perf_counter() - t_total) * 1000.0, 2)
+        return {
+            "rev": current_rev,
+            "base_rev": parsed_since,
+            "doc_id": current_doc_id,
+            "unchanged": False,
+            "upsert_meshes": upsert_meshes,
+            "remove_guids": remove_guids,
+            "levels": levels_section,
+            "grids": grids_data,
+            "sheets": sheets_section,
+            "views": views_section,
+            "project": project_section,
+            "constraints": constraints_section,
+            "wall_joins": wall_joins_section,
+            "slice2d": slice2d,
+            "journal_append": journal_append,
+            "errors": errors,
+            "timings": timings,
+            "engine_ms": total_ms,
+        }
+
+    # Response C — resynchronise (full bundle when since is omitted, forged, or gapped)
     project = timed("project", lambda: {
         "project_name": bim_manager.project_name,
         "levels": list(bim_manager.levels.values()),
@@ -817,15 +1120,23 @@ def get_state_bundle(
     geometry = timed_soft("geometry", lambda: bim_manager.get_geometry_buffers())
     slice2d = timed_soft("slice2d", _slice)
     journal = timed_soft("journal", lambda: command_bus.get_journal(limit=journal_limit))
+    sheets = timed_soft("sheets", lambda: bim_manager.get_sheets())
+    views = timed_soft("views", lambda: bim_manager.get_views())
 
     total_ms = round((_time.perf_counter() - t_total) * 1000.0, 2)
     return {
+        "rev": current_rev,
+        "doc_id": current_doc_id,
+        "full": True,
+        "unchanged": False,
         "project": project,
         "constraints": constraints,
         "wall_joins": wall_joins,
         "geometry": geometry,
         "slice2d": slice2d,
         "journal": journal,
+        "sheets": sheets,
+        "views": views,
         "timings": timings,
         "errors": errors,
         "engine_ms": total_ms,

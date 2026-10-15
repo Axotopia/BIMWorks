@@ -29,6 +29,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -86,11 +87,11 @@ def free_port():
     return port
 
 
-def wait_for_health(api, proc, timeout_s=45.0):
+def wait_for_health(api, proc, server_logs=None, timeout_s=45.0):
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         if proc.poll() is not None:
-            out = proc.stdout.read().decode("utf-8", "replace") if proc.stdout else ""
+            out = b"".join(server_logs).decode("utf-8", "replace") if server_logs else ""
             raise RuntimeError(f"server exited early ({proc.returncode}):\n{out}")
         try:
             if api.get("/health")[0] == 200:
@@ -130,9 +131,19 @@ def main() -> int:
         cwd=BACKEND, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
 
+    server_logs = []
+    def _drain():
+        try:
+            for line in iter(proc.stdout.readline, b""):
+                server_logs.append(line)
+        except Exception:
+            pass
+    drain_thread = threading.Thread(target=_drain, daemon=True)
+    drain_thread.start()
+
     try:
         api = Http(base)
-        wait_for_health(api, proc)
+        wait_for_health(api, proc, server_logs=server_logs)
         print("   -> /health OK")
 
         def journal():

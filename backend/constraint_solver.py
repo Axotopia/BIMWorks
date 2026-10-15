@@ -8,7 +8,7 @@ and Equalize (EQ). GPL-3.0-compatible, matching this project's licence.
 Why a real solver replaced the old recursion
 ---------------------------------------------
 `translate_element` used to propagate constraints by recursively copying the
-delta to "locked" partners and, for EQ, did nothing at all — so an EQ span held
+delta to "locked" partners and, for EQ, did nothing at all -- so an EQ span held
 at creation time and then silently stopped holding the moment anything moved
 (review finding N6). It also appended a *new* `equalize` constraint on every
 call, so wiring propagation into it would have accumulated duplicates.
@@ -22,7 +22,7 @@ The model
 Each constrained element contributes one movable node on the constraint axis
 (its coordinate along that axis, from `manager.get_element_coord`). Span
 endpoints may be pinned to a value when something else has already decided where
-they go — the solver then moves only what is free.
+they go -- the solver then moves only what is free.
 
 Constraints map to PlaneGCS primitives:
 
@@ -154,7 +154,6 @@ class ConstraintSolver:
         adds constraints that are not (yet) persisted, e.g. the delta of an
         in-progress drag.
         """
-        self._require_solver()
         pins = dict(pins or {})
         extras = list(extras or [])
 
@@ -194,6 +193,8 @@ class ConstraintSolver:
         for g in list(pins):
             if g in coords:
                 coords[g] = pins[g]
+
+        self._require_solver()
 
         sketch = Sketch()
         ids: Dict[str, int] = {}
@@ -286,8 +287,8 @@ class ConstraintSolver:
         equal gaps between consecutive items.
 
         Implemented with `equal_length` on the segments between consecutive nodes,
-        which is exactly "equal spacing" and — unlike a chain of absolute
-        distances — stays consistent when a *span endpoint* moves, which is the
+        which is exactly "equal spacing" and -- unlike a chain of absolute
+        distances -- stays consistent when a *span endpoint* moves, which is the
         case the old code silently failed.
         """
         chain = [g for g in [start, *interiors, end] if g in ids]

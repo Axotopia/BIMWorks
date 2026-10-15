@@ -258,7 +258,102 @@ section('S5. Two latency numbers, recorded separately');
 }
 
 // ---------------------------------------------------------------------------
-section('S6. A 404 trips the breaker once, and the fallback is PARALLEL');
+section('S6. Delta Protocol (Responses A, B, C)');
+{
+  // 1. Initial fetch sets rev
+  reset(PLAN_VIEW);
+  store.setState({ rev: undefined });
+  const initialBundle = { ...BUNDLE, rev: 1, full: true };
+  const callsInit = stubFetch({ bundle: initialBundle });
+  await store.getState().fetchStateBundle();
+  check('initial bundle fetch populates rev', store.getState().rev === 1, `rev=${store.getState().rev}`);
+  check('initial bundle fetch does not send since param', !/since=/.test(callsInit[0]), callsInit[0]);
+
+  // 2. Response A (unchanged)
+  const callsA = stubFetch({
+    bundle: { rev: 1, unchanged: true, engine_ms: 0.5 },
+  });
+  await store.getState().fetchStateBundle();
+  check('subsequent refresh sends since=1', /since=1/.test(callsA[0]), callsA[0]);
+  check('Response A does not modify meshes or elements', store.getState().meshes.length === 1 && !!store.getState().elements['wall-1']);
+
+  // 3. Response B (delta with upsert, remove, and journal append)
+  const newWallMesh = {
+    guid: 'wall-2',
+    ifc_class: 'IfcWallStandardCase',
+    name: 'New Partition Wall',
+    params: {
+      ifc_class: 'IfcWallStandardCase',
+      name: 'Partition',
+      start: [0, 5, 0],
+      end: [10, 5, 0],
+      thickness: 0.2,
+      height: 9,
+    },
+  };
+  const deltaPayload = {
+    rev: 2,
+    base_rev: 1,
+    unchanged: false,
+    upsert_meshes: [newWallMesh],
+    remove_guids: ['wall-1'],
+    slice2d: { cut_paths: [[[0, 5], [10, 5]]], renderer: 'delta_hlr' },
+    journal_append: [{ transaction_id: 'tx-2', description: 'Wall 2 created' }],
+    engine_ms: 2.1,
+  };
+  stubFetch({ bundle: deltaPayload });
+  await store.getState().fetchStateBundle();
+  const stateAfterDelta = store.getState();
+  check('Response B updates store rev to 2', stateAfterDelta.rev === 2, `rev=${stateAfterDelta.rev}`);
+  check('removed guid wall-1 is purged from meshes', !stateAfterDelta.meshes.some((m) => m.guid === 'wall-1'));
+  check('removed guid wall-1 is purged from elements', !stateAfterDelta.elements['wall-1']);
+  check('upserted mesh wall-2 is added to meshes', stateAfterDelta.meshes.some((m) => m.guid === 'wall-2'));
+  check('upserted mesh wall-2 is added to elements', !!stateAfterDelta.elements['wall-2'] && stateAfterDelta.elements['wall-2'].thickness === 0.2);
+  check('journal_append is added to transactionJournal', stateAfterDelta.transactionJournal.some((j) => j.transaction_id === 'tx-2'));
+  check('slice2d in delta updates sliced2D', stateAfterDelta.sliced2D?.renderer === 'delta_hlr');
+
+  // 4. Dirty-view slicing: null slice2d in delta retains existing sliced2D
+  const deltaNullSlice = {
+    rev: 3,
+    base_rev: 2,
+    unchanged: false,
+    upsert_meshes: [],
+    remove_guids: [],
+    slice2d: null,
+    journal_append: [],
+    engine_ms: 1.0,
+  };
+  stubFetch({ bundle: deltaNullSlice });
+  await store.getState().fetchStateBundle();
+  check('null slice2d in delta does not blank sliced2D', store.getState().sliced2D?.renderer === 'delta_hlr');
+  check('rev advanced to 3', store.getState().rev === 3);
+
+  // 5. Response C (full resync on reset or forced full)
+  const fullResyncBundle = {
+    ...BUNDLE,
+    rev: 10,
+    full: true,
+    geometry: {
+      meshes: [
+        {
+          guid: 'wall-10',
+          ifc_class: 'IfcWallStandardCase',
+          name: 'Resynced Wall',
+          params: { ifc_class: 'IfcWallStandardCase', thickness: 0.8 },
+        },
+      ],
+      levels: [{ id: 'L1' }],
+      grids: [],
+    },
+  };
+  stubFetch({ bundle: fullResyncBundle });
+  await store.getState().fetchStateBundle();
+  check('Response C replaces meshes completely', store.getState().meshes.length === 1 && store.getState().meshes[0].guid === 'wall-10');
+  check('Response C updates rev to 10', store.getState().rev === 10);
+}
+
+// ---------------------------------------------------------------------------
+section('S7. A 404 trips the breaker once, and the fallback is PARALLEL');
 {
   reset(PLAN_VIEW);
   const calls404 = stubFetch({ stateStatus: 404, perRouteDelayMs: 40 });

@@ -217,6 +217,37 @@ for angle_deg in (45.0, 90.0, 135.0):
     check(f"angle {angle_deg:.0f}: the two walls share a common corner vertex",
           len(shared) >= 1, f"A and B share {len(shared)} vertex(es)")
 
+print()
+print("2b. Oblique angle sweep with UNEQUAL thickness (F2 simultaneous variation)")
+for angle_deg in (30.0, 45.0, 60.0, 120.0, 135.0):
+    for tA, tB in ((0.2, 0.6), (0.1, 0.9)):
+        CORPUS["angle_deg"].add(angle_deg)
+        CORPUS["join_mode"].add("miter")
+        CORPUS["walls_at_junction"].add(2)
+        CORPUS["thickness"].update({tA, tB})
+        CORPUS["end_state"].add("joined")
+
+        mgr, bus = fresh()
+        a = math.radians(angle_deg)
+        ga = make_wall(bus, (0.0, 0.0, 0.0), (10.0, 0.0, 0.0), 10.0, tA)
+        gb = make_wall(bus, (0.0, 0.0, 0.0), (8.0 * math.cos(a), 8.0 * math.sin(a), 0.0), 10.0, tB)
+        set_join(bus, ga, 0, "miter")
+        set_join(bus, gb, 0, "miter")
+        fa = mgr.element_meta[ga]["footprint"]
+        fb = mgr.element_meta[gb]["footprint"]
+
+        shared = [p for p in fa
+                  if any(abs(p[0] - q[0]) < COORD_TOL and abs(p[1] - q[1]) < COORD_TOL
+                         for q in fb)]
+
+        check(f"oblique {angle_deg:.0f} deg tA={tA} tB={tB}: non-degenerate",
+              poly_area(fa) > TOL and poly_area(fb) > TOL,
+              f"areas {poly_area(fa):.4f} / {poly_area(fb):.4f}")
+        check(f"oblique {angle_deg:.0f} deg tA={tA} tB={tB}: exactly 2 shared miter vertices",
+              len(shared) >= 2, f"shared {len(shared)} vertex(es)")
+        check(f"oblique {angle_deg:.0f} deg tA={tA} tB={tB}: clean 4-vertex footprints",
+              len(fa) == 4 and len(fb) == 4, f"vertex counts {len(fa)} / {len(fb)}")
+
 # ===========================================================================
 # 3. Junctions with more than two walls
 # ===========================================================================

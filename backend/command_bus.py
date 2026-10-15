@@ -7,8 +7,9 @@ transactional execution with undo/redo journal, and AI origin tagging.
 
 import time
 import uuid
+import threading
 from typing import Dict, List, Any, Optional, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ifc_service import bim_manager
 
@@ -191,6 +192,119 @@ class ConstraintDeleteParams(BaseModel):
     constraint_id: str = Field(..., description="Constraint identifier to remove")
 
 
+class SheetCreateParams(BaseModel):
+    sheet_number: str = Field(..., description="Sheet number identifier, e.g. 'A101'")
+    sheet_title: str = Field(default="Unnamed Sheet", description="Sheet title")
+    paper_size: str = Field(default="ARCH_D", description="Paper size: ARCH_D, ARCH_C, ISO_A1")
+    is_placeholder: bool = Field(default=False, description="Whether this is a placeholder sheet")
+    sheet_id: Optional[str] = Field(default=None, description="Optional explicit sheet ID")
+    drawn_by: str = Field(default="BIMWorks Architect", description="Drawn by author string")
+    date: Optional[str] = Field(default=None, description="Authored date string")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "sheetNumber": "sheet_number",
+                "sheetTitle": "sheet_title",
+                "paperSize": "paper_size",
+                "isPlaceholder": "is_placeholder",
+                "sheetId": "sheet_id",
+                "drawnBy": "drawn_by",
+            }
+            res = dict(data)
+            for k_camel, k_snake in mapping.items():
+                if k_camel in res and k_snake not in res:
+                    res[k_snake] = res[k_camel]
+            return res
+        return data
+
+
+class SheetDeleteParams(BaseModel):
+    sheet_id: str = Field(..., description="ID of sheet to delete")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "sheetId" in data and "sheet_id" not in data:
+                res = dict(data)
+                res["sheet_id"] = res["sheetId"]
+                return res
+        return data
+
+
+class ViewportAddParams(BaseModel):
+    sheet_id: str = Field(..., description="Target sheet ID")
+    view_id: str = Field(..., description="Target view ID to place on sheet")
+    x: float = Field(..., description="X coordinate on sheet")
+    y: float = Field(..., description="Y coordinate on sheet")
+    width: float = Field(default=480.0, description="Viewport crop width")
+    height: float = Field(default=360.0, description="Viewport crop height")
+    scale_factor: float = Field(default=1.0, description="Viewport scale factor")
+    viewport_id: Optional[str] = Field(default=None, description="Optional explicit viewport ID")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "sheetId": "sheet_id",
+                "viewId": "view_id",
+                "scaleFactor": "scale_factor",
+                "viewportId": "viewport_id",
+            }
+            res = dict(data)
+            for k_camel, k_snake in mapping.items():
+                if k_camel in res and k_snake not in res:
+                    res[k_snake] = res[k_camel]
+            return res
+        return data
+
+
+class ViewportRemoveParams(BaseModel):
+    viewport_id: str = Field(..., description="ID of viewport to remove")
+    sheet_id: Optional[str] = Field(default=None, description="Optional sheet ID containing the viewport")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "viewportId": "viewport_id",
+                "sheetId": "sheet_id",
+            }
+            res = dict(data)
+            for k_camel, k_snake in mapping.items():
+                if k_camel in res and k_snake not in res:
+                    res[k_snake] = res[k_camel]
+            return res
+        return data
+
+
+class ViewportMoveParams(BaseModel):
+    viewport_id: str = Field(..., description="ID of viewport to move")
+    x: float = Field(..., description="New X coordinate on sheet")
+    y: float = Field(..., description="New Y coordinate on sheet")
+    sheet_id: Optional[str] = Field(default=None, description="Optional sheet ID containing the viewport")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "viewportId": "viewport_id",
+                "sheetId": "sheet_id",
+            }
+            res = dict(data)
+            for k_camel, k_snake in mapping.items():
+                if k_camel in res and k_snake not in res:
+                    res[k_snake] = res[k_camel]
+            return res
+        return data
+
+
 # Registry of command names to parameter classes
 COMMAND_REGISTRY = {
     "WallCreate": WallCreateParams,
@@ -219,6 +333,11 @@ COMMAND_REGISTRY = {
     "ConstraintLockToggle": ConstraintLockToggleParams,
     "ConstraintDelete": ConstraintDeleteParams,
     "ElementUpdate": ElementUpdateParams,
+    "SheetCreate": SheetCreateParams,
+    "SheetDelete": SheetDeleteParams,
+    "ViewportAdd": ViewportAddParams,
+    "ViewportRemove": ViewportRemoveParams,
+    "ViewportMove": ViewportMoveParams,
 }
 
 
@@ -250,6 +369,8 @@ class CommandBusEngine:
         self.journal: List[Dict[str, Any]] = []
         self.undo_stack: List[Dict[str, Any]] = []
         self.redo_stack: List[Dict[str, Any]] = []
+        self.rev: int = 0
+        self._lock = threading.RLock()
 
     def get_schemas(self) -> Dict[str, Any]:
         """Exports JSON Schema 2020-12 specifications for all registered commands."""
@@ -453,6 +574,52 @@ class CommandBusEngine:
             res = self.manager.update_element(p.guid, p.updates)
             return {"status": "updated", "guid": p.guid, "element": res}
 
+        elif cmd_name == "SheetCreate":
+            p: SheetCreateParams = validated
+            sheet = self.manager.add_sheet(
+                sheet_number=p.sheet_number,
+                sheet_title=p.sheet_title,
+                paper_size=p.paper_size,
+                is_placeholder=p.is_placeholder,
+                sheet_id=p.sheet_id,
+                drawn_by=p.drawn_by,
+                date=p.date,
+            )
+            return {"status": "created", "sheet": sheet, "sheet_id": sheet["id"]}
+
+        elif cmd_name == "SheetDelete":
+            p: SheetDeleteParams = validated
+            ok = self.manager.delete_sheet(p.sheet_id)
+            if not ok:
+                raise ValueError(f"Sheet {p.sheet_id} could not be deleted")
+            return {"status": "deleted", "sheet_id": p.sheet_id}
+
+        elif cmd_name == "ViewportAdd":
+            p: ViewportAddParams = validated
+            vp = self.manager.add_viewport_to_sheet(
+                sheet_id=p.sheet_id,
+                view_id=p.view_id,
+                x=p.x,
+                y=p.y,
+                width=p.width,
+                height=p.height,
+                scale_factor=p.scale_factor,
+                viewport_id=p.viewport_id,
+            )
+            return {"status": "created", "viewport": vp, "viewport_id": vp["id"]}
+
+        elif cmd_name == "ViewportRemove":
+            p: ViewportRemoveParams = validated
+            ok = self.manager.remove_viewport_from_sheet(p.viewport_id, p.sheet_id)
+            if not ok:
+                raise ValueError(f"Viewport {p.viewport_id} could not be removed")
+            return {"status": "deleted", "viewport_id": p.viewport_id}
+
+        elif cmd_name == "ViewportMove":
+            p: ViewportMoveParams = validated
+            vp = self.manager.move_viewport(p.viewport_id, p.x, p.y, p.sheet_id)
+            return {"status": "moved", "viewport_id": p.viewport_id, "x": vp["x"], "y": vp["y"]}
+
         raise ValueError(f"Unhandled command execution: {cmd_name}")
 
     def execute_transaction(
@@ -470,86 +637,155 @@ class CommandBusEngine:
         model is never left partially mutated. Undo/redo use state snapshots,
         so every command type (create/move/delete/constraint) round-trips.
         """
-        tx_id = f"tx_{uuid.uuid4().hex[:8]}"
-        pre_state = self.manager.snapshot_state()
-        results = []
+        with self._lock:
+            tx_id = f"tx_{uuid.uuid4().hex[:8]}"
+            pre_state = self.manager.snapshot_state()
+            results = []
 
-        try:
-            for item in commands:
-                res = self.execute_single_command(item.command, item.params)
-                results.append({"command": item.command, "result": res})
-        except Exception as e:
-            # Roll back the model to the exact pre-transaction state.
-            self.manager.restore_state(pre_state)
-            raise RuntimeError(
-                f"Transaction '{tx_id}' aborted and rolled back: {str(e)}"
-            ) from e
+            try:
+                for item in commands:
+                    res = self.execute_single_command(item.command, item.params)
+                    results.append({"command": item.command, "result": res})
+            except Exception as e:
+                # Roll back the model to the exact pre-transaction state.
+                self.manager.restore_state(pre_state)
+                raise RuntimeError(
+                    f"Transaction '{tx_id}' aborted and rolled back: {str(e)}"
+                ) from e
 
-        tx_record = {
-            "transaction_id": tx_id,
-            "origin": origin,
-            "description": description,
-            "timestamp": time.time(),
-            "commands": [{"command": c.command, "params": c.params} for c in commands],
-            "results": results,
-        }
-
-        self.journal.append(tx_record)
-        self.undo_stack.append(
-            {
+            self.rev += 1
+            if hasattr(self.manager, "commit_revision"):
+                self.manager.commit_revision(self.rev)
+            tx_record = {
+                "rev": self.rev,
                 "transaction_id": tx_id,
                 "origin": origin,
                 "description": description,
-                "pre_state": pre_state,
-                "post_state": self.manager.snapshot_state(),
+                "timestamp": time.time(),
+                "commands": [{"command": c.command, "params": c.params} for c in commands],
+                "results": results,
             }
-        )
-        self.redo_stack.clear()
 
-        return {
-            "status": "committed",
-            "transaction_id": tx_id,
-            "origin": origin,
-            "commands_executed": len(results),
-            "results": results,
-            "description": description,
-        }
+            self.journal.append(tx_record)
+            self.undo_stack.append(
+                {
+                    "rev": self.rev,
+                    "transaction_id": tx_id,
+                    "origin": origin,
+                    "description": description,
+                    "pre_state": pre_state,
+                    "post_state": self.manager.snapshot_state(),
+                }
+            )
+            self.redo_stack.clear()
 
-    def undo(self) -> Dict[str, Any]:
+            return {
+                "status": "committed",
+                "rev": self.rev,
+                "transaction_id": tx_id,
+                "origin": origin,
+                "commands_executed": len(results),
+                "results": results,
+                "description": description,
+            }
+
+    def abort_transaction(self, transaction_id: str) -> Dict[str, Any]:
+        """
+        Rolls back and discards a committed transaction (e.g. after a post-condition failure).
+        Unlike undo(), the transaction is NOT pushed to redo_stack and is removed from the journal.
+        """
+        with self._lock:
+            if not self.undo_stack:
+                raise RuntimeError(f"Cannot abort transaction '{transaction_id}': undo stack is empty")
+            tx = self.undo_stack[-1]
+            if tx["transaction_id"] != transaction_id:
+                raise RuntimeError(
+                    f"Cannot abort transaction '{transaction_id}': top of undo stack is '{tx['transaction_id']}'"
+                )
+            self.undo_stack.pop()
+            prior_guids = set(self.manager.element_meta.keys())
+            self.manager.restore_state(tx["pre_state"])
+            restored_guids = set(self.manager.element_meta.keys())
+            for g in (prior_guids - restored_guids):
+                self.manager.mark_element_removed(g)
+            for g in restored_guids:
+                self.manager.mark_mesh_dirty(g)
+            self.journal = [j for j in self.journal if j.get("transaction_id") != transaction_id]
+            self.redo_stack = [r for r in self.redo_stack if r.get("transaction_id") != transaction_id]
+            self.rev += 1
+            self.manager.commit_revision(self.rev)
+            return {
+                "status": "aborted",
+                "rev": self.rev,
+                "transaction_id": transaction_id,
+                "origin": tx["origin"],
+                "description": tx.get("description", ""),
+            }
+
+    def undo(self, transaction_id: Optional[str] = None) -> Dict[str, Any]:
         """Rolls back the latest transaction via its pre-state snapshot."""
-        if not self.undo_stack:
-            return {"status": "empty", "message": "Nothing to undo"}
+        with self._lock:
+            if not self.undo_stack:
+                return {"status": "empty", "message": "Nothing to undo"}
 
-        tx = self.undo_stack.pop()
-        self.manager.restore_state(tx["pre_state"])
-        self.redo_stack.append(tx)
+            if transaction_id is not None and self.undo_stack[-1]["transaction_id"] != transaction_id:
+                raise RuntimeError(
+                    f"Transaction mismatch: expected '{transaction_id}', top of stack is '{self.undo_stack[-1]['transaction_id']}'"
+                )
 
-        return {
-            "status": "undone",
-            "transaction_id": tx["transaction_id"],
-            "origin": tx["origin"],
-            "description": tx.get("description", ""),
-        }
+            prior_guids = set(self.manager.element_meta.keys())
+            tx = self.undo_stack.pop()
+            self.manager.restore_state(tx["pre_state"])
+            restored_guids = set(self.manager.element_meta.keys())
+            self.redo_stack.append(tx)
+            self.rev += 1
+            for g in (prior_guids - restored_guids):
+                self.manager.mark_element_removed(g)
+            for g in restored_guids:
+                self.manager.mark_mesh_dirty(g)
+            self.manager.commit_revision(self.rev)
+
+            return {
+                "status": "undone",
+                "rev": self.rev,
+                "transaction_id": tx["transaction_id"],
+                "origin": tx["origin"],
+                "description": tx.get("description", ""),
+            }
 
     def redo(self) -> Dict[str, Any]:
         """Re-applies the latest undone transaction via its post-state snapshot."""
-        if not self.redo_stack:
-            return {"status": "empty", "message": "Nothing to redo"}
+        with self._lock:
+            if not self.redo_stack:
+                return {"status": "empty", "message": "Nothing to redo"}
 
-        tx = self.redo_stack.pop()
-        self.manager.restore_state(tx["post_state"])
-        self.undo_stack.append(tx)
+            prior_guids = set(self.manager.element_meta.keys())
+            tx = self.redo_stack.pop()
+            self.manager.restore_state(tx["post_state"])
+            restored_guids = set(self.manager.element_meta.keys())
+            self.undo_stack.append(tx)
+            self.rev += 1
+            for g in (prior_guids - restored_guids):
+                self.manager.mark_element_removed(g)
+            for g in restored_guids:
+                self.manager.mark_mesh_dirty(g)
+            self.manager.commit_revision(self.rev)
 
-        return {
-            "status": "redone",
-            "transaction_id": tx["transaction_id"],
-            "origin": tx["origin"],
-            "description": tx.get("description", ""),
-        }
+            return {
+                "status": "redone",
+                "rev": self.rev,
+                "transaction_id": tx["transaction_id"],
+                "origin": tx["origin"],
+                "description": tx.get("description", ""),
+            }
 
-    def get_journal(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Returns the replay journal history."""
-        return self.journal[-limit:]
+    def get_journal(self, limit: int = 50, since: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Returns the replay journal history, optionally filtered since a revision."""
+        with self._lock:
+            if since is not None:
+                entries = [j for j in self.journal if j.get("rev", 0) > since]
+                return entries[-limit:] if limit else entries
+            return list(self.journal[-limit:])
 
 
 # Singleton CommandBus instance
