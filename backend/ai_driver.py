@@ -311,11 +311,9 @@ class SemanticQueryEngine:
         if "west" in ref and cardinals.get("west"):
             return cardinals["west"]
 
-        # 4. Fallback to any wall if only one exists
+        # 4. Fallback to any wall only if exactly one exists
         walls = self.query_elements(category="wall")
         if len(walls) == 1:
-            return walls[0]["guid"]
-        elif len(walls) > 1:
             return walls[0]["guid"]
 
         return None
@@ -894,17 +892,21 @@ class AiPlanner:
                     if m:
                         params[k] = float(m.group(1))
 
-                # Instantiate commands
-                def _substitute(val):
-                    if isinstance(val, str) and val.startswith("$"):
-                        var_key = val[1:]
-                        if var_key in params:
-                            return params[var_key]
+                # Instantiate commands with recursive variable substitution
+                def _substitute(val, depth=0):
+                    if depth > 10:
                         return val
+                    if isinstance(val, str):
+                        if val.startswith("$") and val[1:] in params:
+                            return _substitute(params[val[1:]], depth + 1)
+                        res = val
+                        for k, v in params.items():
+                            res = re.sub(rf"\$\{{?{re.escape(k)}\}}?", str(v), res)
+                        return res
                     elif isinstance(val, list):
-                        return [_substitute(item) for item in val]
+                        return [_substitute(item, depth + 1) for item in val]
                     elif isinstance(val, dict):
-                        return {k: _substitute(v) for k, v in val.items()}
+                        return {k: _substitute(v, depth + 1) for k, v in val.items()}
                     return val
 
                 cmds = []
@@ -950,51 +952,62 @@ class AiDriver:
     def execute_plan(self, plan: AiPlan) -> Dict[str, Any]:
         """
         Executes a plan through the CommandBus as one atomic transaction tagged origin='ai'.
-        Verifies post-conditions; if any assertion fails, immediately rolls back via undo()!
+        Verifies post-conditions; if any assertion fails, immediately rolls back via abort_transaction!
+        Execution and verification run inside a single critical section holding self.bus._lock (F7).
         """
         if not plan.commands:
             return {"status": "no_op", "detail": "Plan carries no commands"}
 
-        # 1. Execute transaction on CommandBus
-        tx = self.bus.execute_transaction(
-            commands=plan.commands,
-            origin="ai",
-            description=plan.intent_summary,
-        )
-        tx_id = tx["transaction_id"]
+        with self.bus._lock:
+            # 1. Execute transaction on CommandBus
+            tx = self.bus.execute_transaction(
+                commands=plan.commands,
+                origin="ai",
+                description=plan.intent_summary,
+            )
+            tx_id = tx["transaction_id"]
 
-        # 2. Evaluate Post-Condition Assertions
-        verified_checks = []
-        try:
-            for post in plan.post_conditions:
-                ok, err_msg = self._evaluate_assertion(post, affected_guids=plan.affected_guids)
-                if not ok:
-                    raise AssertionError(
-                        f"AI Post-Condition Assertion Failed: {post.description or post.assertion}. "
-                        f"Cause: {err_msg}."
-                    )
-                verified_checks.append(post.description or post.assertion)
-        except Exception as exc:
-            # Atomic rollback on assertion failure or assertion evaluation exception
+            # Collect executed GUIDs for post-condition scoping (F6)
+            all_affected = list(plan.affected_guids or [])
+            for r in tx.get("results", []):
+                res_obj = r.get("result", {})
+                if isinstance(res_obj, dict) and res_obj.get("guid"):
+                    g = res_obj["guid"]
+                    if g not in all_affected:
+                        all_affected.append(g)
+
+            # 2. Evaluate Post-Condition Assertions
+            verified_checks = []
             try:
-                self.bus.abort_transaction(tx_id)
-            except Exception as rollback_err:
+                for post in plan.post_conditions:
+                    ok, err_msg = self._evaluate_assertion(post, affected_guids=all_affected)
+                    if not ok:
+                        raise AssertionError(
+                            f"AI Post-Condition Assertion Failed: {post.description or post.assertion}. "
+                            f"Cause: {err_msg}."
+                        )
+                    verified_checks.append(post.description or post.assertion)
+            except Exception as exc:
+                # Atomic rollback on assertion failure or assertion evaluation exception
+                try:
+                    self.bus.abort_transaction(tx_id)
+                except Exception as rollback_err:
+                    raise AssertionError(
+                        f"AI execution verification failed ({exc}) and rollback encountered error: {rollback_err}"
+                    ) from exc
                 raise AssertionError(
-                    f"AI execution verification failed ({exc}) and rollback encountered error: {rollback_err}"
+                    f"AI Post-Condition Failed. Transaction {tx_id} aborted and rolled back. Cause: {exc}"
                 ) from exc
-            raise AssertionError(
-                f"AI Post-Condition Failed. Transaction {tx_id} aborted and rolled back. Cause: {exc}"
-            ) from exc
 
-        return {
-            "status": "committed",
-            "transaction_id": tx_id,
-            "summary": plan.intent_summary,
-            "commands_executed": len(plan.commands),
-            "affected_guids": plan.affected_guids,
-            "verified_assertions": verified_checks,
-            "transaction": tx,
-        }
+            return {
+                "status": "committed",
+                "transaction_id": tx_id,
+                "summary": plan.intent_summary,
+                "commands_executed": len(plan.commands),
+                "affected_guids": all_affected,
+                "verified_assertions": verified_checks,
+                "transaction": tx,
+            }
 
     def _evaluate_assertion(
         self,
@@ -1024,24 +1037,34 @@ class AiDriver:
                 return False, f"Invalid numerical parameters for wall_length_approx: {e}"
 
             target_guid = params.get("guid")
-            target_wall = None
+            candidates = []
             if target_guid:
-                target_wall = self.query_engine.get_element(target_guid)
+                el = self.query_engine.get_element(target_guid)
+                if el:
+                    candidates.append(el)
             elif affected_guids:
-                for g in reversed(affected_guids):
+                for g in affected_guids:
                     el = self.query_engine.get_element(g)
                     if el and el.get("ifc_class") in ("IfcWall", "IfcWallStandardCase"):
-                        target_wall = el
-                        break
-            if not target_wall:
+                        candidates.append(el)
+            if not candidates:
                 walls = self.query_engine.query_elements(category="wall")
                 if not walls:
                     return False, "No walls found in model"
-                target_wall = walls[-1]
+                candidates = walls
 
-            actual = float(target_wall.get("length", 0.0))
-            if abs(actual - expected) > tol:
-                return False, f"Wall length {actual} differs from expected {expected} by more than tolerance {tol}"
+            # Check if any candidate wall matches within tolerance (F6)
+            matching = [c for c in candidates if abs(float(c.get("length", 0.0)) - expected) <= tol]
+            if matching:
+                return True, ""
+            actuals = [float(c.get("length", 0.0)) for c in candidates]
+            return False, f"None of the candidate walls (lengths: {actuals}) match expected {expected} within tolerance {tol}"
+
+        elif ast == "level_exists":
+            name = (params.get("name") or "").lower()
+            lvl_names = [l.get("name", "").lower() for l in self.manager.levels.values()]
+            if name not in lvl_names:
+                return False, f"Level '{params.get('name')}' not found in levels: {lvl_names}"
             return True, ""
 
         elif ast == "opening_hosted":

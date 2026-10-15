@@ -446,6 +446,7 @@ interface BimStoreState {
 
   // Model Data
   rev?: number;
+  docId?: string;
   projectName: string;
   levels: LevelData[];
   elements: Record<string, BimElement>;
@@ -751,6 +752,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   activeSheetId: 'sheet-a101',
 
   rev: undefined,
+  docId: undefined,
   elements: {},
   meshes: [],
   grids: [],
@@ -1243,8 +1245,12 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       if (ctx.viewDepth) q.set('view_depth', String(ctx.viewDepth));
     }
     const curRev = get().rev;
+    const curDocId = get().docId;
     if (curRev !== undefined) {
       q.set('since', String(curRev));
+    }
+    if (curDocId !== undefined) {
+      q.set('doc_id', curDocId);
     }
 
     if (bundleUnsupported) {
@@ -1276,6 +1282,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
       // Response A - unchanged
       if (data.unchanged) {
+        if (data.doc_id && get().docId !== data.doc_id) {
+          set({ docId: data.doc_id });
+        }
         return;
       }
 
@@ -1283,6 +1292,17 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
       // Response B - delta
       if (Array.isArray(data.upsert_meshes) || Array.isArray(data.remove_guids)) {
+        // If delta is based on wrong epoch or wrong base rev, trigger a full resync
+        if (
+          (cur.docId && data.doc_id && cur.docId !== data.doc_id) ||
+          (data.base_rev !== undefined && cur.rev !== undefined && data.base_rev !== cur.rev)
+        ) {
+          console.warn('Delta epoch or base revision mismatch; triggering full state resync');
+          set({ rev: undefined, docId: undefined });
+          await get().fetchStateBundle(cutElevation);
+          return;
+        }
+
         const removeSet = new Set<string>(data.remove_guids || []);
         const upsertMap = new Map<string, MeshBufferData>();
         for (const m of (data.upsert_meshes || []) as MeshBufferData[]) {
@@ -1341,20 +1361,37 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           );
           updatedJournal = [...cur.transactionJournal, ...newEntries];
         }
+        if (updatedJournal.length > 50) {
+          updatedJournal = updatedJournal.slice(updatedJournal.length - 50);
+        }
 
         set({
+          docId: data.doc_id ?? cur.docId,
           rev: data.rev ?? cur.rev,
           meshes: updatedMeshes,
           elements: updatedElements,
           ...(data.slice2d ? { sliced2D: data.slice2d } : {}),
           transactionJournal: updatedJournal,
           ...(cur.selectedGuid && removeSet.has(cur.selectedGuid) ? { selectedGuid: null } : {}),
+          ...(data.levels ? { levels: data.levels } : {}),
+          ...(data.grids ? { grids: data.grids } : {}),
+          ...(data.sheets ? { sheets: data.sheets } : {}),
+          ...(data.views ? { views: data.views } : {}),
+          ...(data.constraints ? { constraints: data.constraints } : {}),
+          ...(data.wall_joins ? { wallJoins: data.wall_joins } : {}),
+          ...(data.project
+            ? {
+                projectName: data.project.project_name || cur.projectName,
+                georeference: data.project.georeference || cur.georeference,
+              }
+            : {}),
         });
         return;
       }
 
       // Response C - full bundle
       set({
+        docId: data.doc_id ?? cur.docId,
         rev: data.rev ?? cur.rev,
         ...(data.project
           ? {
@@ -1368,8 +1405,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         // A failed slice returns null; keep the last good linework rather than
         // blanking the viewport.
         ...(data.slice2d ? { sliced2D: data.slice2d } : {}),
-        ...(data.journal ? { transactionJournal: data.journal } : {}),
+        ...(data.journal ? { transactionJournal: data.journal.slice(-50) } : {}),
         ...(data.sheets ? { sheets: data.sheets } : {}),
+        ...(data.views ? { views: data.views } : {}),
       });
 
       if (data.errors) {
@@ -1500,7 +1538,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       set({ isLoadingFile: true, statusMessage: 'Loading Sample BIM Building...' });
       const res = await fetch(`${API_BASE}/sample`, { method: 'POST' });
       if (res.ok) {
-        set({ rev: undefined });
+        set({ rev: undefined, docId: undefined });
         await get().fetchStateBundle();
         set({
           projectName: 'BIMWorks Prototype Building',
@@ -1532,6 +1570,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           selectedGuid: null,
           hoveredGuid: null,
           rev: undefined,
+          docId: undefined,
         });
         await get().fetchStateBundle();
         return true;
@@ -1944,7 +1983,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         return false;
       }
 
-      set({ rev: undefined });
+      set({ rev: undefined, docId: undefined });
       await get().fetchStateBundle();
 
       set({

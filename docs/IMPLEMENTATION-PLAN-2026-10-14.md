@@ -58,8 +58,7 @@
 | N6 | **Half fixed.** Door/window slide is angle-correct (P0). **EQ still open, now scoped to P3** with measured evidence: `equalize_span` appends a duplicate constraint per call and no propagation branch exists | Propagation loop handles `align` and `dimension_lock` only; see the P1 re-scope bullet |
 | N7 | **Fixed by P0** | `fetchGeometry` builds the `elements` record from each mesh's `params` |
 | N8 | **Fixed by P0** | `accept=".bimworks,.orlt,.ifc,.stp,.step"` |
-| N9 | **Fixed by P0** (dependency declared + installed + HTTP-level test). **New lint surfaced:** the merge duplicated the `python-multipart` line in `requirements.txt` | `requirements.txt` |
-| N10 | **FIXED by Delta Protocol (D1–D9).** Monotonic revision counter, dirty mesh tracking, Response A/B/C state delta endpoint, dirty-view slicing, Zustand store delta integration, and differential equivalence testing (72% payload reduction, p50 delta 1.1ms). | `GET /api/state?since=`, `scripts/check-delta-equivalence.mjs`, `docs/DELTA-MEASUREMENT.md` |
+| N10 | **Delta Protocol Implemented & Remediated.** Monotonic revision counter, epoch identity (`doc_id`), section revision gating, dirty mesh tracking, Response A/B/C state delta endpoint, dirty-view slicing with removal level tracking, Zustand store delta integration, and differential equivalence testing (72-77% payload reduction; see `docs/DELTA-MEASUREMENT.md` for breakdown). | `GET /api/state?since=`, `scripts/check-delta-equivalence.mjs`, `docs/DELTA-MEASUREMENT.md` |
 | N11 | **Fixed by P0**, except the sheet list, which remains static seed data by design until P6 | `PropertiesPalette`, `PlanViewport2D`, `ProjectBrowser`, `SheetCanvas` |
 | N12 | **Fixed by P0** (`.bimworks` canonical, `.orlt` load alias). The legacy pset *name* stays until N4 lands in P2 — deliberate, to avoid a second round-trip break | `CONTAINER_EXTENSION`; `Pset_ORLT_Constraints` |
 
@@ -411,11 +410,9 @@ Flagged as blocked on that basis. Unblocking it requires one of: a reviewer conf
 | REST endpoints & State bundle | Bus-backed REST shims in `backend/main.py`; `GET /api/sheets`, `GET /api/views`, `POST /api/export/batch-pdf`. State bundle `/api/state` includes `sheets`, `views` and latency timings |
 | Frontend store integration | Registered in `UI_ACTION_COMMANDS`; all sheet/viewport actions route through `dispatchTransaction`. `npm run check` clean (130 UI checks, 30 state bundle checks) |
 
-### P7 — AI Driver Layer (README M5)
-
 ### P7 — Typesafe AI Driver Layer & MCP Server (README M5)
 
-**Status: COMPLETE (2026-10-14).** Verified by `scratch/test_ai_driver.py` (94 checks) plus all sixteen regression suites, UI gate (130 checks), and state bundle gate (30 checks).
+**Status: COMPLETE (2026-10-14).** Verified by `scratch/test_ai_driver.py` (105 checks) plus all sixteen regression suites, UI gate (130 checks), and state bundle gate (45 checks).
 
 | Item | What landed |
 |---|---|

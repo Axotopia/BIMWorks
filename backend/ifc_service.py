@@ -202,6 +202,16 @@ class BimModelManager:
             "aggregate.assign_object", self.model, relating_object=self.site, products=[self.building]
         )
 
+        # Document epoch ID and section revisions (N1, N4)
+        self.doc_id: str = str(uuid.uuid4())
+        self.levels_rev: int = 0
+        self.grids_rev: int = 0
+        self.sheets_rev: int = 0
+        self.views_rev: int = 0
+        self.constraints_rev: int = 0
+        self.wall_joins_rev: int = 0
+        self.project_rev: int = 0
+
         # Storeys (Levels)
         self.levels: Dict[str, Any] = {}
         self.add_level("Level 1", 0.0)
@@ -216,6 +226,8 @@ class BimModelManager:
         self.dirty_mesh_guids: Set[str] = set()
         self.removed_guids_by_rev: Dict[int, List[str]] = {}
         self._pending_removed_guids: List[str] = []
+        self.removed_items_by_rev: Dict[int, List[Dict[str, Any]]] = {}
+        self._pending_removed_items: List[Dict[str, Any]] = []
 
         # 1D/2D Parametric Constraints Manager
         self.constraints: Dict[str, Dict[str, Any]] = {}
@@ -420,6 +432,16 @@ class BimModelManager:
             "dirty_mesh_guids": copy.copy(self.dirty_mesh_guids),
             "removed_guids_by_rev": copy.deepcopy(self.removed_guids_by_rev),
             "pending_removed_guids": list(self._pending_removed_guids),
+            "removed_items_by_rev": copy.deepcopy(self.removed_items_by_rev),
+            "pending_removed_items": list(self._pending_removed_items),
+            "doc_id": self.doc_id,
+            "levels_rev": self.levels_rev,
+            "grids_rev": self.grids_rev,
+            "sheets_rev": self.sheets_rev,
+            "views_rev": self.views_rev,
+            "constraints_rev": self.constraints_rev,
+            "wall_joins_rev": self.wall_joins_rev,
+            "project_rev": self.project_rev,
         }
 
     def restore_state(self, snap: Dict[str, Any]) -> None:
@@ -509,22 +531,37 @@ class BimModelManager:
         self.dirty_mesh_guids = copy.copy(snap.get("dirty_mesh_guids", set()))
         self.removed_guids_by_rev = copy.deepcopy(snap.get("removed_guids_by_rev", {}))
         self._pending_removed_guids = list(snap.get("pending_removed_guids", []))
+        self.removed_items_by_rev = copy.deepcopy(snap.get("removed_items_by_rev", {}))
+        self._pending_removed_items = list(snap.get("pending_removed_items", []))
+        self.doc_id = snap.get("doc_id", getattr(self, "doc_id", str(uuid.uuid4())))
+        self.levels_rev = snap.get("levels_rev", 0)
+        self.grids_rev = snap.get("grids_rev", 0)
+        self.sheets_rev = snap.get("sheets_rev", 0)
+        self.views_rev = snap.get("views_rev", 0)
+        self.constraints_rev = snap.get("constraints_rev", 0)
+        self.wall_joins_rev = snap.get("wall_joins_rev", 0)
+        self.project_rev = snap.get("project_rev", 0)
 
-    def mark_mesh_dirty(self, *guids: str) -> None:
+    def mark_mesh_dirty(self, *guids: str, clear_cache: bool = True) -> None:
         """Marks elements as having modified geometry/placement."""
         for guid in guids:
             if not guid:
                 continue
             self.dirty_mesh_guids.add(guid)
-            meta = self.element_meta.get(guid)
-            if meta:
-                meta.pop("cached_verts", None)
-                meta.pop("cached_faces", None)
-                meta.pop("bbox", None)
+            if clear_cache:
+                meta = self.element_meta.get(guid)
+                if meta:
+                    meta.pop("cached_verts", None)
+                    meta.pop("cached_faces", None)
+                    meta.pop("bbox", None)
 
     def mark_element_removed(self, guid: str) -> None:
         """Records an element deletion so delta queries report remove_guids."""
+        lid = None
+        if guid in self.element_meta:
+            lid = self.element_meta[guid].get("level_id")
         self._pending_removed_guids.append(guid)
+        self._pending_removed_items.append({"guid": guid, "level_id": lid})
         self.dirty_mesh_guids.discard(guid)
         self.mesh_revs.pop(guid, None)
 
@@ -537,6 +574,9 @@ class BimModelManager:
         if self._pending_removed_guids:
             self.removed_guids_by_rev.setdefault(rev, []).extend(self._pending_removed_guids)
             self._pending_removed_guids = []
+        if self._pending_removed_items:
+            self.removed_items_by_rev.setdefault(rev, []).extend(self._pending_removed_items)
+            self._pending_removed_items = []
 
     def add_level(self, name: str, elevation: float) -> str:
         """Adds an IfcBuildingStorey level."""
@@ -554,6 +594,7 @@ class BimModelManager:
             "elevation": float(elevation),
             "entity": storey,
         }
+        self.levels_rev += 1
         return level_id
 
     # =========================================================================
@@ -951,6 +992,7 @@ class BimModelManager:
         # consistent with every other edit.
         meta["footprint"] = None
         self._rebuild_wall_representation(guid)
+        self.mark_mesh_dirty(guid)
         self.recompute_wall_joins()
         return {"status": "rotated", "guid": guid, "angle": meta["angle"], "length": length}
 
@@ -1000,6 +1042,7 @@ class BimModelManager:
         meta["length"] = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
         meta["angle"] = math.atan2(ep[1] - sp[1], ep[0] - sp[0])
         self._rebuild_wall_representation(guid)
+        self.mark_mesh_dirty(guid)
         self.recompute_wall_joins()
         return {
             "status": "trimmed",
@@ -1044,6 +1087,7 @@ class BimModelManager:
         meta["end"] = [mid[0], mid[1], sp[2]]
         meta["length"] = offset
         self._rebuild_wall_representation(guid)
+        self.mark_mesh_dirty(guid)
         self.recompute_wall_joins()
         return {
             "status": "split",
@@ -1083,6 +1127,7 @@ class BimModelManager:
         if storey is not None:
             storey.Elevation = float(new_elevation)
         level["elevation"] = float(new_elevation)
+        self.levels_rev += 1
 
         # Every element on this storey follows. Explicit membership from the graph
         # rather than "all elements": elements on other levels must not move.
@@ -1124,6 +1169,7 @@ class BimModelManager:
         chosen a CRS we write no georeferencing at all, and clear anything a
         previous value left behind rather than leaving a stale conversion in the file.
         """
+        self.project_rev += 1
         crs = (self.georeference_data.get("projected_crs") or "").strip()
         if not crs:
             for entity in list(self.model.by_type("IfcMapConversion")) + list(self.model.by_type("IfcProjectedCRS")):
@@ -1690,6 +1736,7 @@ class BimModelManager:
             },
         }
         self.element_meta[guid] = meta
+        self.mark_mesh_dirty(guid)
         return meta
 
     def add_roof(
@@ -1776,6 +1823,7 @@ class BimModelManager:
             },
         }
         self.element_meta[guid] = meta
+        self.mark_mesh_dirty(guid)
         return meta
 
     def add_grid(
@@ -1847,6 +1895,7 @@ class BimModelManager:
             },
         }
         self.element_meta[grid_guid] = meta
+        self.grids_rev += 1
         return meta
 
     def delete_element(self, guid: str) -> bool:
@@ -1860,6 +1909,8 @@ class BimModelManager:
 
         meta = self.element_meta[guid]
         ifc_class = meta.get("ifc_class")
+        if ifc_class == "IfcGrid":
+            self.grids_rev += 1
 
         # Case 1: Hosted Door or Window
         if ifc_class in ("IfcDoor", "IfcWindow"):
@@ -2318,6 +2369,7 @@ class BimModelManager:
             if "swing_flipped" in updates and updates["swing_flipped"] is not None:
                 meta["swing_flipped"] = bool(updates["swing_flipped"])
 
+        self.mark_mesh_dirty(guid, clear_cache=False)
         return {
             "guid": guid,
             "ifc_class": meta.get("ifc_class"),
@@ -2757,6 +2809,7 @@ class BimModelManager:
         local work; the partner search still scans `walls`, so the per-wall
         partner lookup is bounded by the subset rather than the model.
         """
+        self.wall_joins_rev += 1
         all_walls = {
             g: m for g, m in self.element_meta.items()
             if m.get("ifc_class") == "IfcWallStandardCase" and "entity" in m
@@ -3058,6 +3111,7 @@ class BimModelManager:
         rejected design, and `strip_legacy_constraint_pset()` actively removes any
         pset a previously saved container may still carry.
         """
+        self.constraints_rev += 1
         return None
 
     def strip_legacy_constraint_pset(self) -> int:
@@ -3482,9 +3536,14 @@ class BimModelManager:
             for rev, guids in self.removed_guids_by_rev.items():
                 if rev > since:
                     remove_guids.extend(guids)
+            remove_items = []
+            for rev, items in getattr(self, "removed_items_by_rev", {}).items():
+                if rev > since:
+                    remove_items.extend(items)
             return {
                 "upsert_meshes": upsert_meshes,
                 "remove_guids": sorted(set(remove_guids)),
+                "removed_items": remove_items,
                 "levels": levels_data,
                 "grids": grids_data,
             }
@@ -4471,6 +4530,7 @@ class BimModelManager:
             "viewports": [],
         }
         self.sheets[sid] = new_sheet
+        self.sheets_rev += 1
         return new_sheet
 
     def delete_sheet(self, sheet_id: str) -> bool:
@@ -4482,7 +4542,16 @@ class BimModelManager:
         if sheet_id not in self.sheets:
             raise ValueError(f"Sheet '{sheet_id}' not found")
         del self.sheets[sheet_id]
+        self.sheets_rev += 1
         return True
+
+    def convert_placeholder_sheet(self, sheet_id: str) -> Dict[str, Any]:
+        """Converts a placeholder sheet into a real printable sheet (SPEC §13.2)."""
+        if sheet_id not in self.sheets:
+            raise ValueError(f"Sheet '{sheet_id}' not found")
+        self.sheets[sheet_id]["is_placeholder"] = False
+        self.sheets_rev += 1
+        return self.sheets[sheet_id]
 
     def add_viewport_to_sheet(
         self,
@@ -4502,16 +4571,20 @@ class BimModelManager:
           - View must exist in self.views
           - A view appears at most once per sheet
           - A view appears at most once across all sheets in the model
+          - Cannot place views on placeholder sheets
         """
         if sheet_id not in self.sheets:
             raise ValueError(f"Sheet '{sheet_id}' not found")
         if view_id not in self.views:
             raise ValueError(f"View '{view_id}' not found")
 
+        target_sheet = self.sheets[sheet_id]
+        if target_sheet.get("is_placeholder", False):
+            raise ValueError(f"Cannot place view on placeholder sheet '{target_sheet.get('sheet_number')}'")
+
         view_def = self.views[view_id]
         view_name = view_def.get("name", view_id)
 
-        target_sheet = self.sheets[sheet_id]
         # §13.2 Constraint: A view appears at most once per sheet
         for vp in target_sheet.get("viewports", []):
             if vp.get("view_id") == view_id:
@@ -4534,6 +4607,7 @@ class BimModelManager:
             "scale_factor": float(scale_factor),
         }
         target_sheet.setdefault("viewports", []).append(vp)
+        self.sheets_rev += 1
         return vp
 
     def remove_viewport_from_sheet(self, viewport_id: str, sheet_id: Optional[str] = None) -> bool:
@@ -4553,6 +4627,7 @@ class BimModelManager:
                 break
         if not found:
             raise ValueError(f"Viewport '{viewport_id}' not found")
+        self.sheets_rev += 1
         return True
 
     def move_viewport(self, viewport_id: str, x: float, y: float, sheet_id: Optional[str] = None) -> Dict[str, Any]:
@@ -4566,6 +4641,7 @@ class BimModelManager:
                 if vp.get("id") == viewport_id:
                     vp["x"] = float(x)
                     vp["y"] = float(y)
+                    self.sheets_rev += 1
                     return vp
         raise ValueError(f"Viewport '{viewport_id}' not found")
 
@@ -5073,6 +5149,22 @@ class BimModelManager:
         self.constraints = {}
         self.undo_stack = []
         self.redo_stack = []
+        self.mesh_revs = {}
+        self.dirty_mesh_guids = set()
+        self.removed_guids_by_rev = {}
+        self._pending_removed_guids = []
+        self.removed_items_by_rev = {}
+        self._pending_removed_items = []
+
+        # New epoch ID and bump all section revisions on file load (N1)
+        self.doc_id = str(uuid.uuid4())
+        self.levels_rev += 1
+        self.grids_rev += 1
+        self.sheets_rev += 1
+        self.views_rev += 1
+        self.constraints_rev += 1
+        self.wall_joins_rev += 1
+        self.project_rev += 1
 
         # 3. Storeys (Levels)
         #

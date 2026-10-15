@@ -703,10 +703,17 @@ class CommandBusEngine:
                     f"Cannot abort transaction '{transaction_id}': top of undo stack is '{tx['transaction_id']}'"
                 )
             self.undo_stack.pop()
+            prior_guids = set(self.manager.element_meta.keys())
             self.manager.restore_state(tx["pre_state"])
+            restored_guids = set(self.manager.element_meta.keys())
+            for g in (prior_guids - restored_guids):
+                self.manager.mark_element_removed(g)
+            for g in restored_guids:
+                self.manager.mark_mesh_dirty(g)
             self.journal = [j for j in self.journal if j.get("transaction_id") != transaction_id]
             self.redo_stack = [r for r in self.redo_stack if r.get("transaction_id") != transaction_id]
-            self.rev = self.undo_stack[-1]["rev"] if self.undo_stack else 0
+            self.rev += 1
+            self.manager.commit_revision(self.rev)
             return {
                 "status": "aborted",
                 "rev": self.rev,
@@ -737,16 +744,6 @@ class CommandBusEngine:
             for g in restored_guids:
                 self.manager.mark_mesh_dirty(g)
             self.manager.commit_revision(self.rev)
-            undo_record = {
-                "rev": self.rev,
-                "transaction_id": f"undo_{tx['transaction_id']}",
-                "origin": tx["origin"],
-                "description": f"Undo {tx.get('description', '')}",
-                "timestamp": time.time(),
-                "commands": [],
-                "results": [],
-            }
-            self.journal.append(undo_record)
 
             return {
                 "status": "undone",
@@ -773,16 +770,6 @@ class CommandBusEngine:
             for g in restored_guids:
                 self.manager.mark_mesh_dirty(g)
             self.manager.commit_revision(self.rev)
-            redo_record = {
-                "rev": self.rev,
-                "transaction_id": f"redo_{tx['transaction_id']}",
-                "origin": tx["origin"],
-                "description": f"Redo {tx.get('description', '')}",
-                "timestamp": time.time(),
-                "commands": [],
-                "results": [],
-            }
-            self.journal.append(redo_record)
 
             return {
                 "status": "redone",
@@ -796,7 +783,8 @@ class CommandBusEngine:
         """Returns the replay journal history, optionally filtered since a revision."""
         with self._lock:
             if since is not None:
-                return [j for j in self.journal if j.get("rev", 0) > since]
+                entries = [j for j in self.journal if j.get("rev", 0) > since]
+                return entries[-limit:] if limit else entries
             return list(self.journal[-limit:])
 
 

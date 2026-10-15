@@ -299,6 +299,7 @@ def load_path(req: LoadPathRequest):
         raise HTTPException(status_code=404, detail=f"File not found: {req.path}")
     try:
         res = bim_manager.load_ifc_file(req.path, os.path.basename(req.path))
+        command_bus.rev += 1
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to load IFC file from path: {str(e)}")
@@ -309,6 +310,7 @@ def load_file(req: LoadFileRequest):
     """Loads an arbitrary IFC STEP file from text content into the active workspace."""
     try:
         res = bim_manager.load_ifc_content(req.content, req.filename or "Imported.ifc")
+        command_bus.rev += 1
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to load IFC file: {str(e)}")
@@ -321,6 +323,7 @@ async def upload_ifc(file: UploadFile = File(...)):
         raw_bytes = await file.read()
         text_content = raw_bytes.decode("utf-8", errors="replace")
         res = bim_manager.load_ifc_content(text_content, file.filename or "Uploaded.ifc")
+        command_bus.rev += 1
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to upload IFC file: {str(e)}")
@@ -330,13 +333,20 @@ async def upload_ifc(file: UploadFile = File(...)):
 def reset_project(project_name: Optional[str] = "BIMWorks Project"):
     bim_manager.project_name = project_name
     bim_manager.reset_model()
-    return {"status": "reset", "levels": list(bim_manager.levels.values())}
+    command_bus.rev += 1
+    return {
+        "status": "reset",
+        "levels": list(bim_manager.levels.values()),
+        "doc_id": bim_manager.doc_id,
+        "rev": command_bus.rev,
+    }
 
 
 @app.post("/api/sample")
 def load_sample_building():
     """Populates a realistic architectural building with walls, doors, windows, slab, roof, grids."""
     bim_manager.reset_model()
+    command_bus.rev += 1
 
     # 4 Perimeter walls
     w1 = bim_manager.add_wall((0, 0, 0), (12, 0, 0), height=3.0, thickness=0.25, name="Basic Wall : Exterior - 10\" CMU")
@@ -768,7 +778,9 @@ async def load_bimworks_project(file: UploadFile = File(...)):
     """Loads a .bimworks hybrid container (legacy .orlt also accepted)."""
     try:
         raw_bytes = await file.read()
-        return bim_manager.load_orlt_project(raw_bytes, file.filename or f"Project{CONTAINER_EXTENSION}")
+        res = bim_manager.load_orlt_project(raw_bytes, file.filename or f"Project{CONTAINER_EXTENSION}")
+        command_bus.rev += 1
+        return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to load project container: {str(e)}")
 
@@ -932,7 +944,8 @@ def execute_ai_plan(req: AiExecuteRequest):
 # ---------------------------------------------------------------------------
 @app.get("/api/state")
 def get_state_bundle(
-    since: Optional[int] = None,
+    since: Optional[str] = None,
+    doc_id: Optional[str] = None,
     cut_elevation: float = 4.0,
     level_id: Optional[str] = None,
     view_type: str = "floor_plan",
@@ -955,12 +968,26 @@ def get_state_bundle(
     timings: Dict[str, float] = {}
     errors: Dict[str, str] = {}
     current_rev = command_bus.rev
+    current_doc_id = getattr(bim_manager, "doc_id", "")
+
+    parsed_since: Optional[int] = None
+    if since is not None and since != "":
+        try:
+            parsed_since = int(since)
+        except (ValueError, TypeError):
+            parsed_since = None
+
+    # Epoch mismatch or missing doc_id forces Response C (full resync)
+    if doc_id is None or doc_id != current_doc_id:
+        parsed_since = None
 
     # Response A — nothing changed. This must be cheap; it is the common case.
-    if since is not None and since == current_rev:
+    if parsed_since is not None and parsed_since == current_rev:
         return {
             "rev": current_rev,
+            "doc_id": current_doc_id,
             "unchanged": True,
+            "timings": timings,
             "engine_ms": round((_time.perf_counter() - t_total) * 1000.0, 2),
         }
 
@@ -1000,12 +1027,13 @@ def get_state_bundle(
         )
 
     # Response B — a delta
-    if since is not None and 0 <= since < current_rev:
-        geom_delta = timed_soft("geometry", lambda: bim_manager.get_geometry_buffers(since=since))
+    if parsed_since is not None and 0 <= parsed_since < current_rev:
+        geom_delta = timed_soft("geometry", lambda: bim_manager.get_geometry_buffers(since=parsed_since))
         upsert_meshes = geom_delta.get("upsert_meshes", []) if geom_delta else []
         remove_guids = geom_delta.get("remove_guids", []) if geom_delta else []
+        removed_items = geom_delta.get("removed_items", []) if geom_delta else []
 
-        # D5: dirty-view slice filter (R5)
+        # D5: dirty-view slice filter (R5, N3)
         needs_slice = True
         if view_type == "floor_plan" and level_id:
             req_storey = bim_manager.get_storey_by_id(level_id)
@@ -1016,23 +1044,63 @@ def get_state_bundle(
                 if lid:
                     st = bim_manager.get_storey_by_id(lid)
                     affected_gids.add(st.GlobalId if st else lid)
-            # If all affected elements belong strictly to other levels, skip slice2d
-            if affected_gids and req_gid not in affected_gids:
+
+            unknown_removed_level = False
+            for item in removed_items:
+                lid = item.get("level_id")
+                if lid:
+                    st = bim_manager.get_storey_by_id(lid)
+                    affected_gids.add(st.GlobalId if st else lid)
+                else:
+                    unknown_removed_level = True
+
+            # If any removed item has unknown level, slice is needed.
+            # Only skip if we know all affected levels and req_gid is not among them:
+            if not unknown_removed_level and affected_gids and req_gid not in affected_gids:
                 needs_slice = False
 
         slice2d = timed_soft("slice2d", _slice) if needs_slice else None
-        journal_append = timed_soft("journal", lambda: command_bus.get_journal(since=since))
-        total_ms = round((_time.perf_counter() - t_total) * 1000.0, 2)
+        journal_append = timed_soft("journal", lambda: command_bus.get_journal(limit=journal_limit, since=parsed_since))
 
+        # Include non-mesh sections if modified since parsed_since (N4)
+        levels_section = list(bim_manager.levels.values()) if getattr(bim_manager, "levels_rev", 0) > parsed_since else None
+        grids_data = [
+            {
+                "guid": m["guid"],
+                "name": m["name"],
+                "tag": m["tag"],
+                "start": m["start"],
+                "end": m["end"],
+            }
+            for m in bim_manager.element_meta.values()
+            if m.get("ifc_class") == "IfcGrid"
+        ] if getattr(bim_manager, "grids_rev", 0) > parsed_since else None
+        sheets_section = bim_manager.get_sheets() if getattr(bim_manager, "sheets_rev", 0) > parsed_since else None
+        views_section = bim_manager.get_views() if getattr(bim_manager, "views_rev", 0) > parsed_since else None
+        constraints_section = list(bim_manager.constraints.values()) if getattr(bim_manager, "constraints_rev", 0) > parsed_since else None
+        wall_joins_section = bim_manager.get_wall_joins() if getattr(bim_manager, "wall_joins_rev", 0) > parsed_since else None
+        project_section = {
+            "project_name": bim_manager.project_name,
+            "levels": list(bim_manager.levels.values()),
+            "elements_count": len(bim_manager.element_meta),
+            "georeference": bim_manager.georeference_data,
+        } if getattr(bim_manager, "project_rev", 0) > parsed_since else None
+
+        total_ms = round((_time.perf_counter() - t_total) * 1000.0, 2)
         return {
             "rev": current_rev,
-            "base_rev": since,
+            "base_rev": parsed_since,
+            "doc_id": current_doc_id,
             "unchanged": False,
             "upsert_meshes": upsert_meshes,
             "remove_guids": remove_guids,
-            "project": None,
-            "constraints": None,
-            "wall_joins": None,
+            "levels": levels_section,
+            "grids": grids_data,
+            "sheets": sheets_section,
+            "views": views_section,
+            "project": project_section,
+            "constraints": constraints_section,
+            "wall_joins": wall_joins_section,
             "slice2d": slice2d,
             "journal_append": journal_append,
             "errors": errors,
@@ -1058,6 +1126,7 @@ def get_state_bundle(
     total_ms = round((_time.perf_counter() - t_total) * 1000.0, 2)
     return {
         "rev": current_rev,
+        "doc_id": current_doc_id,
         "full": True,
         "unchanged": False,
         "project": project,

@@ -187,8 +187,8 @@ edits — they replace the document rather than edit it.
 
 ### 6.3 Post-commit protocol
 
-**[RESOLVED (v0.2 N10)]** Delta Protocol implemented (`GET /api/state?since=<rev>`).
-Response A (`unchanged: true`), Response B (delta with `upsert_meshes`, `remove_guids`, dirty view slice filter, `journal_append`), and Response C (full bundle resync). Wired into the store and verified by `scripts/check-state-bundle.mjs` (45 checks) and `scripts/check-delta-equivalence.mjs` (14 checks). Empirical benchmark: 71.7% payload reduction, p50 delta latency 1.10 ms (see `docs/DELTA-MEASUREMENT.md`).
+Delta Protocol implemented (`GET /api/state?since=<rev>&doc_id=<doc_id>`).
+Response A (`unchanged: true`), Response B (delta with `upsert_meshes`, `remove_guids`, dirty view slice filter accounting for removed elements' storeys, non-mesh section revisions, `journal_append`), and Response C (full bundle resync on epoch or base_rev mismatch). Wired into the store and verified by `scripts/check-state-bundle.mjs` (45 checks) and `scripts/check-delta-equivalence.mjs` (21 checks). Empirical benchmark: 72–77% payload reduction, p50 delta latency 1–3 ms for mesh updates on small models (see `docs/DELTA-MEASUREMENT.md` for model size and linework slice analysis).
 
 ### 6.4 Instrumentation — two numbers that must not be conflated
 
@@ -1208,10 +1208,10 @@ entity selection, Revit bundling IfcOpenShell, and the licensing route via `revi
 | J4 fails: spurious (0,0) vertex at junction | **RESOLVED** §11.3 (degenerate vertex removed) |
 | 18 join checks were blind because fixtures had constant thickness | **RESOLVED** §20.1 (matrix test covers 5 thicknesses) |
 | Seven serial post-commit round trips; /api/constraints fetched twice | **RESOLVED** §6.3 (Delta Protocol GET /api/state?since=) |
-| End-to-end edit round p50 36.7 / p95 66.9 ms vs a 16 ms budget; ~30 ms in refetches | **RESOLVED** §6.4 (Delta Protocol reduces payload by 72% and latency to p50 1.10 ms, docs/DELTA-MEASUREMENT.md) |
+| End-to-end edit round p50 36.7 / p95 66.9 ms vs a 16 ms budget; ~30 ms in refetches | **RESOLVED** §6.4 (Delta Protocol reduces payload by 72-77%; see docs/DELTA-MEASUREMENT.md) |
 | The reported drag result measures ~10% of the wait | **RESOLVED** §6.4 + §20.2 (split engine_ms vs client wait recorded in store diagnostics) |
 | test_wall_joins.py dies on cp1252 before running a check | **RESOLVED** §20.5 (ASCII output) |
-| /api/state bundle implemented (engine_ms + timings); UI wired | **RESOLVED** §6.3 (45 checks pass in check-state-bundle.mjs, 14 checks pass in check-delta-equivalence.mjs) |
+| /api/state bundle implemented (engine_ms + timings); UI wired | **RESOLVED** §6.3 (45 checks pass in check-state-bundle.mjs, 21 checks pass in check-delta-equivalence.mjs) |
 | scratch/test_wall_joins_matrix.py — 67 passed, 0 failed | **PASS** §20.1 (exhaustive angle and thickness sweeps) |
 
 ---

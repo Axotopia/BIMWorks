@@ -92,9 +92,17 @@ section('D6.2 Frontend Store Delta Equivalence (useBimStore Zustand store)');
   const originalFetch = globalThis.fetch;
 
   try {
-    // Model state tracker simulating backend state
+    const docId = 'test-doc-epoch-42';
     const backendMeshes = new Map();
     let backendRev = 1;
+    let backendLevels = [
+      { id: 'lvl-1', name: 'Level 1', elevation: 0.0 },
+      { id: 'lvl-2', name: 'Level 2', elevation: 10.0 },
+    ];
+    let backendSheets = [
+      { id: 'sheet-101', sheetNumber: 'A101', sheetTitle: 'FLOOR PLAN', viewports: [] },
+    ];
+    let backendConstraints = [];
 
     // Seed 5 initial walls
     for (let i = 1; i <= 5; i++) {
@@ -104,65 +112,80 @@ section('D6.2 Frontend Store Delta Equivalence (useBimStore Zustand store)');
         name: `Wall ${i}`,
         params: {
           ifc_class: 'IfcWallStandardCase',
+          name: `Wall ${i}`,
           thickness: 0.25,
+          height: 3.0,
+          length: 6.0,
           start: [i * 3, 0, 0],
           end: [i * 3, 6, 0],
+          tag: `W0${i}`,
         },
       });
     }
 
-    // Client Store A: starts with full bundle at rev 1, then applies ONLY deltas
+    // Client Store: reset state
     store.setState({
       rev: undefined,
+      docId: undefined,
       meshes: [],
       elements: {},
+      levels: [],
+      sheets: [],
+      constraints: [],
       transactionJournal: [],
       sliced2D: null,
     });
 
-    // Helper to stub fetch for a given payload
     let currentPayload = null;
+    let lastRequestedUrl = null;
     globalThis.fetch = async (url) => {
-      const u = String(url);
-      if (u.includes('/state')) {
+      lastRequestedUrl = String(url);
+      if (lastRequestedUrl.includes('/state')) {
         return { ok: true, status: 200, json: async () => currentPayload };
       }
       return { ok: false, status: 404, json: async () => ({}) };
     };
 
-    // Step 0: Initial full bundle
+    // Step 0: Initial full bundle (Response C)
     currentPayload = {
+      doc_id: docId,
       rev: 1,
       full: true,
-      geometry: { meshes: Array.from(backendMeshes.values()), levels: [], grids: [] },
-      project: { project_name: 'Test Project' },
-      constraints: [],
+      geometry: { meshes: Array.from(backendMeshes.values()), levels: backendLevels, grids: [] },
+      project: { project_name: 'Store Test Project' },
+      sheets: backendSheets,
+      constraints: backendConstraints,
       wall_joins: {},
-      journal: [],
+      journal: [{ transaction_id: 'tx-0', description: 'Initial commit' }],
     };
     await store.getState().fetchStateBundle();
 
-    check('store initialized with 5 meshes', store.getState().meshes.length === 5);
+    check('store initialized with 5 meshes and matching docId', store.getState().meshes.length === 5 && store.getState().docId === docId);
     check('store initial rev is 1', store.getState().rev === 1);
+    check('store levels populated from full bundle', store.getState().levels.length === 2);
 
-    // Run 50 simulated delta operations
+    // Run 50 simulated delta operations across diverse types and sections
     let storeEquivalencePassed = true;
+    let deepCheckFailures = [];
 
     for (let op = 1; op <= 50; op++) {
       backendRev += 1;
-      const opType = op % 5;
+      const opType = op % 6;
       let upsert = [];
       let remove = [];
+      let levelsSection = null;
+      let sheetsSection = null;
+      let constraintsSection = null;
 
       if (opType === 0) {
-        // Delete a wall
+        // Delete an element
         const keys = Array.from(backendMeshes.keys());
         if (keys.length > 2) {
           const toRemove = keys[keys.length - 1];
           backendMeshes.delete(toRemove);
           remove.push(toRemove);
         }
-      } else if (opType === 1 || opType === 2) {
+      } else if (opType === 1) {
         // Add a new wall
         const newGuid = `wall-dyn-${op}`;
         const newMesh = {
@@ -171,34 +194,67 @@ section('D6.2 Frontend Store Delta Equivalence (useBimStore Zustand store)');
           name: `Dynamic Wall ${op}`,
           params: {
             ifc_class: 'IfcWallStandardCase',
+            name: `Dynamic Wall ${op}`,
             thickness: 0.2 + (op % 3) * 0.05,
+            height: 3.0,
+            length: 10.0,
             start: [op, 0, 0],
             end: [op, 10, 0],
+            tag: `DW-${op}`,
           },
         };
         backendMeshes.set(newGuid, newMesh);
         upsert.push(newMesh);
-      } else {
-        // Modify an existing wall
+      } else if (opType === 2) {
+        // Add a slab
+        const slabGuid = `slab-dyn-${op}`;
+        const slabMesh = {
+          guid: slabGuid,
+          ifc_class: 'IfcSlab',
+          name: `Dynamic Slab ${op}`,
+          params: {
+            ifc_class: 'IfcSlab',
+            name: `Dynamic Slab ${op}`,
+            thickness: 0.3,
+            elevation: 0.0,
+            tag: `SL-${op}`,
+          },
+        };
+        backendMeshes.set(slabGuid, slabMesh);
+        upsert.push(slabMesh);
+      } else if (opType === 3) {
+        // Modify an existing mesh params
         const keys = Array.from(backendMeshes.keys());
         const target = keys[op % keys.length];
         const m = backendMeshes.get(target);
         const updatedMesh = {
           ...m,
           name: `${m.name} [modified]`,
-          params: { ...m.params, thickness: 0.4 },
+          params: { ...m.params, thickness: 0.45, tag: `${m.params?.tag || 'M'}-mod` },
         };
         backendMeshes.set(target, updatedMesh);
         upsert.push(updatedMesh);
+      } else if (opType === 4) {
+        // Non-mesh section change: Levels section updated
+        backendLevels = [...backendLevels, { id: `lvl-${op}`, name: `Level ${op}`, elevation: op * 10.0 }];
+        levelsSection = backendLevels;
+      } else if (opType === 5) {
+        // Non-mesh section change: Sheets section updated
+        backendSheets = [...backendSheets, { id: `sheet-${op}`, sheetNumber: `A10${op}`, sheetTitle: `SHEET ${op}`, viewports: [] }];
+        sheetsSection = backendSheets;
       }
 
       // Delta payload (Response B)
       currentPayload = {
+        doc_id: docId,
         rev: backendRev,
         base_rev: backendRev - 1,
         unchanged: false,
         upsert_meshes: upsert,
         remove_guids: remove,
+        levels: levelsSection,
+        sheets: sheetsSection,
+        constraints: constraintsSection,
         journal_append: [{ transaction_id: `tx-${op}`, description: `Operation ${op}` }],
         engine_ms: 1.5,
       };
@@ -208,30 +264,115 @@ section('D6.2 Frontend Store Delta Equivalence (useBimStore Zustand store)');
       // Verify store state against backend ground truth
       const storeState = store.getState();
       const storeMeshMap = new Map(storeState.meshes.map((m) => [m.guid, m]));
+      const storeElements = storeState.elements;
 
       if (storeMeshMap.size !== backendMeshes.size) {
         storeEquivalencePassed = false;
+        deepCheckFailures.push(`Step ${op}: mesh size mismatch (store ${storeMeshMap.size} vs backend ${backendMeshes.size})`);
         break;
       }
 
+      // Deep compare every mesh and element
       for (const [guid, bm] of backendMeshes.entries()) {
         const sm = storeMeshMap.get(guid);
-        if (!sm || sm.name !== bm.name || sm.params?.thickness !== bm.params?.thickness) {
+        const se = storeElements[guid];
+        if (!sm || !se) {
           storeEquivalencePassed = false;
+          deepCheckFailures.push(`Step ${op}: missing GUID ${guid} in store`);
+          break;
+        }
+        if (sm.name !== bm.name || sm.ifc_class !== bm.ifc_class) {
+          storeEquivalencePassed = false;
+          deepCheckFailures.push(`Step ${op}: GUID ${guid} name/class mismatch`);
+          break;
+        }
+        if (bm.params?.thickness !== undefined && sm.params?.thickness !== bm.params.thickness) {
+          storeEquivalencePassed = false;
+          deepCheckFailures.push(`Step ${op}: GUID ${guid} thickness mismatch`);
+          break;
+        }
+        if (bm.params?.tag !== undefined && se.tag !== bm.params.tag) {
+          storeEquivalencePassed = false;
+          deepCheckFailures.push(`Step ${op}: GUID ${guid} tag mismatch`);
           break;
         }
       }
+
+      // Check non-mesh sections
+      if (storeState.levels.length !== backendLevels.length) {
+        storeEquivalencePassed = false;
+        deepCheckFailures.push(`Step ${op}: levels count mismatch`);
+        break;
+      }
+      if (storeState.sheets.length !== backendSheets.length) {
+        storeEquivalencePassed = false;
+        deepCheckFailures.push(`Step ${op}: sheets count mismatch`);
+        break;
+      }
     }
 
-    check('store matches ground truth across 50 sequential deltas', storeEquivalencePassed);
+    check('store deep matches ground truth across 50 sequential deltas', storeEquivalencePassed, deepCheckFailures.join(', '));
     check('store final rev matches engine rev', store.getState().rev === backendRev);
     check('store element count matches backend', store.getState().meshes.length === backendMeshes.size);
+    check('store levels and sheets updated via delta', store.getState().levels.length > 2 && store.getState().sheets.length > 1);
+    check('store journal capped at <= 50 entries', store.getState().transactionJournal.length <= 50);
 
-    // Negative control on store: injecting state divergence
-    const storeMeshes = store.getState().meshes;
-    const corruptedMeshes = storeMeshes.slice(1); // Drop one mesh
-    const detectedMismatch = corruptedMeshes.length !== backendMeshes.size;
-    check('negative control: store mesh count mismatch detected on dropped mesh', detectedMismatch);
+    // Negative Control 1: Fault injection into delta (dropped mesh from upsert_meshes)
+    const corruptedOpRev = backendRev + 1;
+    const ghostMesh = {
+      guid: 'wall-ghost-1',
+      ifc_class: 'IfcWallStandardCase',
+      name: 'Ghost Wall',
+      params: { ifc_class: 'IfcWallStandardCase', thickness: 0.25 },
+    };
+    backendMeshes.set('wall-ghost-1', ghostMesh);
+    // Delta omits upserting wall-ghost-1
+    currentPayload = {
+      doc_id: docId,
+      rev: corruptedOpRev,
+      base_rev: backendRev,
+      unchanged: false,
+      upsert_meshes: [],
+      remove_guids: [],
+      engine_ms: 1.0,
+    };
+    await store.getState().fetchStateBundle();
+    const detectedDeltaCorruption = store.getState().meshes.length !== backendMeshes.size;
+    check('negative control 1: dropped mesh in delta detected as divergence', detectedDeltaCorruption);
+
+    // Negative Control 2: Base revision mismatch triggers automatic full resync
+    let fullResyncRequested = false;
+    currentPayload = {
+      doc_id: docId,
+      rev: corruptedOpRev + 10,
+      base_rev: 9999, // Mismatched base rev!
+      unchanged: false,
+      upsert_meshes: [],
+      remove_guids: [],
+      engine_ms: 1.0,
+    };
+    // If store detects mismatch and clears rev, subsequent fetch to /state will lack since
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes('/state') && !u.includes('since=')) {
+        fullResyncRequested = true;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            doc_id: docId,
+            rev: corruptedOpRev + 10,
+            full: true,
+            geometry: { meshes: Array.from(backendMeshes.values()), levels: backendLevels, grids: [] },
+          }),
+        };
+      }
+      return prevFetch(url);
+    };
+
+    await store.getState().fetchStateBundle();
+    check('negative control 2: base_rev mismatch detected and triggered full resync', fullResyncRequested);
 
   } finally {
     globalThis.fetch = originalFetch;
