@@ -125,20 +125,27 @@ class SemanticQueryEngine:
             name = (meta.get("name") or "").lower()
 
             if cat_lower:
-                if cat_lower in ("wall", "ifcwall", "ifcwallstandardcase"):
-                    if "wall" not in ifc_cls and "wall" not in name:
+                norm_cat = cat_lower.rstrip("s") if cat_lower.endswith("s") and cat_lower != "ifcwallstandardcase" else cat_lower
+                if norm_cat in ("wall", "ifcwall", "ifcwallstandardcase"):
+                    if ifc_cls not in ("ifcwall", "ifcwallstandardcase"):
                         continue
-                elif cat_lower in ("door", "ifcdoor"):
-                    if "door" not in ifc_cls and "door" not in name:
+                elif norm_cat in ("door", "ifcdoor"):
+                    if ifc_cls != "ifcdoor":
                         continue
-                elif cat_lower in ("window", "ifcwindow"):
-                    if "window" not in ifc_cls and "window" not in name:
+                elif norm_cat in ("window", "ifcwindow"):
+                    if ifc_cls != "ifcwindow":
                         continue
-                elif cat_lower in ("slab", "floor", "ifcslab"):
-                    if "slab" not in ifc_cls and "slab" not in name and "floor" not in name:
+                elif norm_cat in ("slab", "floor", "ifcslab"):
+                    if ifc_cls != "ifcslab":
                         continue
-                elif cat_lower in ("roof", "ifcroof"):
-                    if "roof" not in ifc_cls and "roof" not in name:
+                elif norm_cat in ("roof", "ifcroof"):
+                    if ifc_cls != "ifcroof":
+                        continue
+                elif norm_cat in ("grid", "ifcgrid"):
+                    if ifc_cls != "ifcgrid":
+                        continue
+                else:
+                    if norm_cat not in ifc_cls:
                         continue
 
             if level_id and meta.get("level_id") != level_id:
@@ -876,9 +883,10 @@ class AiPlanner:
 
     def _try_plan_skill(self, prompt: str, ctx: AiContext) -> Optional[AiPlan]:
         """Checks if the prompt matches a known skill."""
-        p_lower = prompt.lower()
+        p_lower = prompt.lower().strip()
         for skill_name, skill in self.skills.items():
-            if skill_name in p_lower:
+            pattern = rf"\b(?:run\s+skill|skill|execute\s+skill)\s+{re.escape(skill_name)}\b|^{re.escape(skill_name)}\b"
+            if re.search(pattern, p_lower):
                 params = dict(skill.parameters)
                 # Parse numeric overrides: e.g. "perimeter_box width 50 depth 35"
                 for k in params.keys():
@@ -889,7 +897,10 @@ class AiPlanner:
                 # Instantiate commands
                 def _substitute(val):
                     if isinstance(val, str) and val.startswith("$"):
-                        return params.get(val[1:], val)
+                        var_key = val[1:]
+                        if var_key in params:
+                            return params[var_key]
+                        return val
                     elif isinstance(val, list):
                         return [_substitute(item) for item in val]
                     elif isinstance(val, dict):
@@ -902,10 +913,16 @@ class AiPlanner:
                     cmd_params = _substitute(json.loads(json.dumps(t_cmd["params"])))
                     cmds.append(CommandRequest(command=cmd_name, params=cmd_params))
 
+                sub_posts = []
+                for p in skill.post_conditions:
+                    p_dict = json.loads(p.model_dump_json())
+                    p_dict["params"] = _substitute(p_dict.get("params", {}))
+                    sub_posts.append(PostCondition(**p_dict))
+
                 return AiPlan(
                     intent_summary=f"Execute Skill '{skill.name}': {skill.description}",
                     commands=cmds,
-                    post_conditions=skill.post_conditions,
+                    post_conditions=sub_posts,
                 )
         return None
 
@@ -944,23 +961,34 @@ class AiDriver:
             origin="ai",
             description=plan.intent_summary,
         )
+        tx_id = tx["transaction_id"]
 
         # 2. Evaluate Post-Condition Assertions
         verified_checks = []
-        for post in plan.post_conditions:
-            ok, err_msg = self._evaluate_assertion(post)
-            if not ok:
-                # Post-condition failed! Roll back the transaction atomically!
-                self.bus.undo()
+        try:
+            for post in plan.post_conditions:
+                ok, err_msg = self._evaluate_assertion(post, affected_guids=plan.affected_guids)
+                if not ok:
+                    raise AssertionError(
+                        f"AI Post-Condition Assertion Failed: {post.description or post.assertion}. "
+                        f"Cause: {err_msg}."
+                    )
+                verified_checks.append(post.description or post.assertion)
+        except Exception as exc:
+            # Atomic rollback on assertion failure or assertion evaluation exception
+            try:
+                self.bus.abort_transaction(tx_id)
+            except Exception as rollback_err:
                 raise AssertionError(
-                    f"AI Post-Condition Assertion Failed: {post.description or post.assertion}. "
-                    f"Cause: {err_msg}. Transaction {tx['transaction_id']} rolled back."
-                )
-            verified_checks.append(post.description or post.assertion)
+                    f"AI execution verification failed ({exc}) and rollback encountered error: {rollback_err}"
+                ) from exc
+            raise AssertionError(
+                f"AI Post-Condition Failed. Transaction {tx_id} aborted and rolled back. Cause: {exc}"
+            ) from exc
 
         return {
             "status": "committed",
-            "transaction_id": tx["transaction_id"],
+            "transaction_id": tx_id,
             "summary": plan.intent_summary,
             "commands_executed": len(plan.commands),
             "affected_guids": plan.affected_guids,
@@ -968,27 +996,50 @@ class AiDriver:
             "transaction": tx,
         }
 
-    def _evaluate_assertion(self, post: PostCondition) -> Tuple[bool, str]:
+    def _evaluate_assertion(
+        self,
+        post: PostCondition,
+        affected_guids: Optional[List[str]] = None,
+    ) -> Tuple[bool, str]:
         """Evaluates a single post-condition assertion against the active model."""
         ast = post.assertion
-        params = post.params
+        params = post.params or {}
 
         if ast == "element_count_at_least":
             cat = params.get("category")
-            min_c = params.get("min_count", 1)
+            try:
+                min_c = int(params.get("min_count", 1))
+            except (ValueError, TypeError) as e:
+                return False, f"min_count parameter must be an integer, got '{params.get('min_count')}' ({e})"
             elems = self.query_engine.query_elements(category=cat)
             if len(elems) < min_c:
                 return False, f"Expected at least {min_c} elements of category '{cat}', found {len(elems)}"
             return True, ""
 
         elif ast == "wall_length_approx":
-            expected = params.get("expected_length", 0.0)
-            tol = params.get("tolerance", 0.2)
-            walls = self.query_engine.query_elements(category="wall")
-            if not walls:
-                return False, "No walls found in model"
-            latest_wall = walls[-1]
-            actual = latest_wall.get("length", 0.0)
+            try:
+                expected = float(params.get("expected_length", 0.0))
+                tol = float(params.get("tolerance", 0.2))
+            except (ValueError, TypeError) as e:
+                return False, f"Invalid numerical parameters for wall_length_approx: {e}"
+
+            target_guid = params.get("guid")
+            target_wall = None
+            if target_guid:
+                target_wall = self.query_engine.get_element(target_guid)
+            elif affected_guids:
+                for g in reversed(affected_guids):
+                    el = self.query_engine.get_element(g)
+                    if el and el.get("ifc_class") in ("IfcWall", "IfcWallStandardCase"):
+                        target_wall = el
+                        break
+            if not target_wall:
+                walls = self.query_engine.query_elements(category="wall")
+                if not walls:
+                    return False, "No walls found in model"
+                target_wall = walls[-1]
+
+            actual = float(target_wall.get("length", 0.0))
             if abs(actual - expected) > tol:
                 return False, f"Wall length {actual} differs from expected {expected} by more than tolerance {tol}"
             return True, ""
@@ -1010,11 +1061,11 @@ class AiDriver:
 
         elif ast == "element_exists":
             guid = params.get("guid")
-            if guid not in self.manager.element_meta:
-                return False, f"Element {guid} does not exist"
+            if not guid or guid not in self.manager.element_meta:
+                return False, f"Element '{guid}' does not exist"
             return True, ""
 
-        return True, ""
+        return False, f"Unknown post-condition assertion '{ast}'"
 
     # ------------------------------------------------------------------------
     # TOOL CATALOG FOR EXTERNAL AGENTS & MCP (Tier 2)

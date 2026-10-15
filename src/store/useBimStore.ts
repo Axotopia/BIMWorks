@@ -445,6 +445,7 @@ interface BimStoreState {
   activeSheetId: string;
 
   // Model Data
+  rev?: number;
   projectName: string;
   levels: LevelData[];
   elements: Record<string, BimElement>;
@@ -749,6 +750,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   ],
   activeSheetId: 'sheet-a101',
 
+  rev: undefined,
   elements: {},
   meshes: [],
   grids: [],
@@ -1240,6 +1242,10 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       // A view depth of 0 means "not set"; sending it would filter everything out.
       if (ctx.viewDepth) q.set('view_depth', String(ctx.viewDepth));
     }
+    const curRev = get().rev;
+    if (curRev !== undefined) {
+      q.set('since', String(curRev));
+    }
 
     if (bundleUnsupported) {
       await refreshIndividually(get, cutElevation);
@@ -1268,8 +1274,88 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       // Two numbers, recorded separately and never reported as one another.
       recordRefresh(performance.now() - t0, data.engine_ms);
 
+      // Response A - unchanged
+      if (data.unchanged) {
+        return;
+      }
+
       const cur = get();
+
+      // Response B - delta
+      if (Array.isArray(data.upsert_meshes) || Array.isArray(data.remove_guids)) {
+        const removeSet = new Set<string>(data.remove_guids || []);
+        const upsertMap = new Map<string, MeshBufferData>();
+        for (const m of (data.upsert_meshes || []) as MeshBufferData[]) {
+          upsertMap.set(m.guid, m);
+        }
+
+        const updatedMeshes: MeshBufferData[] = [];
+        for (const m of cur.meshes) {
+          if (removeSet.has(m.guid)) continue;
+          if (upsertMap.has(m.guid)) {
+            updatedMeshes.push(upsertMap.get(m.guid)!);
+            upsertMap.delete(m.guid);
+          } else {
+            updatedMeshes.push(m);
+          }
+        }
+        for (const newMesh of upsertMap.values()) {
+          updatedMeshes.push(newMesh);
+        }
+
+        const updatedElements = { ...cur.elements };
+        for (const guid of removeSet) {
+          delete updatedElements[guid];
+        }
+        for (const mesh of (data.upsert_meshes || []) as MeshBufferData[]) {
+          const params = mesh.params;
+          if (!params) continue;
+          updatedElements[mesh.guid] = {
+            guid: mesh.guid,
+            ifc_class: (params.ifc_class || mesh.ifc_class) as BimElement['ifc_class'],
+            name: params.name || mesh.name,
+            start: params.start,
+            end: params.end,
+            length: params.length,
+            height: params.height,
+            thickness: params.thickness,
+            angle: params.angle,
+            level_id: params.level_id,
+            host_wall_guid: params.host_wall_guid,
+            offset_along_wall: params.offset_along_wall,
+            width: params.width,
+            sill_height: params.sill_height,
+            swing_flipped: params.swing_flipped,
+            elevation: params.elevation,
+            pitch: params.pitch,
+            tag: params.tag,
+            type_properties: params.type_properties,
+          };
+        }
+
+        let updatedJournal = cur.transactionJournal;
+        if (data.journal_append && data.journal_append.length > 0) {
+          const existingIds = new Set(cur.transactionJournal.map((j) => j.transaction_id));
+          const newEntries = (data.journal_append as TransactionJournalEntry[]).filter(
+            (j) => !existingIds.has(j.transaction_id)
+          );
+          updatedJournal = [...cur.transactionJournal, ...newEntries];
+        }
+
+        set({
+          rev: data.rev ?? cur.rev,
+          meshes: updatedMeshes,
+          elements: updatedElements,
+          ...(data.slice2d ? { sliced2D: data.slice2d } : {}),
+          transactionJournal: updatedJournal,
+          ...(cur.selectedGuid && removeSet.has(cur.selectedGuid) ? { selectedGuid: null } : {}),
+        });
+        return;
+      }
+
+      // Response C - full bundle
       set({
+        rev: data.rev ?? cur.rev,
         ...(data.project
           ? {
               projectName: data.project.project_name || cur.projectName,
@@ -1414,6 +1500,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       set({ isLoadingFile: true, statusMessage: 'Loading Sample BIM Building...' });
       const res = await fetch(`${API_BASE}/sample`, { method: 'POST' });
       if (res.ok) {
+        set({ rev: undefined });
         await get().fetchStateBundle();
         set({
           projectName: 'BIMWorks Prototype Building',
@@ -1444,6 +1531,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           statusMessage: `Successfully loaded ${filename} (${data.elements_count} elements, ${data.levels_count} levels)`,
           selectedGuid: null,
           hoveredGuid: null,
+          rev: undefined,
         });
         await get().fetchStateBundle();
         return true;
@@ -1856,6 +1944,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         return false;
       }
 
+      set({ rev: undefined });
       await get().fetchStateBundle();
 
       set({

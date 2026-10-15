@@ -113,25 +113,25 @@ def check_case(label, start, end, insert_offset, drag_dx, drag_dy):
     assert_on_wall(f"{label} door perpendicular drag", wall, door, world_xy(door["entity"]))
 
     print(
-        f"   -> {label}: angle {ang_deg:5.1f}°, "
-        f"slide Δ{actual_delta:+.6f} ft (projected), placement on-baseline ✓"
+        f"   -> {label}: angle {ang_deg:5.1f} deg, "
+        f"slide delta={actual_delta:+.6f} ft (projected), placement on-baseline [OK]"
     )
 
 
 def test_hosted_openings():
-    print("1. Axis-aligned wall (0°) ...")
-    check_case("0°", (0, 0, 0), (10, 0, 0), insert_offset=4.0, drag_dx=1.5, drag_dy=0.0)
+    print("1. Axis-aligned wall (0 deg) ...")
+    check_case("0 deg", (0, 0, 0), (10, 0, 0), insert_offset=4.0, drag_dx=1.5, drag_dy=0.0)
 
-    print("2. Vertical wall (90°) — the case the old code moved on raw world X ...")
-    check_case("90°", (0, 0, 0), (0, 10, 0), insert_offset=3.0, drag_dx=1.5, drag_dy=0.0)
+    print("2. Vertical wall (90 deg) - the case the old code moved on raw world X ...")
+    check_case("90 deg", (0, 0, 0), (0, 10, 0), insert_offset=3.0, drag_dx=1.5, drag_dy=0.0)
 
-    print("3. Diagonal wall (45°) ...")
-    check_case("45°", (0, 0, 0), (10, 10, 0), insert_offset=5.0, drag_dx=1.0, drag_dy=1.0)
+    print("3. Diagonal wall (45 deg) ...")
+    check_case("45 deg", (0, 0, 0), (10, 10, 0), insert_offset=5.0, drag_dx=1.0, drag_dy=1.0)
 
-    print("4. Diagonal wall (30°) with an off-axis drag ...")
+    print("4. Diagonal wall (30 deg) with an off-axis drag ...")
     ang = math.radians(30)
     check_case(
-        "30°",
+        "30 deg",
         (2, 1, 0),
         (2 + 8 * math.cos(ang), 1 + 8 * math.sin(ang), 0),
         insert_offset=2.5,
@@ -139,10 +139,10 @@ def test_hosted_openings():
         drag_dy=-0.4,
     )
 
-    print("5. Negative-angle wall (-60°) ...")
+    print("5. Negative-angle wall (-60 deg) ...")
     ang = math.radians(-60)
     check_case(
-        "-60°",
+        "-60 deg",
         (5, 5, 0),
         (5 + 6 * math.cos(ang), 5 + 6 * math.sin(ang), 0),
         insert_offset=1.5,
@@ -189,7 +189,7 @@ def test_hosted_openings():
     print(
         f"   -> offset {slid_offset:.3f} ft survived save/load as "
         f"{reloaded_door['offset_along_wall']:.3f} ft on the re-imported "
-        f"{math.degrees(host['angle']):.0f}° baseline; host binding intact"
+        f"{math.degrees(host['angle']):.0f} deg baseline; host binding intact"
     )
 
     print("\nALL HOSTED-OPENING PLACEMENT/SLIDE TESTS PASSED")

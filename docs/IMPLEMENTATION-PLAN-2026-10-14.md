@@ -59,7 +59,7 @@
 | N7 | **Fixed by P0** | `fetchGeometry` builds the `elements` record from each mesh's `params` |
 | N8 | **Fixed by P0** | `accept=".bimworks,.orlt,.ifc,.stp,.step"` |
 | N9 | **Fixed by P0** (dependency declared + installed + HTTP-level test). **New lint surfaced:** the merge duplicated the `python-multipart` line in `requirements.txt` | `requirements.txt` |
-| N10 | **Still open — unchanged.** Snapshot still deep-copies full meshes; joins still a global O(N²) pass; the store still refetches all geometry after every mutation | `snapshot_state`, `recompute_wall_joins` ("Global pass"), `fetchGeometry` after each action |
+| N10 | **FIXED by Delta Protocol (D1–D9).** Monotonic revision counter, dirty mesh tracking, Response A/B/C state delta endpoint, dirty-view slicing, Zustand store delta integration, and differential equivalence testing (72% payload reduction, p50 delta 1.1ms). | `GET /api/state?since=`, `scripts/check-delta-equivalence.mjs`, `docs/DELTA-MEASUREMENT.md` |
 | N11 | **Fixed by P0**, except the sheet list, which remains static seed data by design until P6 | `PropertiesPalette`, `PlanViewport2D`, `ProjectBrowser`, `SheetCanvas` |
 | N12 | **Fixed by P0** (`.bimworks` canonical, `.orlt` load alias). The legacy pset *name* stays until N4 lands in P2 — deliberate, to avoid a second round-trip break | `CONTAINER_EXTENSION`; `Pset_ORLT_Constraints` |
 

@@ -154,6 +154,14 @@ def test_section_1_sheet_data_model():
     s_ph = mgr.add_sheet(sheet_number="A900", sheet_title="FUTURE DETAILS", is_placeholder=True)
     check("placeholder sheet created with is_placeholder=True", s_ph.get("is_placeholder") is True)
 
+    # Constraint: Explicit duplicate sheet_id rejected (preventing silent viewport wipe)
+    dup_id_rejected = False
+    try:
+        mgr.add_sheet(sheet_number="A999", sheet_title="HIJACK", sheet_id=s_a102["id"])
+    except ValueError as e:
+        dup_id_rejected = "already exists" in str(e).lower()
+    check("re-adding with existing sheet_id rejected (no viewport erasure)", dup_id_rejected)
+
 
 def test_section_2_viewports_and_invariants():
     print("2. Viewport Placement, Constraints & View Separation (Section 13.1 & 13.2) ...")
@@ -414,6 +422,20 @@ def test_section_5_vector_pdf_compilation():
     check("page 1 contains Sheet A101 text", "A101" in doc_batch[0].get_text())
     check("page 2 contains Sheet A201 text", "A201" in doc_batch[1].get_text())
     check("page 3 contains Sheet A301 text", "A301" in doc_batch[2].get_text())
+
+    # Pure vector linework verification (zero rasterization)
+    check("single-sheet PDF has 0 raster images", len(doc_single[0].get_images()) == 0)
+    check("single-sheet PDF contains vector drawings", len(doc_single[0].get_drawings()) > 0)
+    check("batch PDF page 1 has 0 raster images", len(doc_batch[0].get_images()) == 0)
+    check("batch PDF page 2 has 0 raster images", len(doc_batch[1].get_images()) == 0)
+    check("batch PDF page 3 has 0 raster images", len(doc_batch[2].get_images()) == 0)
+
+    # Negative control: verify that a rasterized PDF fails this check!
+    test_raster_doc = pymupdf.open()
+    r_page = test_raster_doc.new_page(width=100, height=100)
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 10, 10), False)
+    r_page.insert_image(pymupdf.Rect(0, 0, 50, 50), pixmap=pix)
+    check("negative control: raster image detection succeeds on rasterized page", len(r_page.get_images()) > 0)
 
 
 def test_section_6_http_endpoints_and_state_bundle():

@@ -11,7 +11,8 @@
     "check:bus": "node scripts/check-bus-parity.mjs",
     "check:ui": "node scripts/check-ui-p0.mjs",
     "check:state": "node scripts/check-state-bundle.mjs",
-    "check": "npm run check:bus && npm run check:ui && npm run check:state && tsc --noEmit",
+    "check:delta": "node scripts/check-delta-equivalence.mjs",
+    "check": "npm run check:bus && npm run check:ui && npm run check:state && npm run check:delta && tsc --noEmit",
     "diagnose": "node scripts/diagnose-blank-page.mjs"
   },
   "bugs": {

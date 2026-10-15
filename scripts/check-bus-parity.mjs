@@ -43,7 +43,6 @@ const ALLOWED_NON_GET = [
   '/export/sheet-pdf',   // produces a file, does not mutate
   '/export/batch-pdf',   // produces a file, does not mutate
   '/ai/plan',            // synthesizes plan without mutating
-  '/ai/execute',         // AI transaction execution
   '/ai/query',           // semantic query
 ];
 

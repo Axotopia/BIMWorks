@@ -194,8 +194,7 @@ class ConstraintSolver:
             if g in coords:
                 coords[g] = pins[g]
 
-        if Sketch is None:
-            return self._solve_fallback(axis, pins, coords, extras)
+        self._require_solver()
 
         sketch = Sketch()
         ids: Dict[str, int] = {}
@@ -308,118 +307,6 @@ class ConstraintSolver:
                 sketch.equal_length(first, second)
             except Exception:
                 return
-
-    def _solve_fallback(
-        self,
-        axis: str,
-        pins: Dict[str, float],
-        coords: Dict[str, float],
-        extras: List[Tuple[str, tuple]],
-    ) -> ConstraintSolve:
-        """
-        Pure-Python fallback solver for 1D axis-aligned constraints.
-        Active when planegcs is not installed in the environment.
-        """
-        out: Dict[str, float] = dict(coords)
-        fixed: set = set(pins.keys())
-        for g, v in pins.items():
-            out[g] = float(v)
-
-        applied: List[str] = []
-
-        # 1. Apply equalize constraints (extras and persisted)
-        all_equalize = []
-        for kind, payload in extras:
-            if kind == "equalize":
-                start, end, interiors = payload
-                all_equalize.append(("extra:equalize", start, end, interiors))
-        for cid, c in sorted(self.manager.constraints.items()):
-            if not c.get("is_locked", True) or c.get("axis", "x") != axis:
-                continue
-            if c.get("type") == "equalize":
-                all_equalize.append((
-                    cid,
-                    c.get("span_start_guid"),
-                    c.get("span_end_guid"),
-                    list(c.get("interior_guids") or []),
-                ))
-
-        for cid, start, end, interiors in all_equalize:
-            chain = [g for g in [start, *interiors, end] if g in coords]
-            if len(chain) >= 3 and start in out and end in out:
-                applied.append(cid)
-                x_start = out[start]
-                x_end = out[end]
-                N = len(interiors) + 1
-                step = (x_end - x_start) / N
-                for idx, ig in enumerate(interiors, 1):
-                    if ig in coords:
-                        out[ig] = x_start + idx * step
-                        fixed.add(ig)
-
-        # 2. Iteratively solve align and dimension_lock until convergence
-        changed = True
-        max_iters = 50
-        while changed and max_iters > 0:
-            changed = False
-            max_iters -= 1
-            for cid, c in sorted(self.manager.constraints.items()):
-                if not c.get("is_locked", True) or c.get("axis", "x") != axis:
-                    continue
-                ctype = c.get("type")
-                if ctype == "align":
-                    ref, target = c.get("ref_guid"), c.get("target_guid")
-                    if ref in coords and target in coords:
-                        if cid not in applied:
-                            applied.append(cid)
-                        if ref in fixed and target not in fixed:
-                            out[target] = out[ref]
-                            fixed.add(target)
-                            changed = True
-                        elif target in fixed and ref not in fixed:
-                            out[ref] = out[target]
-                            fixed.add(ref)
-                            changed = True
-                        elif ref in fixed and target in fixed:
-                            if abs(out[ref] - out[target]) > 1e-4:
-                                return ConstraintSolve(
-                                    axis=axis, status="conflict",
-                                    conflicting=sorted(set(applied + [cid])),
-                                    coordinates=dict(coords), pinned=pins,
-                                )
-                elif ctype == "dimension_lock":
-                    a, b = c.get("guid_a"), c.get("guid_b")
-                    dist = c.get("locked_distance")
-                    if dist is None:
-                        ref_p = self._position(a, axis)
-                        cur_p = self._position(b, axis)
-                        if ref_p is not None and cur_p is not None:
-                            dist = abs(cur_p - ref_p)
-                    if dist is not None and a in coords and b in coords:
-                        if cid not in applied:
-                            applied.append(cid)
-                        orig_dir = 1.0 if coords[b] >= coords[a] else -1.0
-                        if a in fixed and b not in fixed:
-                            out[b] = out[a] + orig_dir * float(dist)
-                            fixed.add(b)
-                            changed = True
-                        elif b in fixed and a not in fixed:
-                            out[a] = out[b] - orig_dir * float(dist)
-                            fixed.add(a)
-                            changed = True
-                        elif a in fixed and b in fixed:
-                            if abs(abs(out[b] - out[a]) - float(dist)) > 1e-4:
-                                return ConstraintSolve(
-                                    axis=axis, status="conflict",
-                                    conflicting=sorted(set(applied + [cid])),
-                                    coordinates=dict(coords), pinned=pins,
-                                )
-
-        moved = [g for g, v in out.items() if abs(v - coords.get(g, v)) > 1e-9]
-        return ConstraintSolve(
-            axis=axis, status="success", coordinates=out, pinned=pins,
-            conflicting=[], moved=sorted(moved),
-        )
 
     # -- public operations --------------------------------------------------
     def redistribute(self, guid: str, axis: str, new_coord: float) -> ConstraintSolve:

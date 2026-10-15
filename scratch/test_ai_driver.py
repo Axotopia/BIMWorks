@@ -214,16 +214,77 @@ def test_section_4_atomic_execution_and_rollback():
     )
 
     walls_before = len(ai_driver.query_engine.query_elements(category="wall"))
+    j_count_before = len(command_bus.journal)
     raised_assertion = False
     try:
         ai_driver.execute_plan(failing_plan)
     except AssertionError as e:
         raised_assertion = True
-        check("failing post-condition raises AssertionError", "AI Post-Condition Assertion Failed" in str(e))
+        check("failing post-condition raises AssertionError", "AI Post-Condition" in str(e))
 
     check("AssertionError was triggered", raised_assertion)
     walls_after = len(ai_driver.query_engine.query_elements(category="wall"))
     check("failed transaction was automatically rolled back (walls unchanged)", walls_before == walls_after)
+    check("failed transaction was removed from journal", len(command_bus.journal) == j_count_before)
+    check("redo cannot resurrect rolled back transaction", command_bus.redo().get("status") == "empty")
+
+    # 4. Unhandled error inside assertion evaluation (e.g. invalid string param)
+    exception_plan = AiPlan(
+        intent_summary="Plan with type-error assertion",
+        commands=[
+            CommandRequest(
+                command="WallCreate",
+                params={"start": [70.0, 0.0, 0.0], "end": [80.0, 0.0, 0.0], "height": 10.0, "thickness": 0.5, "name": "Leaked Wall"}
+            )
+        ],
+        post_conditions=[
+            PostCondition(
+                assertion="element_count_at_least",
+                params={"min_count": "invalid_string_not_int", "category": "wall"},
+                description="Invalid param type",
+            )
+        ]
+    )
+    raised_type_err = False
+    try:
+        ai_driver.execute_plan(exception_plan)
+    except AssertionError as e:
+        raised_type_err = True
+        check("invalid assertion param raises AssertionError with rollback", "aborted and rolled back" in str(e))
+    check("type error in assertion triggered rollback", raised_type_err)
+    check("wall from failed transaction was NOT leaked into model", len(ai_driver.query_engine.query_elements(category="wall")) == walls_before)
+    check("redo still cannot resurrect leaked transaction", command_bus.redo().get("status") == "empty")
+
+    # 5. Unknown assertion must fail and rollback
+    unknown_plan = AiPlan(
+        intent_summary="Plan with unknown assertion",
+        commands=[
+            CommandRequest(
+                command="WallCreate",
+                params={"start": [90.0, 0.0, 0.0], "end": [100.0, 0.0, 0.0], "height": 10.0, "thickness": 0.5, "name": "Unknown Wall"}
+            )
+        ],
+        post_conditions=[
+            PostCondition(
+                assertion="totally_unknown_assertion",
+                params={},
+                description="Unknown assertion",
+            )
+        ]
+    )
+    raised_unknown = False
+    try:
+        ai_driver.execute_plan(unknown_plan)
+    except AssertionError as e:
+        raised_unknown = True
+        check("unknown assertion raises AssertionError", "Unknown post-condition assertion" in str(e) or "Unknown assertion" in str(e))
+    check("unknown assertion triggered rollback", raised_unknown)
+    check("unknown assertion did not leak wall", len(ai_driver.query_engine.query_elements(category="wall")) == walls_before)
+
+    # 6. Door with 'Wall' in its name must NOT be returned by category='wall' query
+    check("category='wall' does not include doors named 'Door In South Wall'", all(el["ifc_class"] in ("IfcWall", "IfcWallStandardCase") for el in ai_driver.query_engine.query_elements(category="wall")))
+    check("category='walls' (plural) correctly resolves to walls", len(ai_driver.query_engine.query_elements(category="walls")) == walls_before)
+
 
 
 # ----------------------------------------------------------------------------

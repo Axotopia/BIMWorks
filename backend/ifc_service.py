@@ -212,6 +212,10 @@ class BimModelManager:
         self.element_meta: Dict[str, Dict[str, Any]] = {}
         self.undo_stack: List[str] = []
         self.redo_stack: List[str] = []
+        self.mesh_revs: Dict[str, int] = {}
+        self.dirty_mesh_guids: Set[str] = set()
+        self.removed_guids_by_rev: Dict[int, List[str]] = {}
+        self._pending_removed_guids: List[str] = []
 
         # 1D/2D Parametric Constraints Manager
         self.constraints: Dict[str, Dict[str, Any]] = {}
@@ -412,6 +416,10 @@ class BimModelManager:
             "views": copy.deepcopy(self.views),
             "georeference_data": copy.deepcopy(self.georeference_data),
             "project_name": self.project_name,
+            "mesh_revs": copy.deepcopy(self.mesh_revs),
+            "dirty_mesh_guids": copy.copy(self.dirty_mesh_guids),
+            "removed_guids_by_rev": copy.deepcopy(self.removed_guids_by_rev),
+            "pending_removed_guids": list(self._pending_removed_guids),
         }
 
     def restore_state(self, snap: Dict[str, Any]) -> None:
@@ -497,6 +505,38 @@ class BimModelManager:
         self.views = copy.deepcopy(snap.get("views", {}))
         self.georeference_data = copy.deepcopy(snap["georeference_data"])
         self.project_name = snap["project_name"]
+        self.mesh_revs = copy.deepcopy(snap.get("mesh_revs", {}))
+        self.dirty_mesh_guids = copy.copy(snap.get("dirty_mesh_guids", set()))
+        self.removed_guids_by_rev = copy.deepcopy(snap.get("removed_guids_by_rev", {}))
+        self._pending_removed_guids = list(snap.get("pending_removed_guids", []))
+
+    def mark_mesh_dirty(self, *guids: str) -> None:
+        """Marks elements as having modified geometry/placement."""
+        for guid in guids:
+            if not guid:
+                continue
+            self.dirty_mesh_guids.add(guid)
+            meta = self.element_meta.get(guid)
+            if meta:
+                meta.pop("cached_verts", None)
+                meta.pop("cached_faces", None)
+                meta.pop("bbox", None)
+
+    def mark_element_removed(self, guid: str) -> None:
+        """Records an element deletion so delta queries report remove_guids."""
+        self._pending_removed_guids.append(guid)
+        self.dirty_mesh_guids.discard(guid)
+        self.mesh_revs.pop(guid, None)
+
+    def commit_revision(self, rev: int) -> None:
+        """Advances dirty elements and removed elements to rev."""
+        for guid in self.dirty_mesh_guids:
+            if guid in self.element_meta:
+                self.mesh_revs[guid] = rev
+        self.dirty_mesh_guids.clear()
+        if self._pending_removed_guids:
+            self.removed_guids_by_rev.setdefault(rev, []).extend(self._pending_removed_guids)
+            self._pending_removed_guids = []
 
     def add_level(self, name: str, elevation: float) -> str:
         """Adds an IfcBuildingStorey level."""
@@ -1114,13 +1154,23 @@ class BimModelManager:
             print(f"Notice applying georeference: {e}")
 
     def get_storey_by_id(self, storey_id: Optional[str]):
-        if storey_id and storey_id in self.levels:
+        if not storey_id:
+            for lvl in self.levels.values():
+                if lvl["elevation"] == 0.0 or "Level 1" in lvl["name"]:
+                    return lvl["entity"]
+            return list(self.levels.values())[0]["entity"] if self.levels else None
+        if storey_id in self.levels:
             return self.levels[storey_id]["entity"]
+        s_norm = storey_id.lower().replace(" ", "").replace("_", "").replace("-", "")
+        for lid, lvl in self.levels.items():
+            l_norm = lvl["name"].lower().replace(" ", "").replace("_", "").replace("-", "")
+            if s_norm in (l_norm, lid.lower()):
+                return lvl["entity"]
         # Default to Level 1
         for lvl in self.levels.values():
             if lvl["elevation"] == 0.0 or "Level 1" in lvl["name"]:
                 return lvl["entity"]
-        return list(self.levels.values())[0]["entity"]
+        return list(self.levels.values())[0]["entity"] if self.levels else None
 
     # =========================================================================
     # GUID PRESERVATION (P2 overlay-as-truth)
@@ -1338,6 +1388,15 @@ class BimModelManager:
             "end0": {"allow_join": True, "mode": "butt"},
             "end1": {"allow_join": True, "mode": "butt"},
         }
+        self.mark_mesh_dirty(guid)
+        wall_candidates = {
+            g: m for g, m in self.element_meta.items()
+            if m.get("ifc_class") in ("IfcWall", "IfcWallStandardCase") and "start" in m and "end" in m
+        }
+        for end_idx in (0, 1):
+            partner_guid, _kind, _oe = self._find_join_partner(guid, end_idx, wall_candidates)
+            if partner_guid:
+                self.mark_mesh_dirty(partner_guid)
         if not self._suppress_join_recompute:
             self.recompute_wall_joins()
         return meta
@@ -1451,6 +1510,7 @@ class BimModelManager:
         # though the IFC has the opening, which is a "looks right but is wrong"
         # failure: the plan showed no door at all.
         self._invalidate_geometry_cache(host_wall_guid)
+        self.mark_mesh_dirty(door_guid, host_wall_guid)
         return door_meta
 
     def add_window(
@@ -1552,6 +1612,8 @@ class BimModelManager:
         }
         self.element_meta[win_guid] = win_meta
         wall_meta["hosted_openings"].append(win_guid)
+        self._invalidate_geometry_cache(host_wall_guid)
+        self.mark_mesh_dirty(win_guid, host_wall_guid)
         return win_meta
 
     def add_slab(
@@ -1823,6 +1885,10 @@ class BimModelManager:
                     print(f"Notice removing filling: {e}")
 
             del self.element_meta[guid]
+            self.mark_element_removed(guid)
+            if host_wall_guid in self.element_meta:
+                self._invalidate_geometry_cache(host_wall_guid)
+                self.mark_mesh_dirty(host_wall_guid)
             return True
 
         # Case 2: Wall with hosted openings
@@ -1836,6 +1902,7 @@ class BimModelManager:
                 except Exception as e:
                     print(f"Notice removing wall: {e}")
             del self.element_meta[guid]
+            self.mark_element_removed(guid)
             # Neighbours may need to un-trim / re-trim at the removed junction
             self.recompute_wall_joins()
             return True
@@ -1848,6 +1915,7 @@ class BimModelManager:
             except Exception as e:
                 print(f"Notice removing entity: {e}")
         del self.element_meta[guid]
+        self.mark_element_removed(guid)
         return True
 
     def translate_element(
@@ -1976,6 +2044,10 @@ class BimModelManager:
         # through this method: that pass has already been solved, so it must not
         # start another solve. (Guarding on `visited` was wrong — `.add()` mutates
         # it, so it is truthy on the first call and the hook never ran.)
+        if translated:
+            self.mark_mesh_dirty(guid)
+            if ifc_class in ("IfcDoor", "IfcWindow"):
+                self.mark_mesh_dirty(meta.get("host_wall_guid"))
         if translated and _propagate:
             try:
                 self._solve_constraints_after_move(guid)
@@ -2641,7 +2713,7 @@ class BimModelManager:
         E = (meta["start"][0], meta["start"][1]) if end_index == 0 else (meta["end"][0], meta["end"][1])
 
         for other_guid, om in walls.items():
-            if other_guid == guid:
+            if other_guid == guid or "start" not in om or "end" not in om:
                 continue
             osp, oep = om["start"], om["end"]
             ox, oy = osp[0], osp[1]
@@ -2739,7 +2811,12 @@ class BimModelManager:
                 dot = max(-1.0, min(1.0, uW[0] * uX[0] + uW[1] * uX[1]))
                 angle_deg = math.degrees(math.acos(dot))
                 if self._MITER_MIN_ANGLE <= angle_deg <= 180 - self._MITER_MIN_ANGLE:
-                    ext[end_index] = om["thickness"] / 2.0
+                    sin_theta = math.sin(math.radians(angle_deg))
+                    cos_theta = abs(dot)
+                    if sin_theta > 1e-4:
+                        ext[end_index] = (om["thickness"] / 2.0 + (t / 2.0) * cos_theta) / sin_theta + 0.05
+                    else:
+                        ext[end_index] = om["thickness"] / 2.0
 
             poly = self._wall_rect(meta, ext_start=ext[0], ext_end=ext[1])
 
@@ -2806,6 +2883,7 @@ class BimModelManager:
             if meta.get("footprint") != new_fp:
                 meta["footprint"] = new_fp
                 self._rebuild_wall_representation(guid)
+                self.mark_mesh_dirty(guid)
             else:
                 self._refresh_wall_placement(guid)
 
@@ -3296,17 +3374,12 @@ class BimModelManager:
             return ifcopenshell.geom.create_shape(settings, p, rep)
         return ifcopenshell.geom.create_shape(settings, p)
 
-    def get_geometry_buffers(self) -> Dict[str, Any]:
-        """
-        Extracts 3D triangulated meshes from active IFC entities using IfcGeom.
-        Returns vertices, face indices, normals, colors, and bounding boxes ready for Three.js.
-        """
-        settings = ifcopenshell.geom.settings()
-        settings.set(settings.USE_WORLD_COORDS, True)
+    def _build_element_mesh(self, guid: str, meta: Dict[str, Any], settings=None) -> Optional[Dict[str, Any]]:
+        entity = meta.get("entity")
+        if not entity:
+            return None
+        ifc_class = meta.get("ifc_class", "IfcProduct")
 
-        meshes = []
-
-        # Color palette for consistent shaded viewport (Revit Consistent Colors style)
         category_colors = {
             "IfcWallStandardCase": {"color": "#e2e8f0", "opacity": 1.0, "cut_color": "#475569"},
             "IfcWall": {"color": "#e2e8f0", "opacity": 1.0, "cut_color": "#475569"},
@@ -3326,79 +3399,106 @@ class BimModelManager:
             "IfcBuildingElementProxy": {"color": "#a8a29e", "opacity": 1.0, "cut_color": "#57534e"},
         }
 
+        if settings is None:
+            settings = ifcopenshell.geom.settings()
+            settings.set(settings.USE_WORLD_COORDS, True)
+
+        try:
+            cached_v = meta.get("cached_verts")
+            cached_f = meta.get("cached_faces")
+            if cached_v and cached_f:
+                raw_verts = cached_v
+                raw_faces = cached_f
+            else:
+                shape = self._get_product_shape(settings, entity)
+                geom = shape.geometry
+                raw_verts = list(geom.verts)
+                raw_faces = list(geom.faces)
+                meta["cached_verts"] = raw_verts
+                meta["cached_faces"] = raw_faces
+
+            style = category_colors.get(ifc_class, {"color": "#94a3b8", "opacity": 1.0, "cut_color": "#334155"})
+
+            if "bbox" in meta:
+                bbox = meta["bbox"]
+            else:
+                xs = raw_verts[0::3]
+                ys = raw_verts[1::3]
+                zs = raw_verts[2::3]
+                bbox = {
+                    "min": [min(xs), min(ys), min(zs)],
+                    "max": [max(xs), max(ys), max(zs)],
+                }
+                meta["bbox"] = bbox
+
+            return {
+                "guid": guid,
+                "ifc_class": ifc_class,
+                "name": meta.get("name", ifc_class),
+                "vertices": raw_verts,
+                "indices": raw_faces,
+                "color": style["color"],
+                "cut_color": style["cut_color"],
+                "opacity": style["opacity"],
+                "bbox": bbox,
+                "params": self._serialize_element_params(guid, meta),
+            }
+        except Exception:
+            return None
+
+    def get_geometry_buffers(self, since: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Extracts 3D triangulated meshes from active IFC entities using IfcGeom.
+        Returns vertices, face indices, normals, colors, and bounding boxes ready for Three.js.
+        If `since` is specified (monotonic rev), returns delta {upsert_meshes, remove_guids}.
+        """
+        settings = ifcopenshell.geom.settings()
+        settings.set(settings.USE_WORLD_COORDS, True)
+
+        levels_data = [
+            {"id": l["id"], "name": l["name"], "elevation": l["elevation"]}
+            for l in self.levels.values()
+        ]
+        grids_data = [
+            {
+                "guid": m["guid"],
+                "name": m["name"],
+                "tag": m["tag"],
+                "start": m["start"],
+                "end": m["end"],
+            }
+            for m in self.element_meta.values()
+            if m.get("ifc_class") == "IfcGrid"
+        ]
+
+        if since is not None:
+            upsert_meshes = []
+            for guid, meta in self.element_meta.items():
+                if self.mesh_revs.get(guid, 0) > since or guid in self.dirty_mesh_guids:
+                    m = self._build_element_mesh(guid, meta, settings)
+                    if m is not None:
+                        upsert_meshes.append(m)
+            remove_guids = []
+            for rev, guids in self.removed_guids_by_rev.items():
+                if rev > since:
+                    remove_guids.extend(guids)
+            return {
+                "upsert_meshes": upsert_meshes,
+                "remove_guids": sorted(set(remove_guids)),
+                "levels": levels_data,
+                "grids": grids_data,
+            }
+
+        meshes = []
         for guid, meta in self.element_meta.items():
-            entity = meta.get("entity")
-            if not entity:
-                continue
-            ifc_class = meta.get("ifc_class", "IfcProduct")
-
-            try:
-                cached_v = meta.get("cached_verts")
-                cached_f = meta.get("cached_faces")
-                if cached_v and cached_f:
-                    raw_verts = cached_v
-                    raw_faces = cached_f
-                else:
-                    shape = self._get_product_shape(settings, entity)
-                    geom = shape.geometry
-                    raw_verts = list(geom.verts)  # flat [x, y, z, ...]
-                    raw_faces = list(geom.faces)  # flat [i1, i2, i3, ...]
-                    meta["cached_verts"] = raw_verts
-                    meta["cached_faces"] = raw_faces
-
-                # In IFC: Z is up, Three.js: Y is up or Z is up.
-                # We keep coordinates in Z-up (standard architectural convention)
-                # and orient Three.js camera with Object3D.DEFAULT_UP = (0, 0, 1).
-                style = category_colors.get(ifc_class, {"color": "#94a3b8", "opacity": 1.0, "cut_color": "#334155"})
-
-                # Compute or retrieve element bounding box
-                if "bbox" in meta:
-                    bbox = meta["bbox"]
-                else:
-                    xs = raw_verts[0::3]
-                    ys = raw_verts[1::3]
-                    zs = raw_verts[2::3]
-                    bbox = {
-                        "min": [min(xs), min(ys), min(zs)],
-                        "max": [max(xs), max(ys), max(zs)],
-                    }
-                    meta["bbox"] = bbox
-
-                meshes.append({
-                    "guid": guid,
-                    "ifc_class": ifc_class,
-                    "name": meta.get("name", ifc_class),
-                    "vertices": raw_verts,
-                    "indices": raw_faces,
-                    "color": style["color"],
-                    "cut_color": style["cut_color"],
-                    "opacity": style["opacity"],
-                    "bbox": bbox,
-                    # Parametric definition (baseline, hosting, offsets) so the
-                    # frontend element record is real data, not a mesh guess.
-                    "params": self._serialize_element_params(guid, meta),
-                })
-            except Exception as e:
-                # Fallback simple bounding geometry if shape creation fails
-                pass
+            m = self._build_element_mesh(guid, meta, settings)
+            if m is not None:
+                meshes.append(m)
 
         return {
             "meshes": meshes,
-            "levels": [
-                {"id": l["id"], "name": l["name"], "elevation": l["elevation"]}
-                for l in self.levels.values()
-            ],
-            "grids": [
-                {
-                    "guid": m["guid"],
-                    "name": m["name"],
-                    "tag": m["tag"],
-                    "start": m["start"],
-                    "end": m["end"],
-                }
-                for m in self.element_meta.values()
-                if m.get("ifc_class") == "IfcGrid"
-            ],
+            "levels": levels_data,
+            "grids": grids_data,
         }
 
     # =========================================================================
@@ -4351,8 +4451,11 @@ class BimModelManager:
             raise ValueError("Sheet Number is empty")
 
         num_clean = sheet_number.strip()
+        if sheet_id and sheet_id in self.sheets:
+            raise ValueError(f"Sheet ID '{sheet_id}' already exists in model")
+
         for sid, s in self.sheets.items():
-            if sid != sheet_id and s.get("sheet_number", "").strip().lower() == num_clean.lower():
+            if s.get("sheet_number", "").strip().lower() == num_clean.lower():
                 raise ValueError(f"Sheet Number is already in use. Enter a unique number: '{num_clean}'")
 
         sid = sheet_id or f"sheet-{uuid.uuid4().hex[:8]}"

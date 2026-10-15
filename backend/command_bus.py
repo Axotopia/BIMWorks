@@ -7,6 +7,7 @@ transactional execution with undo/redo journal, and AI origin tagging.
 
 import time
 import uuid
+import threading
 from typing import Dict, List, Any, Optional, Literal
 from pydantic import BaseModel, Field, model_validator
 
@@ -368,6 +369,8 @@ class CommandBusEngine:
         self.journal: List[Dict[str, Any]] = []
         self.undo_stack: List[Dict[str, Any]] = []
         self.redo_stack: List[Dict[str, Any]] = []
+        self.rev: int = 0
+        self._lock = threading.RLock()
 
     def get_schemas(self) -> Dict[str, Any]:
         """Exports JSON Schema 2020-12 specifications for all registered commands."""
@@ -634,86 +637,167 @@ class CommandBusEngine:
         model is never left partially mutated. Undo/redo use state snapshots,
         so every command type (create/move/delete/constraint) round-trips.
         """
-        tx_id = f"tx_{uuid.uuid4().hex[:8]}"
-        pre_state = self.manager.snapshot_state()
-        results = []
+        with self._lock:
+            tx_id = f"tx_{uuid.uuid4().hex[:8]}"
+            pre_state = self.manager.snapshot_state()
+            results = []
 
-        try:
-            for item in commands:
-                res = self.execute_single_command(item.command, item.params)
-                results.append({"command": item.command, "result": res})
-        except Exception as e:
-            # Roll back the model to the exact pre-transaction state.
-            self.manager.restore_state(pre_state)
-            raise RuntimeError(
-                f"Transaction '{tx_id}' aborted and rolled back: {str(e)}"
-            ) from e
+            try:
+                for item in commands:
+                    res = self.execute_single_command(item.command, item.params)
+                    results.append({"command": item.command, "result": res})
+            except Exception as e:
+                # Roll back the model to the exact pre-transaction state.
+                self.manager.restore_state(pre_state)
+                raise RuntimeError(
+                    f"Transaction '{tx_id}' aborted and rolled back: {str(e)}"
+                ) from e
 
-        tx_record = {
-            "transaction_id": tx_id,
-            "origin": origin,
-            "description": description,
-            "timestamp": time.time(),
-            "commands": [{"command": c.command, "params": c.params} for c in commands],
-            "results": results,
-        }
-
-        self.journal.append(tx_record)
-        self.undo_stack.append(
-            {
+            self.rev += 1
+            if hasattr(self.manager, "commit_revision"):
+                self.manager.commit_revision(self.rev)
+            tx_record = {
+                "rev": self.rev,
                 "transaction_id": tx_id,
                 "origin": origin,
                 "description": description,
-                "pre_state": pre_state,
-                "post_state": self.manager.snapshot_state(),
+                "timestamp": time.time(),
+                "commands": [{"command": c.command, "params": c.params} for c in commands],
+                "results": results,
             }
-        )
-        self.redo_stack.clear()
 
-        return {
-            "status": "committed",
-            "transaction_id": tx_id,
-            "origin": origin,
-            "commands_executed": len(results),
-            "results": results,
-            "description": description,
-        }
+            self.journal.append(tx_record)
+            self.undo_stack.append(
+                {
+                    "rev": self.rev,
+                    "transaction_id": tx_id,
+                    "origin": origin,
+                    "description": description,
+                    "pre_state": pre_state,
+                    "post_state": self.manager.snapshot_state(),
+                }
+            )
+            self.redo_stack.clear()
 
-    def undo(self) -> Dict[str, Any]:
+            return {
+                "status": "committed",
+                "rev": self.rev,
+                "transaction_id": tx_id,
+                "origin": origin,
+                "commands_executed": len(results),
+                "results": results,
+                "description": description,
+            }
+
+    def abort_transaction(self, transaction_id: str) -> Dict[str, Any]:
+        """
+        Rolls back and discards a committed transaction (e.g. after a post-condition failure).
+        Unlike undo(), the transaction is NOT pushed to redo_stack and is removed from the journal.
+        """
+        with self._lock:
+            if not self.undo_stack:
+                raise RuntimeError(f"Cannot abort transaction '{transaction_id}': undo stack is empty")
+            tx = self.undo_stack[-1]
+            if tx["transaction_id"] != transaction_id:
+                raise RuntimeError(
+                    f"Cannot abort transaction '{transaction_id}': top of undo stack is '{tx['transaction_id']}'"
+                )
+            self.undo_stack.pop()
+            self.manager.restore_state(tx["pre_state"])
+            self.journal = [j for j in self.journal if j.get("transaction_id") != transaction_id]
+            self.redo_stack = [r for r in self.redo_stack if r.get("transaction_id") != transaction_id]
+            self.rev = self.undo_stack[-1]["rev"] if self.undo_stack else 0
+            return {
+                "status": "aborted",
+                "rev": self.rev,
+                "transaction_id": transaction_id,
+                "origin": tx["origin"],
+                "description": tx.get("description", ""),
+            }
+
+    def undo(self, transaction_id: Optional[str] = None) -> Dict[str, Any]:
         """Rolls back the latest transaction via its pre-state snapshot."""
-        if not self.undo_stack:
-            return {"status": "empty", "message": "Nothing to undo"}
+        with self._lock:
+            if not self.undo_stack:
+                return {"status": "empty", "message": "Nothing to undo"}
 
-        tx = self.undo_stack.pop()
-        self.manager.restore_state(tx["pre_state"])
-        self.redo_stack.append(tx)
+            if transaction_id is not None and self.undo_stack[-1]["transaction_id"] != transaction_id:
+                raise RuntimeError(
+                    f"Transaction mismatch: expected '{transaction_id}', top of stack is '{self.undo_stack[-1]['transaction_id']}'"
+                )
 
-        return {
-            "status": "undone",
-            "transaction_id": tx["transaction_id"],
-            "origin": tx["origin"],
-            "description": tx.get("description", ""),
-        }
+            prior_guids = set(self.manager.element_meta.keys())
+            tx = self.undo_stack.pop()
+            self.manager.restore_state(tx["pre_state"])
+            restored_guids = set(self.manager.element_meta.keys())
+            self.redo_stack.append(tx)
+            self.rev += 1
+            for g in (prior_guids - restored_guids):
+                self.manager.mark_element_removed(g)
+            for g in restored_guids:
+                self.manager.mark_mesh_dirty(g)
+            self.manager.commit_revision(self.rev)
+            undo_record = {
+                "rev": self.rev,
+                "transaction_id": f"undo_{tx['transaction_id']}",
+                "origin": tx["origin"],
+                "description": f"Undo {tx.get('description', '')}",
+                "timestamp": time.time(),
+                "commands": [],
+                "results": [],
+            }
+            self.journal.append(undo_record)
+
+            return {
+                "status": "undone",
+                "rev": self.rev,
+                "transaction_id": tx["transaction_id"],
+                "origin": tx["origin"],
+                "description": tx.get("description", ""),
+            }
 
     def redo(self) -> Dict[str, Any]:
         """Re-applies the latest undone transaction via its post-state snapshot."""
-        if not self.redo_stack:
-            return {"status": "empty", "message": "Nothing to redo"}
+        with self._lock:
+            if not self.redo_stack:
+                return {"status": "empty", "message": "Nothing to redo"}
 
-        tx = self.redo_stack.pop()
-        self.manager.restore_state(tx["post_state"])
-        self.undo_stack.append(tx)
+            prior_guids = set(self.manager.element_meta.keys())
+            tx = self.redo_stack.pop()
+            self.manager.restore_state(tx["post_state"])
+            restored_guids = set(self.manager.element_meta.keys())
+            self.undo_stack.append(tx)
+            self.rev += 1
+            for g in (prior_guids - restored_guids):
+                self.manager.mark_element_removed(g)
+            for g in restored_guids:
+                self.manager.mark_mesh_dirty(g)
+            self.manager.commit_revision(self.rev)
+            redo_record = {
+                "rev": self.rev,
+                "transaction_id": f"redo_{tx['transaction_id']}",
+                "origin": tx["origin"],
+                "description": f"Redo {tx.get('description', '')}",
+                "timestamp": time.time(),
+                "commands": [],
+                "results": [],
+            }
+            self.journal.append(redo_record)
 
-        return {
-            "status": "redone",
-            "transaction_id": tx["transaction_id"],
-            "origin": tx["origin"],
-            "description": tx.get("description", ""),
-        }
+            return {
+                "status": "redone",
+                "rev": self.rev,
+                "transaction_id": tx["transaction_id"],
+                "origin": tx["origin"],
+                "description": tx.get("description", ""),
+            }
 
-    def get_journal(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Returns the replay journal history."""
-        return self.journal[-limit:]
+    def get_journal(self, limit: int = 50, since: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Returns the replay journal history, optionally filtered since a revision."""
+        with self._lock:
+            if since is not None:
+                return [j for j in self.journal if j.get("rev", 0) > since]
+            return list(self.journal[-limit:])
 
 
 # Singleton CommandBus instance

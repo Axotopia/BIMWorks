@@ -932,6 +932,7 @@ def execute_ai_plan(req: AiExecuteRequest):
 # ---------------------------------------------------------------------------
 @app.get("/api/state")
 def get_state_bundle(
+    since: Optional[int] = None,
     cut_elevation: float = 4.0,
     level_id: Optional[str] = None,
     view_type: str = "floor_plan",
@@ -942,34 +943,26 @@ def get_state_bundle(
     journal_limit: int = 25,
 ):
     """
-    Post-commit state bundle: ONE round trip instead of the seven sequential
-    requests the UI used to issue after every transaction.
+    Post-commit state delta and bundle protocol (SPECIFICATION-v0.2.md §6.3).
 
-    Spec 3.2 says the frontend subscribes to delta events. The UI was instead
-    pulling full model state seven times in series per commit, and one of those
-    seven (/api/constraints) was fetched twice - once inside fetchProjectState and
-    again directly. Measured at roughly 30 ms of a p50 36.7 / p95 66.9 ms edit
-    round.
-
-    This does not implement deltas yet. It removes the serial round-trip
-    amplification and returns per-section timings so engine compute and protocol
-    cost can be told apart.
-
-    The 2D linework is routed the same way /api/slice/2d and /api/view/2d are:
-    plans go through slice_2d_vector_plan with a level-relative cut, while sections
-    and elevations need render_2d_view and the view-range fields. Routing it here
-    rather than in the UI keeps the two paths from disagreeing.
-
-    timings and engine_ms are ENGINE-SIDE ONLY. They are not interaction latency
-    and must never be reported as the drag result: what the user waits for includes
-    the protocol, the transfer and the store commit, and only the UI can measure
-    that. The two numbers belong in the log under separate names.
+    Supports since=<rev> for Response A (unchanged), Response B (delta with
+    upsert_meshes, remove_guids, and view-filtered slice2d), and Response C
+    (full-state resync).
     """
     import time as _time
 
     t_total = _time.perf_counter()
     timings: Dict[str, float] = {}
     errors: Dict[str, str] = {}
+    current_rev = command_bus.rev
+
+    # Response A — nothing changed. This must be cheap; it is the common case.
+    if since is not None and since == current_rev:
+        return {
+            "rev": current_rev,
+            "unchanged": True,
+            "engine_ms": round((_time.perf_counter() - t_total) * 1000.0, 2),
+        }
 
     def timed(key, fn):
         t0 = _time.perf_counter()
@@ -978,8 +971,7 @@ def get_state_bundle(
         return value
 
     def timed_soft(key, fn):
-        """A failing section must not discard the sections that succeeded: a
-        transient slice error should not cost the caller its geometry update."""
+        """A failing section must not discard the sections that succeeded."""
         t0 = _time.perf_counter()
         try:
             value = fn()
@@ -1007,6 +999,48 @@ def get_state_bundle(
             cut_elevation=cut_elevation, level_id=level_id
         )
 
+    # Response B — a delta
+    if since is not None and 0 <= since < current_rev:
+        geom_delta = timed_soft("geometry", lambda: bim_manager.get_geometry_buffers(since=since))
+        upsert_meshes = geom_delta.get("upsert_meshes", []) if geom_delta else []
+        remove_guids = geom_delta.get("remove_guids", []) if geom_delta else []
+
+        # D5: dirty-view slice filter (R5)
+        needs_slice = True
+        if view_type == "floor_plan" and level_id:
+            req_storey = bim_manager.get_storey_by_id(level_id)
+            req_gid = req_storey.GlobalId if req_storey else level_id
+            affected_gids = set()
+            for m in upsert_meshes:
+                lid = (m.get("params") or {}).get("level_id")
+                if lid:
+                    st = bim_manager.get_storey_by_id(lid)
+                    affected_gids.add(st.GlobalId if st else lid)
+            # If all affected elements belong strictly to other levels, skip slice2d
+            if affected_gids and req_gid not in affected_gids:
+                needs_slice = False
+
+        slice2d = timed_soft("slice2d", _slice) if needs_slice else None
+        journal_append = timed_soft("journal", lambda: command_bus.get_journal(since=since))
+        total_ms = round((_time.perf_counter() - t_total) * 1000.0, 2)
+
+        return {
+            "rev": current_rev,
+            "base_rev": since,
+            "unchanged": False,
+            "upsert_meshes": upsert_meshes,
+            "remove_guids": remove_guids,
+            "project": None,
+            "constraints": None,
+            "wall_joins": None,
+            "slice2d": slice2d,
+            "journal_append": journal_append,
+            "errors": errors,
+            "timings": timings,
+            "engine_ms": total_ms,
+        }
+
+    # Response C — resynchronise (full bundle when since is omitted, forged, or gapped)
     project = timed("project", lambda: {
         "project_name": bim_manager.project_name,
         "levels": list(bim_manager.levels.values()),
@@ -1023,6 +1057,9 @@ def get_state_bundle(
 
     total_ms = round((_time.perf_counter() - t_total) * 1000.0, 2)
     return {
+        "rev": current_rev,
+        "full": True,
+        "unchanged": False,
         "project": project,
         "constraints": constraints,
         "wall_joins": wall_joins,
