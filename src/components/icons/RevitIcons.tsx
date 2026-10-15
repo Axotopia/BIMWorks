@@ -688,3 +688,171 @@ export const IconEditType: React.FC<IconProps> = ({ size = 14, className = '' })
     <line x1="8" y1="10" x2="12" y2="10" stroke="#0284c7" strokeWidth="1" />
   </svg>
 );
+
+// 73. Materials (Checkerboard Sphere)
+export const IconMaterials: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <circle cx="12" cy="12" r="9" stroke="#475569" strokeWidth="1.6" fill="#f8fafc" />
+    <path d="M12 3C7 3 3 7 3 12C3 17 7 21 12 21" fill="#94a3b8" />
+    <path d="M12 3V21M3 12H21" stroke="#475569" strokeWidth="1.2" />
+    <path d="M7 6L17 18M7 18L17 6" stroke="#475569" strokeWidth="0.8" strokeDasharray="1 1" />
+  </svg>
+);
+
+// 74. Object Styles
+export const IconObjectStyles: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <rect x="3" y="3" width="10" height="10" fill="#e2e8f0" stroke="#475569" strokeWidth="1.4" />
+    <rect x="9" y="9" width="12" height="12" fill="#bae6fd" stroke="#0284c7" strokeWidth="1.4" />
+    <line x1="12" y1="15" x2="18" y2="15" stroke="#0369a1" strokeWidth="1.2" />
+    <line x1="15" y1="12" x2="15" y2="18" stroke="#0369a1" strokeWidth="1.2" />
+  </svg>
+);
+
+// 75. Snaps (Magnet)
+export const IconSnaps: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <path d="M5 4V11C5 14.9 8.1 18 12 18C15.9 18 19 14.9 19 11V4" stroke="#dc2626" strokeWidth="2.8" strokeLinecap="round" fill="none" />
+    <path d="M9 4V11C9 12.7 10.3 14 12 14C13.7 14 15 12.7 15 11V4" stroke="#ffffff" strokeWidth="1.8" fill="none" />
+    <rect x="3" y="3" width="4" height="4" fill="#94a3b8" />
+    <rect x="17" y="3" width="4" height="4" fill="#94a3b8" />
+  </svg>
+);
+
+// 76. Project Information
+export const IconProjectInfo: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <rect x="4" y="3" width="16" height="18" rx="2" fill="#ffffff" stroke="#475569" strokeWidth="1.4" />
+    <circle cx="12" cy="12" r="5" fill="#0284c7" />
+    <text x="12" y="15" textAnchor="middle" fontSize="9" fontWeight="bold" fill="#ffffff" fontFamily="sans-serif">i</text>
+  </svg>
+);
+
+// 77. Parameters Service (Cloud parameters)
+export const IconParametersService: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <rect x="3" y="3" width="12" height="12" rx="1" fill="#f8fafc" stroke="#475569" strokeWidth="1.2" />
+    <line x1="5" y1="7" x2="13" y2="7" stroke="#0284c7" strokeWidth="1.2" />
+    <line x1="5" y1="10" x2="11" y2="10" stroke="#0284c7" strokeWidth="1.2" />
+    <path d="M12 16C12 14 14 13 16 13C17.5 13 19 14 19 15.5C20 15.5 21 16.5 21 17.5C21 19 20 20 18.5 20H13C11.5 20 11 18.5 11 17.5C11 16.5 12 16 12 16Z" fill="#38bdf8" stroke="#0284c7" strokeWidth="1.2" />
+  </svg>
+);
+
+// 78. Location (Globe with pin)
+export const IconLocation: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <circle cx="11" cy="13" r="8" stroke="#0284c7" strokeWidth="1.4" fill="#e0f2fe" />
+    <ellipse cx="11" cy="13" rx="4" ry="8" stroke="#0284c7" strokeWidth="1" fill="none" />
+    <line x1="3" y1="13" x2="19" y2="13" stroke="#0284c7" strokeWidth="1" />
+    <path d="M17 3C15.3 3 14 4.3 14 6C14 8.5 17 12 17 12C17 12 20 8.5 20 6C20 4.3 18.7 3 17 3Z" fill="#ea580c" />
+    <circle cx="17" cy="6" r="1" fill="#ffffff" />
+  </svg>
+);
+
+// 79. Design Options
+export const IconDesignOptions: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <rect x="3" y="4" width="18" height="16" rx="1.5" fill="#ffffff" stroke="#475569" strokeWidth="1.4" />
+    <rect x="5" y="7" width="3" height="3" fill="#0284c7" />
+    <line x1="10" y1="8.5" x2="19" y2="8.5" stroke="#475569" strokeWidth="1.2" />
+    <rect x="5" y="12" width="3" height="3" fill="#94a3b8" />
+    <line x1="10" y1="13.5" x2="19" y2="13.5" stroke="#475569" strokeWidth="1.2" />
+  </svg>
+);
+
+// 80. Phases
+export const IconPhases: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <rect x="3" y="4" width="18" height="17" rx="2" fill="#ffffff" stroke="#475569" strokeWidth="1.4" />
+    <path d="M3 9H21" stroke="#0284c7" strokeWidth="1.5" />
+    <line x1="8" y1="2" x2="8" y2="5" stroke="#475569" strokeWidth="1.5" strokeLinecap="round" />
+    <line x1="16" y1="2" x2="16" y2="5" stroke="#475569" strokeWidth="1.5" strokeLinecap="round" />
+    <circle cx="8" cy="13" r="1.5" fill="#16a34a" />
+    <circle cx="12" cy="13" r="1.5" fill="#f59e0b" />
+    <circle cx="16" cy="13" r="1.5" fill="#0284c7" />
+  </svg>
+);
+
+// 81. Show Mass
+export const IconShowMass: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <ellipse cx="12" cy="6" rx="7" ry="3.5" fill="#e2e8f0" stroke="#475569" strokeWidth="1.4" />
+    <path d="M5 6V16C5 18 8 20 12 20C16 20 19 18 19 16V6" fill="#f1f5f9" stroke="#475569" strokeWidth="1.4" />
+    <ellipse cx="12" cy="16" rx="7" ry="3.5" fill="#cbd5e1" stroke="#475569" strokeWidth="1.2" strokeDasharray="2 2" />
+  </svg>
+);
+
+// 82. In-Place Mass
+export const IconInPlaceMass: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <rect x="4" y="6" width="13" height="13" fill="#f8fafc" stroke="#475569" strokeWidth="1.4" />
+    <polygon points="17,3 21,7 21,17 17,17" fill="#cbd5e1" stroke="#475569" strokeWidth="1.2" />
+    <polygon points="4,6 8,2 21,2 17,6" fill="#e2e8f0" stroke="#475569" strokeWidth="1.2" />
+    <polygon points="17,7 18.5,10 22,10.5 19.5,13 20,16.5 17,15 14,16.5 14.5,13 12,10.5 15.5,10" fill="#f59e0b" stroke="#d97706" strokeWidth="0.8" />
+  </svg>
+);
+
+// 83. Place Mass
+export const IconPlaceMass: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <rect x="4" y="6" width="14" height="14" fill="#f8fafc" stroke="#475569" strokeWidth="1.4" />
+    <path d="M16 2V9M16 9L13 6M16 9L19 6" stroke="#0284c7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+// 84. Toposolid (Contoured solid with grass top)
+export const IconToposolid: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <polygon points="3,12 12,7 21,11 12,16" fill="#86efac" stroke="#16a34a" strokeWidth="1.4" />
+    <polygon points="3,12 12,16 12,21 3,17" fill="#78350f" stroke="#451a03" strokeWidth="1.2" />
+    <polygon points="12,16 21,11 21,16 12,21" fill="#92400e" stroke="#451a03" strokeWidth="1.2" />
+  </svg>
+);
+
+// 85. Contextual Data
+export const IconContextualData: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <circle cx="11" cy="13" r="8" stroke="#475569" strokeWidth="1.5" fill="#f8fafc" />
+    <line x1="3" y1="13" x2="19" y2="13" stroke="#475569" strokeWidth="1" />
+    <ellipse cx="11" cy="13" rx="4" ry="8" stroke="#475569" strokeWidth="1" fill="none" />
+    <polygon points="17,3 21,6 17,9 13,6" fill="#ec4899" stroke="#be185d" strokeWidth="1" />
+  </svg>
+);
+
+// 86. Site Component (Tree)
+export const IconSiteComponent: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <polygon points="12,2 4,16 20,16" fill="#86efac" stroke="#16a34a" strokeWidth="1.5" strokeLinejoin="round" />
+    <rect x="10.5" y="16" width="3" height="6" fill="#78350f" stroke="#451a03" strokeWidth="1" />
+  </svg>
+);
+
+// 87. Parking Component
+export const IconParkingComponent: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <line x1="3" y1="12" x2="21" y2="12" stroke="#475569" strokeWidth="2" strokeLinecap="round" />
+    <line x1="6" y1="4" x2="6" y2="20" stroke="#475569" strokeWidth="1.5" strokeLinecap="round" />
+    <line x1="12" y1="4" x2="12" y2="20" stroke="#475569" strokeWidth="1.5" strokeLinecap="round" />
+    <line x1="18" y1="4" x2="18" y2="20" stroke="#475569" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+);
+
+// 88. Property Line
+export const IconPropertyLine: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <path d="M4 19H16V7" stroke="#0284c7" strokeWidth="2" fill="none" />
+    <circle cx="4" cy="19" r="2" fill="#0284c7" />
+    <circle cx="16" cy="19" r="2" fill="#0284c7" />
+    <circle cx="16" cy="7" r="2" fill="#0284c7" />
+    <path d="M12 15C12 12 14 10 17 10" stroke="#38bdf8" strokeWidth="1.2" strokeDasharray="2 2" fill="none" />
+  </svg>
+);
+
+// 89. Label Contours
+export const IconLabelContours: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <path d="M3 18C8 12 16 14 21 8" stroke="#94a3b8" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+    <text x="11" y="11" textAnchor="middle" fontSize="7" fontWeight="bold" fill="#64748b" fontFamily="sans-serif">50</text>
+  </svg>
+);
+

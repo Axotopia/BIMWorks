@@ -108,6 +108,23 @@ import {
   IconCreateSimilar,
   IconCreateGroup,
   IconHouse3D,
+  IconMaterials,
+  IconObjectStyles,
+  IconSnaps,
+  IconProjectInfo,
+  IconParametersService,
+  IconLocation,
+  IconDesignOptions,
+  IconPhases,
+  IconShowMass,
+  IconInPlaceMass,
+  IconPlaceMass,
+  IconToposolid,
+  IconContextualData,
+  IconSiteComponent,
+  IconParkingComponent,
+  IconPropertyLine,
+  IconLabelContours,
 } from '../icons/RevitIcons';
 
 export const Ribbon: React.FC = () => {
@@ -763,35 +780,39 @@ export const Ribbon: React.FC = () => {
             </RibbonPanel>
           </>
         ) : activeRibbonTab === 'Massing&Site' ? (
-          /* MASSING & SITE TAB */
+          /* MASSING & SITE TAB (Image 2 Parity) */
           <>
+            {/* Select Panel */}
             <RibbonPanel title="Select">
               {renderToolButton('select', 'Modify', 'MD', <IconModify size={22} />)}
             </RibbonPanel>
 
+            {/* Conceptual Mass Panel */}
             <RibbonPanel title="Conceptual Mass">
-              {renderDummyTool('In-Place Mass', 'MP', <Box size={22} className="text-[#9333ea]" />)}
-              <div className="flex flex-col justify-center space-y-0.5">
-                {renderSmallButton('Show Mass', <Eye size={13} className="text-[#0284c7]" />, undefined, 'Show Mass Form')}
-              </div>
+              {renderDummyTool('Show Mass', 'SM', <IconShowMass size={22} />, true)}
+              {renderDummyTool('In-Place Mass', 'MP', <IconInPlaceMass size={22} />)}
+              {renderDummyTool('Place Mass', 'PM', <IconPlaceMass size={22} />)}
             </RibbonPanel>
 
+            {/* Model by Face Panel */}
             <RibbonPanel title="Model by Face">
-              <div className="flex flex-col justify-center space-y-0.5">
-                {renderSmallButton('Curtain System', <IconCurtainSystem size={13} />, undefined, 'Curtain System by Face')}
-                {renderSmallButton('Roof by Face', <IconRoof size={13} />, undefined, 'Roof by Face')}
-                {renderSmallButton('Wall by Face', <IconWall size={13} />, undefined, 'Wall by Face')}
-                {renderSmallButton('Floor by Face', <IconFloor size={13} />, undefined, 'Floor by Face')}
-              </div>
+              {renderDummyTool('Curtain System', 'CS', <IconCurtainSystem size={22} />)}
+              {renderDummyTool('Roof', 'RF', <IconRoof size={22} />)}
+              {renderDummyTool('Wall', 'WF', <IconWall size={22} />)}
+              {renderDummyTool('Floor', 'FF', <IconFloor size={22} />)}
+              {renderDummyTool('Toposolid', 'TS', <IconToposolid size={22} />)}
             </RibbonPanel>
 
+            {/* Model Site Panel */}
             <RibbonPanel title="Model Site">
-              {renderDummyTool('Toposurface', 'TP', <Mountain size={22} className="text-[#16a34a]" />)}
-              <div className="flex flex-col justify-center space-y-0.5">
-                {renderSmallButton('Site Component', <Trees size={13} className="text-[#16a34a]" />, undefined, 'Site Component')}
-                {renderSmallButton('Parking', <Car size={13} className="text-[#0284c7]" />, undefined, 'Parking Component')}
-              </div>
+              {renderDummyTool('Contextual Data', 'CD', <IconContextualData size={22} />)}
+              {renderDummyTool('Toposolid', 'TP', <IconToposolid size={22} />, true)}
+              {renderDummyTool('Site Component', 'SC', <IconSiteComponent size={22} />)}
+              {renderDummyTool('Parking', 'PK', <IconParkingComponent size={22} />)}
+              {renderDummyTool('Property Line', 'PL', <IconPropertyLine size={22} />)}
+              {renderDummyTool('Label Contours', 'LC', <IconLabelContours size={22} />)}
             </RibbonPanel>
+            {/* Excluded: Graded Region / Analysis (Crossed out in Red) */}
           </>
         ) : activeRibbonTab === 'View' ? (
           /* VIEW TAB */
@@ -847,32 +868,95 @@ export const Ribbon: React.FC = () => {
             </RibbonPanel>
           </>
         ) : activeRibbonTab === 'Manage' ? (
-          /* MANAGE TAB */
+          /* MANAGE TAB (Image 1 Parity) */
           <>
+            {/* Select Panel */}
             <RibbonPanel title="Select">
               {renderToolButton('select', 'Modify', 'MD', <IconModify size={22} />)}
             </RibbonPanel>
 
+            {/* Settings Panel */}
             <RibbonPanel title="Settings">
-              {renderDummyTool('Materials', 'MT', <Box size={22} className="text-[#d97706]" />)}
-              <div className="flex flex-col justify-center space-y-0.5">
-                {renderSmallButton('Snaps', <Lock size={13} className="text-[#0284c7]" />, undefined, 'Snaps Dialog')}
-                {renderSmallButton('Project Info', <FileText size={13} className="text-[#16a34a]" />, undefined, 'Project Info')}
+              {renderDummyTool('Materials', 'MT', <IconMaterials size={22} />)}
+              {renderDummyTool('Object Styles', 'OS', <IconObjectStyles size={22} />)}
+              {renderDummyTool('Snaps', 'SN', <IconSnaps size={22} />)}
+              {renderDummyTool('Project Info', 'PI', <IconProjectInfo size={22} />)}
+              {renderDummyTool('Parameters Service', 'PS', <IconParametersService size={22} />)}
+
+              {/* Stacked Parameters & Units */}
+              <div className="flex flex-col justify-center space-y-0.5 border-l border-[#d1d5db] pl-1.5">
+                {renderSmallButton('Project Parameters', <FileText size={13} className="text-[#0284c7]" />, undefined, 'Project Parameters')}
+                {renderSmallButton('Shared Parameters', <FileText size={13} className="text-[#d97706]" />, undefined, 'Shared Parameters')}
+                {renderSmallButton('Global Parameters', <FileText size={13} className="text-[#16a34a]" />, undefined, 'Global Parameters')}
+              </div>
+              <div className="flex flex-col justify-center space-y-0.5 border-l border-[#e5e7eb] pl-1.5">
+                {renderSmallButton('Transfer Standards', <IconCopyTool size={13} />, undefined, 'Transfer Project Standards')}
+                {renderSmallButton('Purge Unused', <Trash2 size={13} className="text-[#dc2626]" />, undefined, 'Purge Unused')}
                 {renderSmallButton('Project Units', <IconDimLinear size={13} />, undefined, 'Project Units', 'UN')}
+              </div>
+
+              {/* Right Settings */}
+              <div className="flex flex-col justify-center space-y-0.5 border-l border-[#e5e7eb] pl-1.5">
+                {renderSmallButton('Numbering', <FileSpreadsheet size={13} className="text-[#0284c7]" />, undefined, 'Numbering')}
+                {/* Excluded in RED: Structural Settings, MEP Settings */}
+                {renderSmallButton('Panel Schedule', <FileText size={13} className="text-[#64748b]" />, undefined, 'Panel Schedule Templates')}
+                {renderSmallButton('Additional Settings', <SlidersHorizontal size={13} className="text-[#475569]" />, undefined, 'Additional Settings')}
               </div>
             </RibbonPanel>
 
+            {/* Project Location Panel */}
             <RibbonPanel title="Project Location">
-              <button
-                onClick={() => setGeoreferenceModalOpen(true)}
-                className="flex flex-col items-center justify-center px-2 py-1 rounded hover:bg-[#e0f2fe] border border-transparent hover:border-[#bae6fd] min-w-[50px] h-[58px]"
-                title="IFC4 Georeferencing and Map Conversion"
-              >
-                <Globe size={20} className="text-[#0284c7] mb-0.5" />
-                <span className="text-[11px] font-medium leading-none">Coordinates</span>
-              </button>
+              {renderDummyTool('Location', 'LO', <IconLocation size={22} />)}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Coordinates', <Globe size={13} className="text-[#0284c7]" />, () => setGeoreferenceModalOpen(true), undefined, 'IFC4 Coordinates & CRS')}
+                {renderSmallButton('Position', <Compass size={13} className="text-[#eab308]" />, undefined, 'Position')}
+              </div>
             </RibbonPanel>
 
+            {/* Design Options Panel */}
+            <RibbonPanel title="Design Options">
+              {renderDummyTool('Design Options', 'DO', <IconDesignOptions size={22} />)}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Add to Set', <Square size={13} className="text-[#64748b]" />, undefined, 'Add to Set')}
+                {renderSmallButton('Pick to Edit', <PenTool size={13} className="text-[#0284c7]" />, undefined, 'Pick to Edit')}
+              </div>
+            </RibbonPanel>
+            {/* Excluded in RED: Generative Design Panel (Create Study, Explore Outcomes) */}
+
+            {/* Manage Project Panel */}
+            <RibbonPanel title="Manage Project">
+              {renderDummyTool('Manage Links', 'ML', <IconManageLinks size={22} />)}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Decal Types', <IconDecal size={13} />, undefined, 'Decal Types')}
+                {renderSmallButton('Starting View', <IconHouse3D size={13} />, undefined, 'Starting View')}
+              </div>
+            </RibbonPanel>
+
+            {/* Phasing Panel */}
+            <RibbonPanel title="Phasing">
+              {renderDummyTool('Phases', 'PH', <IconPhases size={22} />)}
+            </RibbonPanel>
+
+            {/* Selection Panel */}
+            <RibbonPanel title="Selection">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Save', <Save size={13} className="text-[#16a34a]" />, undefined, 'Save Selection')}
+                {renderSmallButton('Load', <FolderOpen size={13} className="text-[#0284c7]" />, undefined, 'Load Selection')}
+                {renderSmallButton('Edit', <PenTool size={13} className="text-[#d97706]" />, undefined, 'Edit Selection')}
+              </div>
+            </RibbonPanel>
+
+            {/* Inquiry Panel */}
+            <RibbonPanel title="Inquiry">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Select by ID', <Tag size={13} className="text-[#0284c7]" />, undefined, 'Select Elements by ID')}
+                {renderSmallButton('IDs of Selection', <Tag size={13} className="text-[#64748b]" />, undefined, 'IDs of Selection')}
+                {renderSmallButton('Warnings', <SlidersHorizontal size={13} className="text-[#eab308]" />, undefined, 'Review Warnings')}
+              </div>
+            </RibbonPanel>
+            {/* Excluded in RED: Extensions (Add-Ins, Macros) and Visual Programming (Dynamo, Dynamo Player) */}
+
+            {/* Project Data & AI Panel */}
             <RibbonPanel title="Project Data &amp; AI">
               <button
                 onClick={() => exportProjectContainer()}
