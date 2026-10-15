@@ -13,3 +13,14 @@
 - **Phase 1: Discovery & Dependency Mapping:** Map imports, entrypoints, and callers before changing signatures or file locations.
 - **Phase 2: Plan & Approval:** Provide a concise breakdown of changes (files touched, signatures altered, backward compatibility impact) before executing.
 - **Phase 3: Incremental Execution:** Touch 1–2 related modules at a time, followed immediately by syntax/compilation checks.
+
+## The refactor
+
+The scoped work, its verification gates, and the traps specific to this repository are in
+[`docs/REFACTOR-PLAN.md`](docs/REFACTOR-PLAN.md). Read it after this file.
+
+It supplies what these guidelines deliberately leave open: the exact commands, the expected output of
+each, a definition of done, and the failure modes that have already occurred in this repository. It is
+the contract for the refactor.
+
+**Before editing anything, complete its §2 Baseline and commit that on its own.**
