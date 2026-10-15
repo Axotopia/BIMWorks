@@ -123,6 +123,7 @@ class DimensionCreateParams(BaseModel):
     value: Optional[float] = Field(default=None, description="Optional explicit initial value in feet")
     is_locked: bool = Field(default=False, description="Whether dimension is locked as constraint")
     eq_group: Optional[str] = Field(default=None, description="Optional EQ group identifier")
+    refs: Optional[List[Dict[str, Any]]] = Field(default=None, description="Optional ordered list of chained references")
 
 
 class DimensionValueSetParams(BaseModel):
@@ -657,6 +658,7 @@ class CommandBusEngine:
                 is_locked=p.is_locked,
                 eq_group=p.eq_group,
                 dimension_id=p.dimension_id,
+                refs=p.refs,
             )
             return {"status": "created", "dimension": dim, "dimension_id": dim["id"]}
 

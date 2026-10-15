@@ -13,11 +13,14 @@ import {
   Grid,
 } from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
+import { formatLength } from '../../utils/units';
 
 export const ProjectBrowser: React.FC = () => {
   const {
     views,
     sheets,
+    levels,
+    displayUnit,
     activeViewId,
     activeSheetId,
     setActiveViewId,
@@ -50,6 +53,7 @@ export const ProjectBrowser: React.FC = () => {
     elevations: true,
     sections: true,
     sheets: true,
+    levels: true,
     families: true,
     schedules: false,
   });
@@ -149,6 +153,40 @@ export const ProjectBrowser: React.FC = () => {
                 )}
               </div>
 
+              {/* Elevations */}
+              <div>
+                <div
+                  onClick={() => toggleSection('elevations')}
+                  className="flex items-center space-x-1 py-0.5 px-1 hover:bg-[#f1f5f9] rounded cursor-pointer text-[#475569] font-medium"
+                >
+                  {expandedSections.elevations ? <ChevronDown size={12} className="text-[#64748b]" /> : <ChevronRight size={12} className="text-[#64748b]" />}
+                  <span>Elevations</span>
+                </div>
+                {expandedSections.elevations && (
+                  <div className="pl-4 space-y-0.5">
+                    {views
+                      .filter((v) => v.type === 'elevation')
+                      .map((v) => (
+                        <div
+                          key={v.id}
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, v.id)}
+                          onDoubleClick={() => setActiveViewId(v.id)}
+                          onClick={() => setActiveViewId(v.id)}
+                          className={`flex items-center space-x-1.5 py-1 px-1.5 rounded cursor-pointer ${
+                            activeViewId === v.id
+                              ? 'bg-[#cce8ff] border border-[#007acc] text-[#094771] font-semibold'
+                              : 'hover:bg-[#f1f5f9] text-[#334155]'
+                          }`}
+                        >
+                          <Eye size={13} className="text-[#0284c7]" />
+                          <span>{v.name}</span>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+
               {/* Sections */}
               <div>
                 <div
@@ -215,6 +253,46 @@ export const ProjectBrowser: React.FC = () => {
                   </span>
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+
+        {/* Levels / Storeys (Task 2.7) */}
+        <div>
+          <div
+            onClick={() => toggleSection('levels')}
+            className="flex items-center space-x-1 py-1 px-1.5 hover:bg-[#f1f5f9] rounded cursor-pointer font-bold text-[#1e293b]"
+          >
+            {expandedSections.levels ? <ChevronDown size={14} className="text-[#64748b]" /> : <ChevronRight size={14} className="text-[#64748b]" />}
+            <span>Levels ({levels.length})</span>
+          </div>
+
+          {expandedSections.levels && (
+            <div className="pl-4 space-y-0.5 mt-0.5 border-l border-[#e2e8f0] ml-2">
+              {levels.map((lvl) => {
+                const planView = views.find(
+                  (v) => v.levelId === lvl.id || v.name.toLowerCase() === lvl.name.toLowerCase()
+                );
+                return (
+                  <div
+                    key={lvl.id}
+                    onClick={() => {
+                      if (planView) setActiveViewId(planView.id);
+                    }}
+                    className={`flex items-center justify-between py-1 px-1.5 rounded text-[#334155] ${
+                      planView ? 'cursor-pointer hover:bg-[#f1f5f9]' : 'cursor-default'
+                    }`}
+                  >
+                    <div className="flex items-center space-x-1.5">
+                      <Layers size={12} className="text-[#0284c7]" />
+                      <span className="font-medium">{lvl.name}</span>
+                    </div>
+                    <span className="font-mono text-[10px] text-[#64748b]">
+                      {formatLength(lvl.elevation, displayUnit)}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

@@ -125,6 +125,16 @@ export interface Sliced2DData {
     is_overhead?: boolean;
   }>;
   grids: Array<{ guid: string; tag: string; d: string; circle_center: [number, number] }>;
+  levels?: Array<{
+    id: string;
+    name: string;
+    elevation: number;
+    text: string;
+    elevation_text?: string;
+    d: string;
+    circle_center: [number, number];
+    class?: string;
+  }>;
   dimensions: Array<{
     id?: string;
     guid?: string | null;

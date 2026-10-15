@@ -200,9 +200,57 @@ def run_tests():
         check("contract dim has witness start/end", len(found_contract_dim["start"]) == 2 and len(found_contract_dim["end"]) == 2)
         check("contract dim has offset_norm", len(found_contract_dim["offset_norm"]) == 2)
 
+    # 14. Level Dimensions & Controls (Task 2.7)
+    lvl2_id = next((lid for lid, lv in mgr.levels.items() if lv.get("name") == "Level 2"), list(mgr.levels.keys())[1])
+    lvl1_id = next((lid for lid, lv in mgr.levels.items() if lv.get("name") == "Level 1"), list(mgr.levels.keys())[0])
+
+    # Direct edit of level elevation via set_dimension_value (by name "Level 2")
+    mgr.set_dimension_value("Level 2", 14.0)
+    check("direct level edit updated elevation to 14.0", abs(mgr.levels[lvl2_id]["elevation"] - 14.0) < 1e-4)
+
+    # Dimension between Level 1 and Level 2
+    dim_lvl = mgr.create_dimension(
+        ref_a={"level_id": lvl1_id},
+        ref_b={"level_id": lvl2_id},
+        axis="y",
+    )
+    check("level dimension created", dim_lvl["id"] in mgr.dimensions)
+    check("level dimension initial value 14.0", abs(dim_lvl["value"] - 14.0) < 1e-4)
+
+    # Edit level dimension to 12.0
+    mgr.set_dimension_value(dim_lvl["id"], 12.0)
+    check("level_2 elevation moved to 12.0 via dimension", abs(mgr.levels[lvl2_id]["elevation"] - 12.0) < 1e-4)
+
+    # Elevation contract carries levels linework & bubbles
+    elev_contract = mgr.render_2d_view("elevation")
+    check("elevation contract carries levels key", "levels" in elev_contract)
+    check("elevation contract has level lines", len(elev_contract["levels"]) >= 2)
+    lvl2_svg = next((lv for lv in elev_contract["levels"] if lv["id"] == lvl2_id), None)
+    check("level_2 in elevation contract", lvl2_svg is not None)
+    if lvl2_svg:
+        check("level_2 svg has elevation 12.0", abs(lvl2_svg["elevation"] - 12.0) < 1e-4)
+        check("level_2 text formatted feet-inches", "12'-0\"" in lvl2_svg["text"])
+        check("level_2 has valid path d", lvl2_svg["d"].startswith("M "))
+        check("level_2 has bubble center", len(lvl2_svg["circle_center"]) == 2)
+
+    # 15. Chained Dimensions with refs (Task 2.6)
+    dim_chain = mgr.create_dimension(
+        ref_a={"guid": w3_guid, "ref": "start"},
+        ref_b={"guid": w3_guid, "ref": "end"},
+        refs=[
+            {"guid": w3_guid, "ref": "start"},
+            {"guid": w3_guid, "ref": "midpoint"},
+            {"guid": w3_guid, "ref": "end"},
+        ],
+        eq_group="chain_1",
+    )
+    check("chained dimension created with refs", dim_chain.get("refs") is not None and len(dim_chain["refs"]) == 3)
+    check("chained dimension has eq_group", dim_chain.get("eq_group") == "chain_1")
+
     print(f"\nRESULTS: {passed} passed, {failed} failed")
     if failed > 0:
         sys.exit(1)
 
 if __name__ == "__main__":
     run_tests()
+

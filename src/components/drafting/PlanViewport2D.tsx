@@ -143,6 +143,8 @@ export const PlanViewport2D: React.FC = () => {
     displayUnit,
     setStatusMessage,
     projectName,
+    levels,
+    moveLevel,
   } = useBimStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -692,6 +694,72 @@ export const PlanViewport2D: React.FC = () => {
             </g>
           ))}
 
+          {/* 2b. Datum Levels (Task 2.7) */}
+          {sliced2D?.levels?.map((lvl) => (
+            <g key={`level-${lvl.id}`} className="group select-none">
+              <path
+                d={lvl.d}
+                stroke="#64748b"
+                strokeWidth="1.2"
+                vectorEffect="non-scaling-stroke"
+                strokeDasharray="8 4 2 4"
+              />
+              {/* Level Head Bubble */}
+              <circle
+                cx={lvl.circle_center[0]}
+                cy={lvl.circle_center[1]}
+                r="0.30"
+                fill="#ffffff"
+                stroke="#0284c7"
+                strokeWidth="1.4"
+                vectorEffect="non-scaling-stroke"
+                className="cursor-pointer hover:fill-sky-100 transition-colors"
+              />
+              {/* Level Name Label */}
+              <text
+                x={lvl.circle_center[0] + 0.45}
+                y={-lvl.circle_center[1] - 0.12}
+                transform="scale(1, -1)"
+                textAnchor="start"
+                dominantBaseline="central"
+                fontSize="0.22"
+                fontFamily="Inter, sans-serif"
+                fontWeight="bold"
+                fill="#0f172a"
+                paintOrder="stroke"
+                stroke="#ffffff"
+                strokeWidth="0.06"
+                strokeLinejoin="round"
+              >
+                {lvl.name}
+              </text>
+              {/* Level Elevation Label (Clickable in-canvas to edit elevation via moveLevel) */}
+              <text
+                x={lvl.circle_center[0] + 0.45}
+                y={-lvl.circle_center[1] + 0.14}
+                transform="scale(1, -1)"
+                textAnchor="start"
+                dominantBaseline="central"
+                fontSize="0.20"
+                fontFamily="JetBrains Mono, monospace"
+                fontWeight="600"
+                fill="#0284c7"
+                paintOrder="stroke"
+                stroke="#ffffff"
+                strokeWidth="0.06"
+                strokeLinejoin="round"
+                className="cursor-pointer hover:fill-sky-600 underline"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setEditingDimension({ id: lvl.id, mx: lvl.circle_center[0] + 0.8, my: lvl.circle_center[1] });
+                  setDimInputVal(formatLength(lvl.elevation, displayUnit));
+                }}
+              >
+                {lvl.elevation_text || formatLength(lvl.elevation, displayUnit)}
+              </text>
+            </g>
+          ))}
+
           {/* 3. Cut Elements (Walls) */}
           {sliced2D?.cut_paths.map((p, idx) => {
             const isSelected = selectedGuid === p.guid;
@@ -782,6 +850,11 @@ export const PlanViewport2D: React.FC = () => {
             const dy = dim.offset_norm[1] * offDist;
             const mx = (dim.start[0] + dim.end[0]) / 2 + dx;
             const my = (dim.start[1] + dim.end[1]) / 2 + dy;
+            const dimDx = dim.end[0] - dim.start[0];
+            const dimDy = dim.end[1] - dim.start[1];
+            let deg = (Math.atan2(dimDy, dimDx) * 180) / Math.PI;
+            if (deg > 90) deg -= 180;
+            if (deg < -90) deg += 180;
 
             // Check if dimension is locked or equalized
             const dimConstraint = constraints.find(
@@ -791,17 +864,16 @@ export const PlanViewport2D: React.FC = () => {
                   (dim.id && (c as any).dimension_id === dim.id))
             );
             const isLocked = dim.is_locked || (dimConstraint ? dimConstraint.is_locked : false);
-            const isEq = constraints.some(
+            const eqConstraint = constraints.find(
               (c) =>
                 c.type === 'equalize' &&
-                c.is_equalized &&
-                Boolean(
-                  dim.guid &&
-                    (c.interior_guids?.includes(dim.guid) ||
-                      c.span_start_guid === dim.guid ||
-                      c.span_end_guid === dim.guid)
-                )
+                ((dim.guid &&
+                  (c.interior_guids?.includes(dim.guid) ||
+                    c.span_start_guid === dim.guid ||
+                    c.span_end_guid === dim.guid)) ||
+                  (dim.id && (c as any).dimension_id === dim.id))
             );
+            const isEq = Boolean(eqConstraint?.is_equalized);
             const showBadges = isSelected || isLocked || isEq;
 
             return (
@@ -837,11 +909,11 @@ export const PlanViewport2D: React.FC = () => {
                   vectorEffect="non-scaling-stroke"
                 />
 
-                {/* Dimension Text with readability halo & in-canvas click to edit */}
+                {/* Dimension Text with readability halo, angle alignment & in-canvas click to edit */}
                 <text
                   x={mx}
                   y={-my - 0.10}
-                  transform="scale(1, -1)"
+                  transform={`scale(1, -1) ${Math.abs(deg) > 0.01 ? `rotate(${-deg}, ${mx}, ${-my - 0.10})` : ''}`}
                   textAnchor="middle"
                   fontSize="0.18"
                   fontFamily="JetBrains Mono, monospace"
@@ -899,7 +971,11 @@ export const PlanViewport2D: React.FC = () => {
                     className="cursor-pointer"
                     onClick={(e) => {
                       e.stopPropagation();
-                      equalizeSouthWallWindows();
+                      if (eqConstraint) {
+                        toggleConstraintLock(eqConstraint.id, !eqConstraint.is_locked);
+                      } else {
+                        equalizeSouthWallWindows();
+                      }
                     }}
                   >
                     <rect
@@ -929,6 +1005,87 @@ export const PlanViewport2D: React.FC = () => {
               </g>
             );
           })}
+
+          {/* 6b. In-Canvas Temporary Selection Dimension with Real Witness Lines (Task 2.8) */}
+          {tempDimension && tempDimension.witnessP1 && tempDimension.witnessP2 && (
+            (() => {
+              const p1 = tempDimension.witnessP1;
+              const p2 = tempDimension.witnessP2;
+              const tDx = p2[0] - p1[0];
+              const tDy = p2[1] - p1[1];
+              const tLen = Math.hypot(tDx, tDy);
+              if (tLen < 0.05) return null;
+              const unx = -tDy / tLen;
+              const uny = tDx / tLen;
+              const off = 1.0;
+              const ox = unx * off;
+              const oy = uny * off;
+              const tmx = (p1[0] + p2[0]) / 2 + ox;
+              const tmy = (p1[1] + p2[1]) / 2 + oy;
+              let tDeg = (Math.atan2(tDy, tDx) * 180) / Math.PI;
+              if (tDeg > 90) tDeg -= 180;
+              if (tDeg < -90) tDeg += 180;
+
+              return (
+                <g key="temp-dim-in-canvas" className="text-temp-dimension select-none">
+                  {/* Witness Lines */}
+                  <line
+                    x1={p1[0]}
+                    y1={p1[1]}
+                    x2={p1[0] + ox * 1.15}
+                    y2={p1[1] + oy * 1.15}
+                    stroke="#0284c7"
+                    strokeWidth="0.8"
+                    vectorEffect="non-scaling-stroke"
+                    strokeDasharray="2 2"
+                  />
+                  <line
+                    x1={p2[0]}
+                    y1={p2[1]}
+                    x2={p2[0] + ox * 1.15}
+                    y2={p2[1] + oy * 1.15}
+                    stroke="#0284c7"
+                    strokeWidth="0.8"
+                    vectorEffect="non-scaling-stroke"
+                    strokeDasharray="2 2"
+                  />
+                  {/* Dimension Line */}
+                  <line
+                    x1={p1[0] + ox}
+                    y1={p1[1] + oy}
+                    x2={p2[0] + ox}
+                    y2={p2[1] + oy}
+                    stroke="#0284c7"
+                    strokeWidth="1.2"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  {/* Dimension Text with in-canvas click to edit */}
+                  <text
+                    x={tmx}
+                    y={-tmy - 0.10}
+                    transform={`scale(1, -1) ${Math.abs(tDeg) > 0.01 ? `rotate(${-tDeg}, ${tmx}, ${-tmy - 0.10})` : ''}`}
+                    textAnchor="middle"
+                    fontSize="0.20"
+                    fontFamily="JetBrains Mono, monospace"
+                    fill="#0284c7"
+                    fontWeight="700"
+                    paintOrder="stroke"
+                    stroke="#ffffff"
+                    strokeWidth="0.08"
+                    strokeLinejoin="round"
+                    className="cursor-pointer hover:fill-sky-700 transition-colors"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditingDimension({ id: tempDimension.elementGuid, mx: tmx, my: tmy });
+                      setDimInputVal(formatLength(tempDimension.distance, displayUnit));
+                    }}
+                  >
+                    {tempDimension.displayValue}
+                  </text>
+                </g>
+              );
+            })()
+          )}
 
           {/* 7. Active Alignment Constraints Visual Lines with Padlocks
                  Geometry comes from the constrained elements' real extents. */}
@@ -1341,7 +1498,12 @@ export const PlanViewport2D: React.FC = () => {
                   return;
                 }
                 try {
-                  await setDimensionValue(editingDimension.id, feet);
+                  const targetLvl = levels.find((l) => l.id === editingDimension.id || l.name.toLowerCase() === editingDimension.id.toLowerCase());
+                  if (targetLvl) {
+                    await moveLevel(targetLvl.id, feet);
+                  } else {
+                    await setDimensionValue(editingDimension.id, feet);
+                  }
                 } catch (err) {
                   console.error('Dimension edit failed', err);
                 }

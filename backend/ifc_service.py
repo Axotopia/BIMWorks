@@ -2819,7 +2819,14 @@ class BimModelManager:
         """Resolves 2D coordinates [x, y] in decimal feet for a dimension witness reference."""
         if not isinstance(ref, dict):
             return (0.0, 0.0)
-        guid = ref.get("guid")
+        guid = ref.get("guid") or ref.get("level_id")
+        if guid and hasattr(self, "levels"):
+            if guid in self.levels:
+                elev = float(self.levels[guid].get("elevation", 0.0))
+                return (0.0, elev)
+            for lid, lv in self.levels.items():
+                if lv.get("name", "").lower() == str(guid).lower() or lid.lower() == str(guid).lower():
+                    return (0.0, float(lv.get("elevation", 0.0)))
         if not guid or guid not in self.element_meta:
             if "point" in ref and len(ref["point"]) >= 2:
                 return (float(ref["point"][0]), float(ref["point"][1]))
@@ -2853,6 +2860,7 @@ class BimModelManager:
         is_locked: bool = False,
         eq_group: Optional[str] = None,
         dimension_id: Optional[str] = None,
+        refs: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Creates a persistent parametric dimension object in the overlay (A4).
@@ -2904,6 +2912,7 @@ class BimModelManager:
             "is_locked": bool(is_locked),
             "constraint_id": constraint_id,
             "eq_group": eq_group,
+            "refs": copy.deepcopy(refs) if refs else None,
         }
         self.dimensions[dim_id] = dim
         self.dimensions_rev += 1
@@ -2939,13 +2948,49 @@ class BimModelManager:
 
         val_float = float(value)
 
+        # Helper to find level ID by ID or Name
+        def _lookup_level(ident):
+            if not ident or not hasattr(self, "levels"):
+                return None
+            if ident in self.levels:
+                return ident
+            for lid, lv in self.levels.items():
+                if lv.get("name", "").lower() == str(ident).lower() or lid.lower() == str(ident).lower():
+                    return lid
+            return None
+
+        # Case 0: dimension_id is directly a level_id in self.levels (Task 2.7)
+        lvl_target = _lookup_level(dimension_id)
+        if lvl_target:
+            self.move_level(lvl_target, val_float)
+            self.dimensions_rev += 1
+            self.project_rev += 1
+            return {"status": "updated", "level_id": lvl_target, "elevation": val_float}
+
         # Case 1: dimension_id exists in self.dimensions
         if dimension_id in self.dimensions:
             dim = self.dimensions[dimension_id]
             ref_a = dim.get("ref_a", {})
             ref_b = dim.get("ref_b", {})
-            guid_a = ref_a.get("guid")
-            guid_b = ref_b.get("guid")
+            guid_a = ref_a.get("guid") or ref_a.get("level_id")
+            guid_b = ref_b.get("guid") or ref_b.get("level_id")
+
+            # Check if this dimension targets a level
+            lvl_b = _lookup_level(guid_b)
+            if lvl_b:
+                lvl_a = _lookup_level(guid_a)
+                if lvl_a:
+                    elev_a = float(self.levels[lvl_a].get("elevation", 0.0))
+                    elev_b = float(self.levels[lvl_b].get("elevation", 0.0))
+                    sign = 1.0 if elev_b >= elev_a else -1.0
+                    target_elev = elev_a + sign * val_float
+                else:
+                    target_elev = val_float
+                self.move_level(lvl_b, target_elev)
+                dim["value"] = val_float
+                self.dimensions_rev += 1
+                self.project_rev += 1
+                return {"status": "updated", "dimension_id": dimension_id, "value": val_float}
 
             if guid_a and (guid_a == guid_b or not guid_b):
                 self._resize_wall_length(guid_a, val_float, anchor=anchor)
@@ -5304,6 +5349,35 @@ class BimModelManager:
         contract["window_paths"] = window_paths
         contract.setdefault("dimensions", [])
         contract["cut_elevation"] = float(cut_elevation)
+
+        levels_svg = []
+        is_vert_view = view_type in ("elevation", "section")
+        if is_vert_view and hasattr(self, "levels") and self.levels:
+            import re as _re
+            xs: List[float] = []
+            for pkey in ("cut_paths", "projection_paths"):
+                for entry in contract.get(pkey, []) or []:
+                    nums = [float(v) for v in _re.findall(r"-?\d+\.?\d*", entry.get("d", ""))]
+                    xs.extend(nums[0::2])
+            min_x = min(xs) if xs else -20.0
+            max_x = max(xs) if xs else 20.0
+            tail_x = min_x - FEET_4
+            bubble_x = max_x + FEET_6
+
+            for lid, lv in sorted(self.levels.items(), key=lambda item: float(item[1].get("elevation", 0.0))):
+                elev = float(lv.get("elevation", 0.0))
+                name = lv.get("name", f"Level {lid}")
+                levels_svg.append({
+                    "id": lid,
+                    "name": name,
+                    "elevation": elev,
+                    "text": f"{name}  {format_feet_inches(elev)}",
+                    "elevation_text": format_feet_inches(elev),
+                    "d": f"M {tail_x:.3f} {elev:.3f} L {bubble_x:.3f} {elev:.3f}",
+                    "circle_center": [bubble_x, elev],
+                    "class": "level-line",
+                })
+        contract["levels"] = levels_svg
 
         # Apply the drafting rule that hidden-line removal alone cannot know: a wall
         # shorter than 6 ft is DRAWN IN PROJECTION even when the cut plane passes
