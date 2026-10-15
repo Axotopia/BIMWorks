@@ -168,15 +168,25 @@ def main():
               f"{row['total_ms']:.1f} ms ({row['join_ms']:.1f} join + "
               f"{row['slice_ms']:.1f} slice)")
 
-    print("\n3. The two named O(N²) paths are the whole cost")
+    print("\n3. Where the cost now is (this assertion was INVERTED by Phase 1.3)")
     if REPORT:
         worst = max(REPORT, key=lambda r: r["total_ms"])
-        share = worst["slice_ms"] / max(worst["total_ms"], 1e-9)
-        print(f"  at {worst['walls']} walls: slice is {share * 100:.1f}% of the edit")
-        check("the 2D view regeneration is the dominant term (the Phase 1.3 target)",
-              share >= 0.5,
-              f"slice share {share * 100:.1f}% — if this has moved, Phase 1.3's "
-              f"premise needs re-measuring, not assuming")
+        slice_share = worst["slice_ms"] / max(worst["total_ms"], 1e-9)
+        join_share = worst["join_ms"] / max(worst["total_ms"], 1e-9)
+        print(f"  at {worst['walls']} walls: join {join_share * 100:.1f}%, "
+              f"slice {slice_share * 100:.1f}%")
+        # Before Phase 1.3 this gate asserted the slice WAS dominant, because it was
+        # the thing to fix (542 ms of a 629 ms edit at 196 walls, 86%). The revision
+        # cache plus the per-mesh union made it 3.9 ms, so the same assertion now
+        # correctly fails — a gate that had kept passing would have been measuring a
+        # premise that no longer held. It now guards the fix instead.
+        check("the 2D view regeneration is no longer the dominant term (Phase 1.3 held)",
+              slice_share < 0.5,
+              f"slice share {slice_share * 100:.1f}% — the per-view cache or the "
+              f"per-mesh union has regressed")
+        check("the join recompute is now the dominant term (the Phase 1.1/1.2 target)",
+              join_share > slice_share,
+              f"join {join_share * 100:.1f}% vs slice {slice_share * 100:.1f}%")
 
     print("\n" + "=" * 78)
     print(f"RESULT: {PASSED} passed, {FAILED} failed")

@@ -13,18 +13,25 @@ export const App: React.FC = () => {
   const {
     fetchProjectState,
     fetchGeometry,
-    fetch2DSlice,
+    fetchStateBundle,
     handleKeyStroke,
     handleDeleteKey,
     exportIfc,
   } = useBimStore();
 
-  // Initial load
+  // Initial load.
+  //
+  // `fetchStateBundle()` rather than `fetch2DSlice()`: the bundle is a superset that
+  // also carries `views` and `sheets`, which the Project Browser and the Ribbon render.
+  // Nothing fetched them on mount before, so both showed the store's hardcoded seed
+  // literals (`view-level-1`, `sheet-a101`, ...) until the user loaded a container —
+  // the panels looked populated while describing a project that was not open. The
+  // store's `rev` starts undefined, so this first call is a full Response C.
   useEffect(() => {
     fetchProjectState();
     fetchGeometry();
-    fetch2DSlice();
-  }, [fetchProjectState, fetchGeometry, fetch2DSlice]);
+    fetchStateBundle();
+  }, [fetchProjectState, fetchGeometry, fetchStateBundle]);
 
   // Global Keyboard Navigation & Two-Letter Hotkey Engine
   useEffect(() => {
