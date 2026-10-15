@@ -2980,12 +2980,18 @@ class BimModelManager:
                 continue
             axis = c.get("axis", "x")
             try:
-                eq = solver.equalize(
-                    c.get("span_start_guid"), c.get("span_end_guid"),
-                    list(c.get("interior_guids") or []), axis,
-                )
-                if eq.ok:
-                    solver.apply_solve(eq)
+                if c.get("span_start_guid") == c.get("span_end_guid"):
+                    self.equalize_span(
+                        c.get("span_start_guid"), c.get("span_end_guid"),
+                        list(c.get("interior_guids") or []), axis,
+                    )
+                else:
+                    eq = solver.equalize(
+                        c.get("span_start_guid"), c.get("span_end_guid"),
+                        list(c.get("interior_guids") or []), axis,
+                    )
+                    if eq.ok:
+                        solver.apply_solve(eq)
             except Exception as e:
                 print(f"Notice: re-equalizing span {c.get('id')} failed: {e}")
 
@@ -3342,12 +3348,20 @@ class BimModelManager:
         if not interior_guids:
             raise ValueError("At least one interior element required to equalize.")
 
-        pos_start = self.get_element_coord(span_start_guid, axis)
-        pos_end = self.get_element_coord(span_end_guid, axis)
-        total_span = pos_end - pos_start
+        is_same_host = (span_start_guid == span_end_guid)
+        host_meta = self.element_meta.get(span_start_guid) if is_same_host else None
+
+        if is_same_host and host_meta and host_meta.get("ifc_class") in ("IfcWall", "IfcWallStandardCase"):
+            pos_start = 0.0
+            total_span = float(host_meta.get("length", 0.0))
+            pos_end = total_span
+        else:
+            pos_start = self.get_element_coord(span_start_guid, axis)
+            pos_end = self.get_element_coord(span_end_guid, axis)
+            total_span = pos_end - pos_start
 
         num_segments = len(interior_guids) + 1
-        spacing = total_span / num_segments
+        spacing = total_span / num_segments if num_segments > 0 else 0.0
 
         # Reposition each interior element to equalized position
         for i, int_guid in enumerate(interior_guids):
@@ -3357,11 +3371,13 @@ class BimModelManager:
             target_pos = pos_start + (i + 1) * spacing
 
             if meta.get("ifc_class") in ("IfcDoor", "IfcWindow"):
-                # If hosted on a wall starting at (0,0), offset corresponds directly to spacing
+                h_meta = self.element_meta.get(meta.get("host_wall_guid"))
+                h_angle = float(h_meta.get("angle", 0.0)) if h_meta else 0.0
+                ux, uy = math.cos(h_angle), math.sin(h_angle)
                 current_off = meta.get("offset_along_wall", 0.0)
                 desired_off = (i + 1) * spacing - (meta.get("width", 1.0) / 2.0)
                 delta_off = desired_off - current_off
-                self.translate_element(int_guid, delta_off, 0.0, 0.0)
+                self.translate_element(int_guid, delta_off * ux, delta_off * uy, 0.0)
             else:
                 curr_pos = self.get_element_coord(int_guid, axis)
                 d = target_pos - curr_pos
@@ -3512,6 +3528,7 @@ class BimModelManager:
         }
         self.dimensions[dim_id] = dim
         self.dimensions_rev += 1
+        self.constraints_rev += 1
         self.project_rev += 1
         return dim
 
@@ -3524,6 +3541,7 @@ class BimModelManager:
         if cid and cid in self.constraints:
             self.delete_constraint(cid)
         self.dimensions_rev += 1
+        self.constraints_rev += 1
         self.project_rev += 1
         return True
 
@@ -3560,6 +3578,7 @@ class BimModelManager:
         if lvl_target:
             self.move_level(lvl_target, val_float)
             self.dimensions_rev += 1
+            self.constraints_rev += 1
             self.project_rev += 1
             return {"status": "updated", "level_id": lvl_target, "elevation": val_float}
 
@@ -3585,6 +3604,7 @@ class BimModelManager:
                 self.move_level(lvl_b, target_elev)
                 dim["value"] = val_float
                 self.dimensions_rev += 1
+                self.constraints_rev += 1
                 self.project_rev += 1
                 return {"status": "updated", "dimension_id": dimension_id, "value": val_float}
 
@@ -3646,6 +3666,7 @@ class BimModelManager:
             raise KeyError(f"Dimension or element '{dimension_id}' not found")
 
         self.dimensions_rev += 1
+        self.constraints_rev += 1
         self.project_rev += 1
         return {"status": "updated", "dimension_id": dimension_id, "value": val_float}
 

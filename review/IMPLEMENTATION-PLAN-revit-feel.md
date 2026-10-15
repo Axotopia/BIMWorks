@@ -5,14 +5,17 @@ plan that acts on it.
 **Branch:** `gemini` @ `318ce26`, executed on `main` through `e3216fe`. **Companion audits:** the four
 under `review/AUDIT-*-vs-revit.md`.
 
-> ## ✅ VERIFIED STATUS POST-AUDIT FIXES
+> ## ✅ AUDITED & RECONCILED STATUS (ROUND 2)
 >
-> **Audit Status:** All regressions and defects documented in [`review/HANDOFF-revitUI-plan-verification.md`](HANDOFF-revitUI-plan-verification.md)
-> (Bugs A, B, C1, C2, 1D constraint solver fallback, and Phase 6/7 UI/script defects) have been resolved.
+> **Audit Status:** The core backend regressions, blocking bugs, and code defects documented in [`review/HANDOFF-revitUI-plan-verification.md`](HANDOFF-revitUI-plan-verification.md)
+> (Bugs A, B, C1, C2, §2.1 intra-wall EQ redistribution, §2.7 multi-sheet batch-PDF serialization, §2.10 `constraints_rev` bump, and 1D analytical constraint solver fallback tested with `Sketch is None`) have been resolved and verified across gates.
+> Deferred UI-level features (§2.2 grid dimension edit, §2.3 interactive `DI` tool, §2.5 extension snap candidate, §2.6 non-wall real-ref temporary dimensions, §2.8 interactive endpoint grips, and §2.9 element-specific contextual ribbon tools) are explicitly classified as `⬜ PARTIAL` in the task matrix below.
 >
 > **Verification Gates:**
-> - **26 of 27 backend test suites PASS** (100% of functional suites; only pre-existing `test_scale_gate.py` budget ceiling remains open).
-> - **All 4 Milestone Gates Green:**
+> - **Backend Test Suites:** 27 passed, 1 environmental fail (`test_update_roof.py` requiring external Windows `Z:` path).
+> - **Scale Gate (`test_scale_gate.py`):** Passes scaling shape and cache guards; 196-wall latency is machine-load dependent (measured 12.2–24.9 ms vs 16.0 ms budget).
+> - **Milestone & Parity Gates:**
+>   - `test_pure_python_solver.py` (13 passed, 0 failed — forces `Sketch is None`)
 >   - `test_type_layer_gate.py` (34 passed, 0 failed)
 >   - `test_session_undo_memento.py` (12 passed, 0 failed — 500 sequential edits @ 9.95 ms/tx, peak 1.10 MB)
 >   - `test_trim_split_gate.py` (30 passed, 0 failed)
@@ -22,6 +25,7 @@ under `review/AUDIT-*-vs-revit.md`.
 >   - State-Bundle Gate: 45 passed, 0 failed
 >   - Delta Equivalence Gate: 21 passed, 0 failed
 >   - TypeScript compilation (`tsc --noEmit`) clean.
+
 
 ---
 
@@ -352,18 +356,18 @@ N=2,000 not measured. The exit criterion is therefore **met at ~200 elements, no
 
 ### Phase 2 — Dimension-driven editing (M, reduced from L) — *the user's primary control*
 
-**STATUS: ✅ COMPLETED (2.1–2.8 done and verified across suites).**
-Persisted dimension overlay, `Dimension*` bus commands, in-canvas inline dimension editor with `tryParseLength`, baseline resizing preserving unanchored endpoints, level datum lines in elevations/sections with interactive `move_level` editing, grid spacing dimensions, rotated dimension text on angled walls, real witness lines on selection, and dimension chains with EQ. Gates: `scratch/test_dimensions_crud.py` (53/53 checks) and `npm run check` (196 checks).
+**STATUS: 🟨 PARTIAL (Backend CRUD, parametric overlay, level editing, and bus commands ✅ DONE; interactive DI tool & grid spacing dimension edits deferred).**
+Persisted dimension overlay, `Dimension*` bus commands, in-canvas inline dimension editor with `tryParseLength`, baseline resizing preserving unanchored endpoints, level datum lines in elevations/sections with interactive `move_level` editing, rotated dimension text on angled walls, real witness lines on selection, and dimension chains with EQ. Gates: `scratch/test_dimensions_crud.py` (53/53 checks) and `scratch/test_pure_python_solver.py` (13/13 checks).
 
 | # | Task | Notes |
 |---|---|---|
 | ~~2.1~~ | ~~**Fix the units boundary**~~ | **✅ DONE in Phase 0.3 (`b6b3cdd`).** All three sub-defects (mesh unit, self-amplifying cache, `mesh_hlr` unit) plus `format_feet_inches`. Gate: `scratch/test_units_boundary.py`. Nothing to do here — do not re-fix it; if a dimension still fails to round-trip, that is a **new** defect, not this one returning. |
-| 2.2 | **Dimension objects in the overlay** (A4): id, kind, ordered **references** (element + face/endpoint/plane), axis, offset, value, lock flag, EQ group; persisted and round-tripped; bump `constraints_rev`/`project_rev` on change. | **✅ DONE.** `self.dimensions` and `self.dimensions_rev` initialized in `BimModelManager`, persisted in `parametric.json` overlay, round-tripped on load/save container, and output in `_finish_plan_contract`. Gate: `scratch/test_dimensions_crud.py`. |
+| 2.2 | **Dimension objects in the overlay** (A4): id, kind, ordered **references** (element + face/endpoint/plane), axis, offset, value, lock flag, EQ group; persisted and round-tripped; bump `constraints_rev`/`project_rev` on change. | **✅ DONE.** `self.dimensions`, `self.dimensions_rev`, and `self.constraints_rev` increment on create/set/delete, persisted in `parametric.json` overlay, round-tripped on load/save container, and output in `_finish_plan_contract`. Gate: `scratch/test_dimensions_crud.py`. |
 | 2.3 | **`DimensionCreate` and `DimensionValueSet` bus commands.** `DimensionValueSet{dimension_id, value}` carries the **value, not a delta**. | **✅ DONE.** `DimensionCreateParams`, `DimensionValueSetParams`, `DimensionDeleteParams` registered in `command_bus.py:COMMAND_REGISTRY` and executed through `CommandBusEngine`. Gate: `scratch/test_dimensions_crud.py`. |
-| 2.4 | **Render real dimensions and edit the text in place** — reuse the existing witness/dimension-line drawing (`PlanViewport2D.tsx:799-846`) and the genuinely good `tryParseLength` (`src/utils/units.ts:145-212`, handles `12'-6"`); replace the detached top-centre HTML pill with in-canvas entry. | **✅ DONE.** Dimension text in `PlanViewport2D.tsx` is clickable with an inline in-canvas editor positioned directly on the dimension text, committing via `setDimensionValue(dim.id || dim.guid, parsedFeet)` with `tryParseLength`. |
+| 2.4 | **Render real dimensions and edit the text in place** — reuse the existing witness/dimension-line drawing (`PlanViewport2D.tsx:799-846`) and the genuinely good `tryParseLength` (`src/utils/units.ts:145-212`, handles `12'-6"`); replace the detached top-centre HTML pill with in-canvas entry. | **⬜ PARTIAL.** In-canvas inline editor exists on temporary selection dimensions committing via `setDimensionValue` with `tryParseLength`. Interactive creation of persistent overlay dimensions (`DI` tool / `createDimension`) is disabled/deferred in UI. |
 | 2.5 | **Edit moves the referenced face, not the element.** Extend `_solve_constraints_after_move` (`ifc_service.py:2110`) to move the referenced endpoint **along the baseline** (a length change), reusing the endpoint maths already in `trim_extend_wall`. Do **not** reuse the temporary-dimension translate semantic (`useBimStore.ts:1066-1077`). | **✅ DONE.** `set_dimension_value` resizes wall along baseline (`_resize_wall_length`), preserving unanchored endpoint position, updating length and mesh, reseating hosted openings, incrementally recomputing joins, and propagating constraints. Gate: `scratch/test_dimensions_crud.py`. |
-| 2.6 | **Dimension chains with EQ** — a linear string across N walls; editing one segment redistributes with locked segments and EQ groups honoured. Reuse the verified lock propagation; do this **after** 2.2–2.5, never before. | **✅ DONE.** Chained dimensions with `refs` and `eq_group` registered in overlay and bus commands; interactive EQ badge toggles lock state and redistributes span via `ConstraintEqualize`. Gate: `scratch/test_dimensions_crud.py`. |
-| 2.7 | **Grid and level dimensions as controls.** Add a `levels` key to the plan contract (it does not exist — `ifc_service.py:3894`), draw level lines, expose `LevelMove` (zero callers today), make grid spacing editable by dimension. | **✅ DONE.** `levels` contract key generated for elevations/sections with datum lines and level head bubbles; `set_dimension_value` drives `move_level` by ID or name; level elevation text is in-canvas editable; ProjectBrowser displays levels and elevation views. Gate: `scratch/test_dimensions_crud.py`. |
+| 2.6 | **Dimension chains with EQ** — a linear string across N walls; editing one segment redistributes with locked segments and EQ groups honoured. Reuse the verified lock propagation; do this **after** 2.2–2.5, never before. | **✅ DONE (Backend / Bus) / ⬜ PARTIAL (UI).** Chained dimensions with `refs` and `eq_group` registered in overlay; `ConstraintEqualize` bus command and `equalize_span` redistribute both multi-wall spans and single-wall hosted openings without collapse. Interactive in-canvas multi-segment chain dragging in UI is deferred. Gate: `scratch/test_pure_python_solver.py`. |
+| 2.7 | **Grid and level dimensions as controls.** Add a `levels` key to the plan contract (it does not exist — `ifc_service.py:3894`), draw level lines, expose `LevelMove` (zero callers today), make grid spacing editable by dimension. | **⬜ PARTIAL.** `levels` contract key generated for elevations/sections with datum lines, bubbles, and interactive in-canvas elevation text editing via `set_dimension_value` / `move_level`. Grid spacing editable by dimension is deferred (grid click selects only). Gate: `scratch/test_dimensions_crud.py`. |
 | 2.8 | Witness/extension lines from **real references** (`witnessP1/P2` are written and never read); rotate text on angled walls; feet-inch formatting everywhere. | **✅ DONE.** Rotated dimension text aligned with baseline on angled walls (clamped to readable range [-90°, +90°]); in-canvas temporary selection dimensions with witness lines from real references (`witnessP1/P2`); feet-inch formatting across annotations. |
 
 **Exit:** draw rough walls → trim into corners → select a dimension → type `12'` → the wall **resizes**,
@@ -376,10 +380,10 @@ Asserted by gate 0.2.
 
 | # | Task | Notes |
 |---|---|---|
-| 3.1 | **Trim-to-corner moves BOTH walls** and applies the join, and clamps to the target's **body** rather than its infinite baseline. Today only the named wall moves, and two walls that do not reach each other produce an endpoint the target does not occupy (`ifc_service.py:1016-1053`). | **✅ DONE.** Two-wall corner trim calculates intersection, clamps within both wall extents, moves endpoints, and recomputes wall joins. Single trim clamps hit to target body segment. Gate: `scratch/test_trim_split_gate.py`. |
+| 3.1 | **Trim-to-corner moves BOTH walls** and applies the join, and clamps to the target's **body** rather than its infinite baseline. Today only the named wall moves, and two walls that do not reach each other produce an endpoint the target does not occupy (`ifc_service.py:1016-1053`). | **✅ DONE.** Two-wall corner trim calculates intersection, moves both wall endpoints to corner, and recomputes wall joins (`corner_trimmed`). Single trim clamps hit to target body segment. (Note: corner trim extends/trims walls to baseline intersection rather than clamping within pre-existing segment bounds). Gate: `scratch/test_trim_split_gate.py`. |
 | 3.2 | **Split must re-host or refuse.** A door at offset 15 on a wall split at 10 currently stays hosted to the shortened half, **outside its own host** (`ifc_service.py:1055-1099`). Re-host openings onto the correct half, and **refuse the split** when an opening straddles the cut — silently stranding an opening is the §17 failure class. Carry join policy to the new half. | **✅ DONE.** `split_wall` strictly refuses cuts straddling openings; re-hosts openings past cut offset onto new wall with adjusted `offset_along_wall` and updated `IfcRelVoidsElement`; carries join policies and uses scoped join recomputation. Gate: `scratch/test_trim_split_gate.py`. |
 | 3.3 | **Split-with-gap**, and join state preserved across the split. | **✅ DONE.** `split_wall` supports `gap` parameter (default 0.0, or 0.5/1.0 ft), trimming original wall to `offset - gap/2` and placing new wall from `offset + gap/2`. Gate: `scratch/test_trim_split_gate.py`. |
-| 3.4 | **Hotkeys and picks** — `TR`, `SL`, `SO`, `DI` reachable from the ribbon and by two-letter sequence, with Revit's pick-two-elements gesture. None are bound today, and the store methods have zero callers. | **✅ DONE.** Added `TR`, `SL`, `SO` to `ActiveTool`, hotkey sequence bindings, Ribbon buttons in Modify panel, and in-canvas pick gestures in `PlanViewport2D.tsx`. |
+| 3.4 | **Hotkeys and picks** — `TR`, `SL`, `SO`, `DI` reachable from the ribbon and by two-letter sequence, with Revit's pick-two-elements gesture. None are bound today, and the store methods have zero callers. | **⬜ PARTIAL.** Added `TR`, `SL`, `SO` to `ActiveTool`, hotkey sequence bindings, Ribbon buttons in Modify panel, and in-canvas pick gestures in `PlanViewport2D.tsx`. `DI` (Aligned Dimension tool) is disabled / `implemented: false` in `toolCaptions.ts`. |
 | 3.5 | Extend/trim to a **grid line or level** (the datum-driven version of the same operation). | **✅ DONE.** `trim_extend_wall` detects grid datum lines and level elevations, moving wall endpoints or adjusting wall height to match datum. Gate: `scratch/test_trim_split_gate.py`. |
 
 ### Phase 3.5 — Survive a working session (M)
@@ -395,16 +399,16 @@ Asserted by gate 0.2.
 
 ### Phase 4 — Draw-and-place feel (M)
 
-**✅ DONE.** Verification: `npm run check` (196/196 checks passed) and full TypeScript compilation (`npx tsc --noEmit`).
+**🟨 PARTIAL.** Verification: `npm run check` (196/196 checks passed) and full TypeScript compilation (`npx tsc --noEmit`).
 
 | # | Feature | Notes |
 |---|---|---|
-| 4.1 | **Typed snap candidates** | Pure `snapEngine.ts` module with candidate types: `grid`, `endpoint`, `midpoint`, `intersection`, `perpendicular`, `extension`. Renders Revit snap glyphs (square, triangle, cross, right-angle, diamond) with descriptive SVG tooltips in `PlanViewport2D.tsx`. |
+| 4.1 | **Typed snap candidates** | **⬜ PARTIAL.** Pure `snapEngine.ts` module with candidate types: `grid`, `endpoint`, `midpoint`, `intersection`, `perpendicular`. Renders Revit snap glyphs (square, triangle, cross, right-angle, diamond) with SVG labels in `PlanViewport2D.tsx`. `extension` snap candidate is deferred. |
 | 4.2 | **Snap toggle & override** | Store state `snapsEnabled`, toggle action `toggleSnaps()`, global `F3` hotkey bound in `App.tsx`, and interactive header button in `PlanViewport2D.tsx`. |
 | 4.3 | **Hover pre-highlighting** | Mouse movement tracks nearest element and calls `setHoveredGuid(guid)`. SVG layer renders distinct cyan pre-highlight (`#38bdf8`) on hover for walls, slabs, roofs, grids, and levels. |
 | 4.4 | **Window vs. Crossing selection & Tab-cycling** | Left-to-right drag produces solid blue **Window selection box** (enclosed elements only); right-to-left drag produces dashed green **Crossing selection box** (intersecting elements). `Ctrl`-click / drag adds to `selectedGuids`. `Tab` key cycles through hover candidate elements under the cursor without registering invalid viewport keydown listeners. |
 | 4.5 | **Modeless placement polish** | Wall chaining supports continuous multi-segment drawing. Live ghost placement previews for doors (`DR`) and windows (`WN`) project along the nearest host wall baseline with swing arc and host offset dimension text. |
-| 4.6 | **In-canvas temporary dimensions** | Temporary dimensions appear on selection with witness lines from real references and inline in-canvas editor supporting Revit `12'-6"` syntax. |
+| 4.6 | **In-canvas temporary dimensions** | **⬜ PARTIAL.** Temporary dimensions appear on selection with inline in-canvas editor supporting Revit `12'-6"` syntax. Witness lines use real face/baseline references for walls; non-wall elements fall back to bounding-box centers. |
 
 
 ### Phase 5 — Type layer (L)
@@ -415,15 +419,15 @@ Asserted by gate 0.2.
 
 ### Phase 6 — Sheet management (M)
 
-**✅ DONE.** Verification: `npm run check` (196/196 checks passed).
+**✅ DONE.** Verification: `npm run check` (196/196 checks passed) + `scratch/test_sheets_pdf.py` (95/95 checks).
 
-Sheet list in Project Browser with `+ New Sheet` auto-numbering (`A101`, `A102`...) and sheet deletion; in-place title block editing (Sheet Number, Sheet Title, Drawn By) via inline SVG inputs committing to `SheetUpdate` bus command; interactive viewport dragging and hover deletion; batch vector PDF export set (`exportBatchPdf`); real Schedule viewer modal with Wall, Door, and Window schedules, computed quantities (length, area, volume, fire rating), and CSV export.
+Sheet list in Project Browser with `+ New Sheet` auto-numbering (`A101`, `A102`...) and sheet deletion; in-place title block editing (Sheet Number, Sheet Title, Drawn By) via inline SVG inputs committing to `SheetUpdate` bus command; interactive viewport dragging and hover deletion; batch vector PDF export set (`exportBatchPdf` serializes each sheet with its own title block, metadata, and viewports); real Schedule viewer modal with Wall, Door, and Window schedules, computed quantities (length, area, volume, fire rating), and CSV export.
 
 ### Phase 7 — Chrome (M)
 
-**✅ DONE.** Verification: `npm run check` (196/196 checks passed) + all Python gate suites.
+**🟨 PARTIAL.** Verification: `npm run check` (196/196 checks passed) + all Python gate suites.
 
-Interactive Revit Options Bar (`OptionsBar.tsx`) positioned below ribbon with context-sensitive parameters based on `activeTool` (Wall height/level/location-line/chain/offset, Door/Window sill height and tag toggle, Align multi/lock, Trim modes, and selection modify options); right-click context menu (`ContextMenu.tsx`) in both 2D and 3D viewports with "Create Similar" (`CS`), "Select All Instances" (visible in view / entire project), "Flip Orientation / Swing", "Delete", and "Zoom Extents" (`ZE`/`ZA`); contextual teal/green ribbon tabs (`Modify | Walls`, `Modify | Doors`, etc.) with element-specific tools; remaining Revit hotkeys (`CS`, `WT`, `ZA`, `ZE`, `MD`); Selection outline & endpoint grips with interactive baseline flip arrows in 2D plan.
+Interactive Revit Options Bar (`OptionsBar.tsx`) positioned below ribbon with context-sensitive parameters based on `activeTool` (Wall height/level/location-line/chain/offset, Door/Window sill height and tag toggle, Align multi/lock, Trim modes, and selection modify options); right-click context menu (`ContextMenu.tsx`) in both 2D and 3D viewports with "Create Similar" (`CS`), "Select All Instances" (visible in view / entire project), "Flip Orientation / Swing", "Delete", and "Zoom Extents" (`ZE`/`ZA`); contextual teal/green ribbon tab label (`Modify | Walls`, `Modify | Doors`, etc.) switching to general Modify panel (element-specific tool panels deferred); remaining Revit hotkeys (`CS`, `WT`, `ZA`, `ZE`, `MD`); Selection outline, visual endpoint grip circles, and interactive baseline flip arrows in 2D plan (interactive endpoint dragging deferred).
 
 ---
 
@@ -436,17 +440,17 @@ Phase 1 (weeks)     kill the two O(N²) paths            ✅ 1.1, 1.2, 1.3a/b/c 
    ↓
 Phase 1 remainder   1.4, 1.5 ⬜
    ↓
-Phase 2 (weeks)     editable dimensions                 ✅ DONE (2.1–2.8)
+Phase 2 (weeks)     editable dimensions                 🟨 PARTIAL (Backend & Bus ✅; UI DI & grid ⬜)
    ↓
-Phase 3 (week)      trim/split semantics                ✅ DONE (3.1–3.5)
+Phase 3 (week)      trim/split semantics                ✅ DONE (3.1–3.3, 3.5; 3.4 DI ⬜)
    ↓
 Phase 3.5 (week)    undo that survives 5,000 elements   ✅ DONE (3.5.1–3.5.2)
    ↓
-Phase 4 (week)      draw-and-place feel                 ✅ DONE (4.1–4.6)
+Phase 4 (week)      draw-and-place feel                 🟨 PARTIAL (4.2–4.5 ✅; 4.1 ext & 4.6 non-wall ⬜)
    ↓
 Phase 5 / 6         types; sheets                       ✅ DONE (Phase 5 & Phase 6)
    ↓
-Phase 7             chrome                              ✅ DONE (Options Bar, Context Menu, Contextual Tabs, Hotkeys)
+Phase 7             chrome                              🟨 PARTIAL (Options Bar, Context Menu, Hotkeys ✅; grips/contextual tools ⬜)
 ```
 
 Three reasons for this order specifically:
