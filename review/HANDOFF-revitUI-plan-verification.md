@@ -1,8 +1,7 @@
-# Verification report: `revitUI` fixes + outstanding defects
+# Verification report — round 3: `revitUI` fixes re-verified
 
-**Round 2** — re-verification of the fixes made in response to round 1.
-**Audited revision:** `revitUI` @ **`c19f4ac`** ("Review fix"). Previous audited revision: `f7e885c`.
-Baseline for regressions: `main` @ `d872a14`.
+**Audited revision:** `revitUI` @ **`5f126c2`** ("refactor fix").
+**Prior rounds:** round 1 audited `f7e885c`; round 2 audited `c19f4ac`. Regression baseline: `main` @ `d872a14`.
 **Auditor's environment:** Linux, `.venv/bin/python` (ifcopenshell 0.9.0, numpy 2.5.4, shapely 2.2.0,
 **planegcs installed**). Bare `python` does not exist; system python is `python3`.
 
@@ -10,181 +9,97 @@ Baseline for regressions: `main` @ `d872a14`.
 
 ## Verdict
 
-**All 16 backend regressions and all 3 blocking bugs are genuinely fixed** — verified by re-running the
-full suite on a clean checkout, and by direct reproduction of each bug. The fixes are in production
-code: `git diff f7e885c..c19f4ac -- scratch/` is **empty**, so no test was weakened or altered.
+**Every claim in round 3 reproduced.** Four previously-open defects are genuinely fixed, the plan rows
+that were still asserting unbuilt behaviour have been honestly downgraded, and no test was weakened —
+`git diff 4ee3494..5f126c2 -- scratch/` contains only the *new* gate file.
 
-**However, the claim that "all regressions, blocking bugs, and defects documented in
-`review/HANDOFF-revitUI-plan-verification.md` have been resolved" is not correct.** Round 1 documented
-~10 further defects beyond the three blocking bugs. Those are untouched, and the plan document still
-marks them ✅ DONE. See §2.
+This round does not repeat the overclaiming of rounds 1–2. What remains open is now *declared* open
+rather than asserted as done.
 
-| | main | revitUI @ f7e885c (round 1) | revitUI @ c19f4ac (now) |
-|---|---|---|---|
-| backend suites passed | 20 / 22 | 9 / 27 | **26 / 27** |
-| frontend `npm run check` | 10/11 delta (exit 1) | 10/11 delta (exit 1) | **exit 0** |
-| `tsc --noEmit` | clean | clean | clean |
+| | main | r1 `f7e885c` | r2 `c19f4ac` | r3 `5f126c2` |
+|---|---|---|---|---|
+| backend suites passed | 20 / 22 | 9 / 27 | 26 / 27 | **26 / 28** |
+| `npm run check` | exit 1 (delta 10/11) | exit 1 | exit 0 | **exit 0** |
+| `tsc --noEmit` | clean | clean | clean | **clean** |
 
-The single failing suite on this machine is `test_update_roof.py`, which requires the external Windows
-path `Z:/PROJECTS/463-Glory/BIM/REVIT.2027/463-ADU_V9_4arch.ifc`. It also fails on `main`, so it is
-environmental, not a regression. See §3 for the `test_scale_gate` caveat.
+The two failures on this machine are `test_update_roof.py` (needs the external Windows path
+`Z:/PROJECTS/463-Glory/BIM/REVIT.2027/463-ADU_V9_4arch.ifc`, also fails on `main`) and
+`test_scale_gate.py` (see §4). Both are disclosed in the plan header.
 
 ---
 
-## 1. Verified fixed
+## 1. Fixed and verified this round
 
-Each item was reproduced before and after; "verification" below is what was actually executed.
-
-| Item | Fix observed | How verified |
+| Item | Fix | How it was verified |
 |---|---|---|
-| **Bug A** — live IFC entities leaked into persisted state | `_jsonable` drops `entity` / `*_entity` keys and any value with `is_a`; `snapshot_state` strips the registry entity; `restore_state` re-attaches | `save_orlt_project()` on a fresh manager now writes a 4,508-byte container (was `TypeError: Object of type entity_instance is not JSON serializable`). Reload restores 8 types and preserves element name. `snapshot_state()` no longer raises `SwigPyObject`. |
-| **Bug B** — `add_wall`/`add_door`/`add_window` clobbered caller `name`/`thickness` | Substring heuristics (`"10" in name`) removed; type parameters are applied only when the caller passed the default name *and* default dimension | `add_wall(..., name="South", thickness=0.5)` → `name='South'`, `thickness=0.5`, `type_id=None` (was renamed to a partition type at 0.667 ft). |
-| **Bug C1** — `DeleteElement` deep-copied live entity refs | Entity keys stripped before the copy | `DeleteElement` transaction + `undo()` completes; the deleted GUID is restored (`guid in element_meta == True`). |
-| **Bug C2** — 17/39 commands had a no-op undo | 29 explicit memento branches; the remaining 10 (`SetWallJoin`, `Constraint*`, `SketchCurve*`) now fall back to `snapshot_state()` / `restore_state()` instead of `pass` | Enumerated the dispatcher: 39 registered commands, 29 explicit branches, 10 snapshot-backed. No command has an empty `undo_fn` any more. |
-| **Phase 6** — title-block edits were a silent no-op | `SheetUpdateParams._normalize_keys` maps `sheetTitle`/`sheetNumber`/`drawnBy`/`paperSize` inside `updates` to snake_case | Read at `backend/command_bus.py:270-290`; matches what `SheetCanvas.tsx:103-108` sends. |
-| **Phase 7** — door/window sill height control absent | Input rendered when `activeTool === 'WN'` | `src/components/optionsbar/OptionsBar.tsx:208-220`. |
-| **Gate portability** — `check:delta` hardcoded a Windows venv | Detects `.venv/Scripts`, then `.venv/bin`, then platform default, with a `PYTHON` env override | `scripts/check-delta-equivalence.mjs:45-47`; `npm run check` now exits 0. |
+| **§2.1 EQ collapse** (plan row 2.6) | `equalize_span` (`backend/ifc_service.py:3338`) detects a same-host span — `is_same_host = (span_start_guid == span_end_guid)` — and when the host is a wall uses `pos_start = 0.0`, `total_span = host_meta["length"]` (`:3354-3361`), then distributes along the host baseline using its angle (`:3370-3377`). `_solve_constraints_after_move` re-equalizes held EQ spans on move/resize (`:2975-2984`). | My round-2 reproduction script, unchanged: `before [5.0, 15.0, 25.0]` → `after [6.0, 13.5, 21.0]`, centres `[7.5, 15.0, 22.5]`, spacing `7.5 / 7.5`. Round 2 collapsed all three to `-1.5`. |
+| **§2.10 `constraints_rev`** (plan row 2.2) | Bump sites went from 2 to 7: `create_dimension` (`:3531`), `delete_dimension` (`:3544`), and **all three** success returns of `set_dimension_value` (`:3581`, `:3607`, `:3669`). | Read the whole function (`:3548-3672`): the only non-bumping exits are `raise ValueError` (non-positive value) and `raise KeyError` (unknown id) — error paths where nothing changed. The "all exit paths" claim holds. |
+| **§2.7 batch PDF** (Phase 6) | `SheetCanvas.tsx:83` adds `renderSheetSvgString(targetSheet)`; `:176` is now `(s.id === sheet.id && currentSvgStr) ? currentSvgStr : renderSheetSvgString(s)`. | The duplicated-arm expression (`… ? currentSvgStr : currentSvgStr`) is gone; each sheet now renders its own SVG. `tsc` and `npm run check` clean. |
+| **Solver fallback untested** (round-2 §5 item 4) | New `scratch/test_pure_python_solver.py` forces `constraint_solver.Sketch = None` (`:53`) and exercises align, dimension-lock, multi-wall EQ, single-wall EQ and conflict detection. | Gate passes **13/13**; its single-wall EQ checks assert the same `6.0 / 13.5 / 21.0` offsets recovered above. This path is now covered *even on machines where planegcs is installed*, which was the gap. |
 
-Backend sweep result: **26 passed, 1 failed** — UI-P0 130, State-Bundle 45, Delta Equivalence **21**,
-`tsc --noEmit` clean. The per-suite check counts match the reported figures exactly:
-`test_dimensions_crud` 53/53, `test_container_fidelity` 58/58, `test_units_boundary` 27/27,
-`test_transactions` 28/28, `test_sketch_model` 42/42, `test_sheets_pdf` 95/95, `test_ai_driver` 105/105,
-`test_dependency_graph` 41/41, `test_wall_joins` 18/18, `test_wall_joins_matrix` 67/67,
-`test_join_incremental` 11/11, `test_mesh_hlr` 68/68, `test_type_layer_gate` 34/34,
-`test_session_undo_memento` 12/12, `test_trim_split_gate` 30/30, `test_mesh_hlr_incremental` 11/11.
+The full backend sweep is **26 passed / 2 failed** (both failures environmental — §4). Milestone gates:
+`test_type_layer_gate.py` 34/34, `test_session_undo_memento.py` 12/12, `test_trim_split_gate.py` 30/30,
+`test_mesh_hlr_incremental.py` 11/11, `test_pure_python_solver.py` 13/13. Frontend: UI-P0 130,
+State-Bundle 45, Delta Equivalence 21, `tsc` clean, `npm run check` exits 0.
 
-Also added, and **not part of round 1**: `backend/constraint_solver.py` `_solve_pure_python`. Note it is
-**unexercised on this machine** because `planegcs` imports successfully, so the C++ path is taken. Its
-correctness is unverified here; it is not a stub (it implements iterative align/equalize/dimension-lock
-propagation with conflict detection), but it has no independent evidence behind it.
+## 2. Deferred scope — now honestly recorded in the plan
 
----
+These are **not** false claims any more; they are explicit `⬜ PARTIAL` / `🟨 PARTIAL` deferrals. They
+remain genuine open work, but the plan now says so.
 
-## 2. Still open — and still marked ✅ DONE in the plan
+| Plan row | Status recorded | What is actually deferred |
+|---|---|---|
+| 2.4 | ⬜ PARTIAL | Interactive creation of **persistent** overlay dimensions — `createDimension` has no UI caller and `DI` is `implemented: false`. The in-canvas editor works only on selection temporary dimensions. |
+| 2.6 (UI half) | ✅ DONE (Backend/Bus) / ⬜ PARTIAL (UI) | Backend `ConstraintEqualize` / `equalize_span` now correct (verified above). Interactive multi-segment chain dragging is deferred. |
+| 2.7 | ⬜ PARTIAL | Grid spacing editable by dimension (grid click selects only). Levels, datum lines, bubbles and `move_level` are done. |
+| 3.4 | ⬜ PARTIAL | `DI` tool disabled; `TR` / `SL` / `SO` work. |
+| 4.1 | ⬜ PARTIAL | `extension` snap candidate absent from `SnapKind`. |
+| 4.6 | ⬜ PARTIAL | Non-wall temporary dimensions still use bounding-box centres. |
+| Phase 7 | 🟨 PARTIAL | Endpoint grips are indicator circles (not draggable); contextual ribbon tab switches to the general Modify panel without element-specific tools. |
+| Phase 2 (phase header) | 🟨 PARTIAL | "Backend CRUD, parametric overlay, level editing and bus commands ✅; interactive DI tool & grid spacing dimension edits deferred." |
 
-Each item below was re-checked at `c19f4ac`.
+Row **3.1** was reworded rather than fixed: it now scopes the claim to corner trim moving both walls to
+the baseline intersection plus single-trim clamping to the body — which matches the code, and drops the
+incorrect "clamps within both wall extents" assertion for corner mode.
 
-### 2.1 EQ dimension chains are not implemented (plan row 2.6 = "✅ DONE")
+The plan header was narrowed from a blanket "all documented defects resolved" to an explicit
+verified-fixed list plus the deferred items, with the remaining failures disclosed.
 
-`eq_group` and `refs` are still write-only: `backend/ifc_service.py:3510` stores `eq_group`, and
-nothing reads it. Reproduced the exact UI path (`equalizeSouthWallWindows` →
-`equalizeSpan(southWall, southWall, targets, 'x')` → `ConstraintEqualize` with
-`span_start_guid == span_end_guid`):
+## 3. Test integrity
 
-```
-before offsets: [5.0, 15.0, 25.0]
-status: committed
-after  offsets: [-1.5, -1.5, -1.5]      # all openings collapse to -width/2
-```
+- `git diff f7e885c..5f126c2 -- scratch/` adds **one new file** (`test_pure_python_solver.py`) and
+  modifies **no existing test**. Confirmed separately for both fix commits.
+- All 16 suites that regressed in round 1 are still green.
+- `git diff 4ee3494..5f126c2` touches only `backend/ifc_service.py`,
+  `review/IMPLEMENTATION-PLAN-revit-feel.md`, `scratch/test_pure_python_solver.py` and
+  `src/components/sheets/SheetCanvas.tsx` — no opportunistic edits.
 
-Because `span_start == span_end`, `total_span = pos_end - pos_start = 0`
-(`backend/ifc_service.py:3347`), so `spacing = 0` and every interior element lands at the span start.
-**Editing one EQ segment does not redistribute; it collapses the span.** The gate only asserts that
-`refs`/`eq_group` were *stored* (`scratch/test_dimensions_crud.py:245-255`), which is why it is green.
+## 4. Accuracy notes
 
-### 2.2 Grid spacing is not editable by dimension (plan row 2.7 = "✅ DONE")
+1. **Suite counts are platform-specific.** "27 of 28 PASS, `test_update_roof` passes on Windows" is
+   right for a machine with `Z:` mounted. Here it fails, so the sweep is 26/28. The plan header states
+   both the count and the reason, which is accurate.
+2. **`test_scale_gate.py` is borderline and is now reported honestly.** This run: **16.0 ms** at 196
+   walls against a 16 ms budget (fail). Round 2 measured 15.8 / 16.4 / 16.1 ms. The plan now reports a
+   `12.2–24.9 ms` load-dependent range instead of asserting the budget is met. That is the correct
+   framing; the budget itself is not durably met.
+3. **Stale note (cosmetic).** `scratch/test_scale_gate.py:233` still prints *"…which is the next
+   Phase 1.3 step"* although 1.3c is complete. Harmless, but misleading to a cold reader.
+4. **No remaining overclaims detected.** Every status marker I spot-checked (`2.2`, `2.4`, `2.6`, `2.7`,
+   `3.1`, `3.4`, `4.1`, `4.6`, Phase 2, Phase 7) now matches the code.
 
-No such code exists. The grid contract carries only tag/`d`/`circle_center`, and grid click selects
-(`src/components/drafting/PlanViewport2D.tsx:1007`). The plan row explicitly claims
-"make grid spacing editable by dimension".
-
-### 2.3 No UI can create a persisted dimension (plan rows 2.4 and 3.4 = "✅ DONE")
-
-- `createDimension` still has **zero call sites**: the only reference in `src/` is an unused
-  destructure at `src/components/drafting/PlanViewport2D.tsx:133`; the implementation is at
-  `src/store/useBimStore.ts:1440`.
-- `DI` is still disabled: `src/interaction/toolCaptions.ts:43` → `implemented: false`, and the ribbon
-  renders it as `notYet('DI')`.
-
-Consequence: `self.dimensions` stays empty from the UI, the plan contract falls back to
-`_overall_dimensions`, and those fallback dimension objects carry no `id`, so the click-to-edit guard
-is a silent no-op. The in-canvas editor is real code, but in practice it is unreachable.
-
-### 2.4 Corner trim still does not clamp to both wall extents (plan row 3.1 = "✅ DONE")
-
-`corner_mode` (`backend/ifc_service.py:1421-1453`) moves both endpoints with no clamp; only the single
-trim path clamps (`:1463-1471`). The plan row claims "clamps within both wall extents".
-
-### 2.5 `extension` snap candidate still does not exist (plan Phase 4.1)
-
-`src/interaction/snapEngine.ts:14` → `'intersection' | 'endpoint' | 'midpoint' | 'perpendicular' | 'grid'`.
-The plan still lists `extension` as a candidate type. (The "SVG tooltips" are also static labels, not
-tooltips.)
-
-### 2.6 Non-wall temporary dimensions still use bbox centres (plan Phase 4.6)
-
-`witnessP1: nearestCenter` (`src/store/useBimStore.ts:1151`) — the plan claims "witness lines from real
-references". Real references are used only for walls.
-
-### 2.7 Batch PDF still exports N copies of one sheet (plan Phase 6)
-
-`src/components/sheets/SheetCanvas.tsx:90`:
-
-```js
-svgContent: s.id === sheet.id ? currentSvgStr : currentSvgStr, // serializes set
-```
-
-Both arms are the same string, so a multi-sheet set is N copies of the active sheet.
-
-### 2.8 Endpoint grips are still non-interactive (plan Phase 7)
-
-`src/components/drafting/PlanViewport2D.tsx:2022-2040` — plain `<circle>` with hover CSS and no pointer
-handlers. The flip arrow next to them is interactive; the grips are not.
-
-### 2.9 Contextual ribbon tab is still label-only (plan Phase 7)
-
-`src/components/ribbon/Ribbon.tsx:181-196` computes `contextualTitle` ("Walls", "Doors", …) but the
-button at `:503-515` simply calls `setActiveRibbonTab('Modify')`; panel contents do not vary by element
-class. The plan claims "element-specific tools".
-
-### 2.10 `constraints_rev` is still not bumped by dimension operations (plan row 2.2)
-
-The only two bumps are `backend/ifc_service.py:4328` (`save_constraints_to_ifc`) and `:6778`. Dimension
-create/set/delete still bump only `dimensions_rev` + `project_rev`.
-
----
-
-## 3. Accuracy notes on the reported verification
-
-1. **The plan header overclaims.** `review/IMPLEMENTATION-PLAN-revit-feel.md` now reads:
-   > "All regressions and defects documented in `review/HANDOFF-revitUI-plan-verification.md`
-   > (Bugs A, B, C1, C2, 1D constraint solver fallback, and Phase 6/7 UI/script defects) have been
-   > resolved."
-
-   Bugs A/B/C1/C2 are resolved. The parenthetical enumerates only the blocking bugs plus two UI fixes,
-   but the sentence says *all* documented defects. The per-task rows for 2.4, 2.6, 2.7, 3.1, 3.4, 4.1
-   and 4.6 are unchanged and still false. Please either fix those items or downgrade the rows and the
-   header sentence.
-
-2. **`test_scale_gate.py` is borderline, not fixed.** Three consecutive runs at 196 walls against a
-   16 ms budget:
-   ```
-   15.82 ms  PASS
-   16.4  ms  FAIL
-   16.1  ms  FAIL
-   ```
-   It flips on machine load. Treat the latency claim as not durably met.
-
-3. **"only `test_scale_gate` remains open" is environment-specific.** That is true on a Windows machine
-   with `Z:` mounted. On this Linux machine the single failure is `test_update_roof.py` (missing
-   external IFC), and `test_scale_gate` passed in the sweep. Worth stating both.
-
-4. **`_solve_pure_python` is unverified here** (§1) — `planegcs` is present, so the fallback never runs.
-
----
-
-## 4. Reproduction
+## 5. Reproduction
 
 ```bash
-cd <repo> && git checkout c19f4ac
+cd <repo> && git checkout 5f126c2
 
-# Full net
+# Full net — expect 26 PASS / 2 FAIL on Linux
 for f in scratch/test_*.py; do ./.venv/bin/python "$f" >/tmp/out_$(basename $f).log 2>&1 \
-  && echo "PASS $f" || echo "FAIL $f"; done          # expect 26 PASS / 1 FAIL (test_update_roof)
+  && echo "PASS $f" || echo "FAIL $f"; done
 
 npm run check                                         # expect exit 0
 
-# EQ collapse (§2.1)
+# EQ single-host redistribution (§1)
 ./.venv/bin/python - <<'EOF'
 import sys, os; sys.path.insert(0, os.path.abspath('backend'))
 from ifc_service import BimModelManager
@@ -195,18 +110,21 @@ doors = [m.add_door(g, off, width=3.0, height=7.0, name=f'D{off}')['guid'] for o
 print("before:", [round(m.element_meta[d]['offset_along_wall'],2) for d in doors])
 CommandBusEngine(m).execute_transaction([CommandRequest(command="ConstraintEqualize",
     params={"span_start_guid": g, "span_end_guid": g, "interior_guids": doors, "axis": "x"})])
-print("after :", [round(m.element_meta[d]['offset_along_wall'],2) for d in doors])
+print("after :", [round(m.element_meta[d]['offset_along_wall'],2) for d in doors])  # [6.0, 13.5, 21.0]
 EOF
+
+# Solver fallback gate
+./.venv/bin/python scratch/test_pure_python_solver.py    # 13 passed, 0 failed
 ```
 
----
+## 6. Remaining work
 
-## 5. Definition of done for the remaining round
+Nothing here is a regression; all of it is the deferred UI scope recorded in §2.
 
-1. Rows 2.6, 2.7, 2.4, 3.4, 3.1, 4.1, 4.6, and the Phase 6 batch-PDF / Phase 7 grips + contextual-tab
-   items are either implemented, or explicitly downgraded from ✅ to ⬜/PARTIAL in the plan.
-2. The plan header sentence is narrowed to match what was actually fixed.
-3. `test_scale_gate.py` is measured over several runs and reported honestly, or the budget/threshold is
-   reconciled.
-4. If `_solve_pure_python` is intended to be a supported path, it needs a test that forces
-   `Sketch is None`; otherwise say so in the plan.
+1. Implement or leave deferred — the plan is now honest either way — the `⬜ PARTIAL` items: interactive
+   persistent dimension creation (`DI` / `createDimension`), grid-spacing dimensions, the `extension`
+   snap candidate, non-wall real witness references, draggable endpoint grips, element-specific
+   contextual ribbon tools, and multi-segment EQ chain dragging.
+2. Resolve the 196-wall latency budget: either bring it durably under 16 ms or raise the threshold and
+   say why. Today it sits on the boundary and flips run to run.
+3. Delete the stale `next Phase 1.3 step` note at `scratch/test_scale_gate.py:233`.
