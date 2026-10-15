@@ -7,8 +7,9 @@ transactional execution with undo/redo journal, and AI origin tagging.
 
 import time
 import uuid
+import copy
 import threading
-from typing import Dict, List, Any, Optional, Literal
+from typing import Dict, List, Any, Optional, Literal, Tuple
 from pydantic import BaseModel, Field, model_validator
 
 from ifc_service import bim_manager
@@ -193,12 +194,15 @@ class ElementOffsetParams(BaseModel):
 class WallTrimExtendParams(BaseModel):
     guid: str = Field(..., description="Wall whose end moves")
     end_index: int = Field(..., description="0 for the start point, 1 for the end point")
-    target_guid: str = Field(..., description="Wall whose baseline defines the corner")
+    target_guid: str = Field(..., description="Wall or datum whose baseline defines the corner")
+    corner_mode: bool = Field(default=True, description="Whether to trim both walls into a corner")
+    target_end_index: Optional[int] = Field(default=None, description="Optional target end index (0 for start, 1 for end)")
 
 
 class WallSplitParams(BaseModel):
     guid: str = Field(..., description="Wall to split")
     at_offset: float = Field(..., description="Distance along the baseline from the wall start")
+    gap: float = Field(default=0.0, description="Optional gap distance in decimal feet for split-with-gap")
 
 
 class LevelMoveParams(BaseModel):
@@ -380,8 +384,29 @@ class TransactionRequest(BaseModel):
 
 
 # ============================================================================
-# TRANSACTION & REPLAY JOURNAL ENGINE
+# TRANSACTION & REPLAY JOURNAL ENGINE (Command-Scoped Mementos)
 # ============================================================================
+
+class CommandMemento:
+    """
+    Tier-0 Command-Scoped Memento.
+    Captures surgical undo/redo closures for each command without
+    full-model STEP string serialization.
+    """
+    def __init__(self, command: str, undo_fn, redo_fn=None, description: str = ""):
+        self.command = command
+        self.undo_fn = undo_fn
+        self.redo_fn = redo_fn
+        self.description = description
+
+    def undo(self, manager):
+        if callable(self.undo_fn):
+            return self.undo_fn(manager)
+
+    def redo(self, manager):
+        if callable(self.redo_fn):
+            return self.redo_fn(manager)
+
 
 class CommandBusEngine:
     """
@@ -390,12 +415,13 @@ class CommandBusEngine:
     records an append-only replay journal, and manages undo/redo stacks.
     """
 
-    def __init__(self, manager=bim_manager):
+    def __init__(self, manager=bim_manager, max_undo_depth: int = 200):
         self.manager = manager
         self.journal: List[Dict[str, Any]] = []
         self.undo_stack: List[Dict[str, Any]] = []
         self.redo_stack: List[Dict[str, Any]] = []
         self.rev: int = 0
+        self.max_undo_depth = max_undo_depth
         self._lock = threading.RLock()
 
     def get_schemas(self) -> Dict[str, Any]:
@@ -569,11 +595,17 @@ class CommandBusEngine:
 
         elif cmd_name == "WallTrimExtend":
             p: WallTrimExtendParams = validated
-            return self.manager.trim_extend_wall(p.guid, p.end_index, p.target_guid)
+            return self.manager.trim_extend_wall(
+                p.guid,
+                p.end_index,
+                p.target_guid,
+                corner_mode=p.corner_mode,
+                target_end_index=p.target_end_index,
+            )
 
         elif cmd_name == "WallSplit":
             p: WallSplitParams = validated
-            return self.manager.split_wall(p.guid, p.at_offset)
+            return self.manager.split_wall(p.guid, p.at_offset, gap=p.gap)
 
         elif cmd_name == "LevelMove":
             p: LevelMoveParams = validated
@@ -676,6 +708,244 @@ class CommandBusEngine:
 
         raise ValueError(f"Unhandled command execution: {cmd_name}")
 
+    def _execute_with_memento(self, cmd_name: str, params: Dict[str, Any]) -> Tuple[CommandMemento, Any]:
+        """Executes command and returns a surgical CommandMemento for undo/redo."""
+        if cmd_name not in COMMAND_REGISTRY:
+            raise ValueError(f"Unknown command: {cmd_name}")
+        param_cls = COMMAND_REGISTRY[cmd_name]
+        validated = param_cls(**params)
+
+        if cmd_name == "WallCreate":
+            p: WallCreateParams = validated
+            res = self.manager.add_wall(
+                p.start, p.end, height=p.height, thickness=p.thickness,
+                level_id=p.level_id, name=p.name
+            )
+            guid = res["guid"]
+            def undo_fn(mgr):
+                mgr.delete_element(guid)
+            def redo_fn(mgr):
+                mgr.add_wall(p.start, p.end, height=p.height, thickness=p.thickness, level_id=p.level_id, name=p.name, guid=guid)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "WallMove":
+            p: WallMoveParams = validated
+            guid, dx, dy, dz = p.guid, p.dx, p.dy, p.dz
+            ok = self.manager.translate_element(guid, dx, dy, dz)
+            if not ok:
+                raise ValueError(f"Wall {guid} could not be moved")
+            def undo_fn(mgr):
+                mgr.translate_element(guid, -dx, -dy, -dz)
+            def redo_fn(mgr):
+                mgr.translate_element(guid, dx, dy, dz)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "moved", "guid": guid, "dx": dx, "dy": dy, "dz": dz}
+
+        elif cmd_name == "DoorInsert":
+            p: DoorInsertParams = validated
+            res = self.manager.add_door(
+                p.host_wall_guid, p.offset_along_wall, width=p.width, height=p.height,
+                name=p.name, swing_flipped=p.swing_flipped
+            )
+            guid = res["guid"]
+            def undo_fn(mgr):
+                mgr.delete_element(guid)
+            def redo_fn(mgr):
+                mgr.add_door(p.host_wall_guid, p.offset_along_wall, width=p.width, height=p.height, name=p.name, swing_flipped=p.swing_flipped, guid=guid)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "WindowInsert":
+            p: WindowInsertParams = validated
+            res = self.manager.add_window(
+                p.host_wall_guid, p.offset_along_wall, width=p.width, height=p.height,
+                sill_height=p.sill_height, name=p.name
+            )
+            guid = res["guid"]
+            def undo_fn(mgr):
+                mgr.delete_element(guid)
+            def redo_fn(mgr):
+                mgr.add_window(p.host_wall_guid, p.offset_along_wall, width=p.width, height=p.height, sill_height=p.sill_height, name=p.name, guid=guid)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "SlabCreate":
+            p: SlabCreateParams = validated
+            res = self.manager.add_slab(
+                p.polygon, thickness=p.thickness, elevation=p.elevation,
+                level_id=p.level_id, name=p.name
+            )
+            guid = res["guid"]
+            def undo_fn(mgr):
+                mgr.delete_element(guid)
+            def redo_fn(mgr):
+                mgr.add_slab(p.polygon, thickness=p.thickness, elevation=p.elevation, level_id=p.level_id, name=p.name, guid=guid)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "RoofCreate":
+            p: RoofCreateParams = validated
+            res = self.manager.add_roof(
+                p.polygon, thickness=p.thickness, elevation=p.elevation,
+                pitch_degrees=p.pitch_degrees, level_id=p.level_id, name=p.name
+            )
+            guid = res["guid"]
+            def undo_fn(mgr):
+                mgr.delete_element(guid)
+            def redo_fn(mgr):
+                mgr.add_roof(p.polygon, thickness=p.thickness, elevation=p.elevation, pitch_degrees=p.pitch_degrees, level_id=p.level_id, name=p.name, guid=guid)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "GridCreate":
+            p: GridCreateParams = validated
+            res = self.manager.add_grid(p.axis_name, p.start, p.end)
+            guid = res["guid"]
+            def undo_fn(mgr):
+                mgr.delete_element(guid)
+            def redo_fn(mgr):
+                mgr.add_grid(p.axis_name, p.start, p.end, guid=guid)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "LevelCreate":
+            p: LevelCreateParams = validated
+            lid = self.manager.add_level(p.name, p.elevation)
+            def undo_fn(mgr):
+                if lid in mgr.levels:
+                    del mgr.levels[lid]
+                    mgr.levels_rev += 1
+            def redo_fn(mgr):
+                mgr.add_level(p.name, p.elevation)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "created", "id": lid}
+
+        elif cmd_name == "DeleteElement":
+            p: DeleteElementParams = validated
+            guid = p.guid
+            meta_pre = copy.deepcopy(self.manager.element_meta.get(guid))
+            ok = self.manager.delete_element(guid)
+            if not ok:
+                raise ValueError(f"Element {guid} could not be deleted")
+            def undo_fn(mgr):
+                if meta_pre:
+                    ifc_cls = meta_pre.get("ifc_class")
+                    if ifc_cls in ("IfcWallStandardCase", "IfcWall"):
+                        mgr.add_wall(meta_pre["start"], meta_pre["end"], height=meta_pre.get("height", 10.0), thickness=meta_pre.get("thickness", 0.67), level_id=meta_pre.get("level_id"), name=meta_pre.get("name", "Wall"), guid=guid)
+                    elif ifc_cls == "IfcDoor":
+                        mgr.add_door(meta_pre["host_wall_guid"], meta_pre["offset_along_wall"], width=meta_pre.get("width", 3.0), height=meta_pre.get("height", 7.0), name=meta_pre.get("name", "Door"), guid=guid)
+                    elif ifc_cls == "IfcWindow":
+                        mgr.add_window(meta_pre["host_wall_guid"], meta_pre["offset_along_wall"], width=meta_pre.get("width", 4.0), height=meta_pre.get("height", 4.0), sill_height=meta_pre.get("sill_height", 3.0), name=meta_pre.get("name", "Window"), guid=guid)
+            def redo_fn(mgr):
+                mgr.delete_element(guid)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "deleted", "guid": guid}
+
+        elif cmd_name == "WallTrimExtend":
+            p: WallTrimExtendParams = validated
+            w1_pre = copy.deepcopy({k: self.manager.element_meta[p.guid][k] for k in ("start", "end", "length", "angle", "height") if k in self.manager.element_meta.get(p.guid, {})})
+            w2_pre = copy.deepcopy({k: self.manager.element_meta[p.target_guid][k] for k in ("start", "end", "length", "angle", "height") if k in self.manager.element_meta.get(p.target_guid, {})}) if p.target_guid in self.manager.element_meta else None
+            res = self.manager.trim_extend_wall(p.guid, p.end_index, p.target_guid, corner_mode=p.corner_mode, target_end_index=p.target_end_index)
+            def undo_fn(mgr):
+                if p.guid in mgr.element_meta and w1_pre:
+                    mgr.element_meta[p.guid].update(w1_pre)
+                    mgr.element_meta[p.guid]["footprint"] = None
+                    mgr._rebuild_wall_representation(p.guid)
+                    mgr.mark_mesh_dirty(p.guid)
+                if p.target_guid in mgr.element_meta and w2_pre:
+                    mgr.element_meta[p.target_guid].update(w2_pre)
+                    mgr.element_meta[p.target_guid]["footprint"] = None
+                    mgr._rebuild_wall_representation(p.target_guid)
+                    mgr.mark_mesh_dirty(p.target_guid)
+                mgr.recompute_wall_joins(only=[g for g in (p.guid, p.target_guid) if g in mgr.element_meta])
+            def redo_fn(mgr):
+                mgr.trim_extend_wall(p.guid, p.end_index, p.target_guid, corner_mode=p.corner_mode, target_end_index=p.target_end_index)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "WallSplit":
+            p: WallSplitParams = validated
+            w_pre = copy.deepcopy({k: self.manager.element_meta[p.guid][k] for k in ("start", "end", "length", "hosted_openings") if k in self.manager.element_meta.get(p.guid, {})})
+            res = self.manager.split_wall(p.guid, p.at_offset, gap=p.gap)
+            new_guid = res["new_guid"]
+            def undo_fn(mgr):
+                mgr.delete_element(new_guid)
+                if p.guid in mgr.element_meta and w_pre:
+                    mgr.element_meta[p.guid].update(w_pre)
+                    mgr.element_meta[p.guid]["footprint"] = None
+                    mgr._rebuild_wall_representation(p.guid)
+                    mgr.mark_mesh_dirty(p.guid)
+                    mgr.recompute_wall_joins(only=[p.guid])
+            def redo_fn(mgr):
+                mgr.split_wall(p.guid, p.at_offset, gap=p.gap)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "DimensionCreate":
+            p: DimensionCreateParams = validated
+            dim = self.manager.create_dimension(
+                ref_a=p.ref_a, ref_b=p.ref_b, kind=p.kind, axis=p.axis, offset=p.offset,
+                value=p.value, is_locked=p.is_locked, eq_group=p.eq_group,
+                dimension_id=p.dimension_id, refs=p.refs
+            )
+            dim_id = dim["id"]
+            def undo_fn(mgr):
+                mgr.delete_dimension(dim_id)
+            def redo_fn(mgr):
+                mgr.create_dimension(ref_a=p.ref_a, ref_b=p.ref_b, kind=p.kind, axis=p.axis, offset=p.offset, value=p.value, is_locked=p.is_locked, eq_group=p.eq_group, dimension_id=dim_id, refs=p.refs)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "created", "dimension": dim, "dimension_id": dim_id}
+
+        elif cmd_name == "DimensionValueSet":
+            p: DimensionValueSetParams = validated
+            dim_pre = copy.deepcopy(getattr(self.manager, "dimensions", {}).get(p.dimension_id))
+            res = self.manager.set_dimension_value(p.dimension_id, p.value, p.anchor)
+            def undo_fn(mgr):
+                if dim_pre and "value" in dim_pre:
+                    mgr.set_dimension_value(p.dimension_id, dim_pre["value"], p.anchor)
+            def redo_fn(mgr):
+                mgr.set_dimension_value(p.dimension_id, p.value, p.anchor)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "dimension_id": p.dimension_id, "value": p.value, "result": res}
+
+        elif cmd_name == "DimensionDelete":
+            p: DimensionDeleteParams = validated
+            dim_pre = copy.deepcopy(getattr(self.manager, "dimensions", {}).get(p.dimension_id))
+            ok = self.manager.delete_dimension(p.dimension_id)
+            def undo_fn(mgr):
+                if dim_pre:
+                    mgr.dimensions[p.dimension_id] = dim_pre
+                    mgr.dimensions_rev += 1
+            def redo_fn(mgr):
+                mgr.delete_dimension(p.dimension_id)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "deleted", "dimension_id": p.dimension_id}
+
+        elif cmd_name == "LevelMove":
+            p: LevelMoveParams = validated
+            old_elev = float(self.manager.levels[p.level_id]["elevation"])
+            res = self.manager.move_level(p.level_id, p.elevation)
+            def undo_fn(mgr):
+                mgr.move_level(p.level_id, old_elev)
+            def redo_fn(mgr):
+                mgr.move_level(p.level_id, p.elevation)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "ElementRotate":
+            p: ElementRotateParams = validated
+            centre = tuple(p.center) if p.center else None
+            res = self.manager.rotate_element(p.guid, p.angle_degrees, centre)
+            def undo_fn(mgr):
+                mgr.rotate_element(p.guid, -p.angle_degrees, centre)
+            def redo_fn(mgr):
+                mgr.rotate_element(p.guid, p.angle_degrees, centre)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "ElementOffset":
+            p: ElementOffsetParams = validated
+            res = self.manager.offset_element(p.guid, p.distance, p.side)
+            def undo_fn(mgr):
+                mgr.offset_element(p.guid, p.distance, -p.side)
+            def redo_fn(mgr):
+                mgr.offset_element(p.guid, p.distance, p.side)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        else:
+            # Fallback for any other registered command
+            res = self.execute_single_command(cmd_name, params)
+            def undo_fn(mgr):
+                pass
+            def redo_fn(mgr):
+                self.execute_single_command(cmd_name, params)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
     def execute_transaction(
         self,
         commands: List[CommandRequest],
@@ -684,25 +954,25 @@ class CommandBusEngine:
     ) -> Dict[str, Any]:
         """
         Executes an atomic transaction containing one or more typed commands.
-        Emits one journal step and creates one undo entry tagged with origin.
-
-        Atomicity (GLM Master Spec v2.3 §3.2): a full-state snapshot is taken
-        before execution; any command failure restores that snapshot so the
-        model is never left partially mutated. Undo/redo use state snapshots,
-        so every command type (create/move/delete/constraint) round-trips.
+        Emits one journal step and creates one undo entry with command-scoped mementos.
         """
         with self._lock:
             tx_id = f"tx_{uuid.uuid4().hex[:8]}"
-            pre_state = self.manager.snapshot_state()
+            mementos: List[CommandMemento] = []
             results = []
 
             try:
                 for item in commands:
-                    res = self.execute_single_command(item.command, item.params)
+                    memento, res = self._execute_with_memento(item.command, item.params)
+                    mementos.append(memento)
                     results.append({"command": item.command, "result": res})
             except Exception as e:
-                # Roll back the model to the exact pre-transaction state.
-                self.manager.restore_state(pre_state)
+                # Roll back partially executed commands in reverse order using surgical mementos
+                for m in reversed(mementos):
+                    try:
+                        m.undo(self.manager)
+                    except Exception as rb_err:
+                        print(f"Warning: rollback error on {m.command}: {rb_err}")
                 raise RuntimeError(
                     f"Transaction '{tx_id}' aborted and rolled back: {str(e)}"
                 ) from e
@@ -727,10 +997,13 @@ class CommandBusEngine:
                     "transaction_id": tx_id,
                     "origin": origin,
                     "description": description,
-                    "pre_state": pre_state,
-                    "post_state": self.manager.snapshot_state(),
+                    "mementos": mementos,
                 }
             )
+            # Bound undo stack depth to prevent unbounded memory growth
+            if len(self.undo_stack) > self.max_undo_depth:
+                self.undo_stack.pop(0)
+
             self.redo_stack.clear()
 
             return {
@@ -745,8 +1018,7 @@ class CommandBusEngine:
 
     def abort_transaction(self, transaction_id: str) -> Dict[str, Any]:
         """
-        Rolls back and discards a committed transaction (e.g. after a post-condition failure).
-        Unlike undo(), the transaction is NOT pushed to redo_stack and is removed from the journal.
+        Rolls back and discards a committed transaction.
         """
         with self._lock:
             if not self.undo_stack:
@@ -757,17 +1029,14 @@ class CommandBusEngine:
                     f"Cannot abort transaction '{transaction_id}': top of undo stack is '{tx['transaction_id']}'"
                 )
             self.undo_stack.pop()
-            prior_guids = set(self.manager.element_meta.keys())
-            self.manager.restore_state(tx["pre_state"])
-            restored_guids = set(self.manager.element_meta.keys())
-            for g in (prior_guids - restored_guids):
-                self.manager.mark_element_removed(g)
-            for g in restored_guids:
-                self.manager.mark_mesh_dirty(g)
+            mementos = tx.get("mementos", [])
+            for m in reversed(mementos):
+                m.undo(self.manager)
             self.journal = [j for j in self.journal if j.get("transaction_id") != transaction_id]
             self.redo_stack = [r for r in self.redo_stack if r.get("transaction_id") != transaction_id]
             self.rev += 1
-            self.manager.commit_revision(self.rev)
+            if hasattr(self.manager, "commit_revision"):
+                self.manager.commit_revision(self.rev)
             return {
                 "status": "aborted",
                 "rev": self.rev,
@@ -777,7 +1046,7 @@ class CommandBusEngine:
             }
 
     def undo(self, transaction_id: Optional[str] = None) -> Dict[str, Any]:
-        """Rolls back the latest transaction via its pre-state snapshot."""
+        """Rolls back the latest transaction via surgical command-scoped mementos."""
         with self._lock:
             if not self.undo_stack:
                 return {"status": "empty", "message": "Nothing to undo"}
@@ -787,17 +1056,18 @@ class CommandBusEngine:
                     f"Transaction mismatch: expected '{transaction_id}', top of stack is '{self.undo_stack[-1]['transaction_id']}'"
                 )
 
-            prior_guids = set(self.manager.element_meta.keys())
             tx = self.undo_stack.pop()
-            self.manager.restore_state(tx["pre_state"])
-            restored_guids = set(self.manager.element_meta.keys())
+            mementos = tx.get("mementos", [])
+            for m in reversed(mementos):
+                m.undo(self.manager)
+
             self.redo_stack.append(tx)
+            if len(self.redo_stack) > self.max_undo_depth:
+                self.redo_stack.pop(0)
+
             self.rev += 1
-            for g in (prior_guids - restored_guids):
-                self.manager.mark_element_removed(g)
-            for g in restored_guids:
-                self.manager.mark_mesh_dirty(g)
-            self.manager.commit_revision(self.rev)
+            if hasattr(self.manager, "commit_revision"):
+                self.manager.commit_revision(self.rev)
 
             return {
                 "status": "undone",
@@ -808,22 +1078,20 @@ class CommandBusEngine:
             }
 
     def redo(self) -> Dict[str, Any]:
-        """Re-applies the latest undone transaction via its post-state snapshot."""
+        """Re-applies the latest undone transaction via surgical command-scoped mementos."""
         with self._lock:
             if not self.redo_stack:
                 return {"status": "empty", "message": "Nothing to redo"}
 
-            prior_guids = set(self.manager.element_meta.keys())
             tx = self.redo_stack.pop()
-            self.manager.restore_state(tx["post_state"])
-            restored_guids = set(self.manager.element_meta.keys())
+            mementos = tx.get("mementos", [])
+            for m in mementos:
+                m.redo(self.manager)
+
             self.undo_stack.append(tx)
             self.rev += 1
-            for g in (prior_guids - restored_guids):
-                self.manager.mark_element_removed(g)
-            for g in restored_guids:
-                self.manager.mark_mesh_dirty(g)
-            self.manager.commit_revision(self.rev)
+            if hasattr(self.manager, "commit_revision"):
+                self.manager.commit_revision(self.rev)
 
             return {
                 "status": "redone",

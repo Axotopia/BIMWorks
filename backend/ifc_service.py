@@ -1034,21 +1034,91 @@ class BimModelManager:
         sp, ep = meta["start"], meta["end"]
         return (sp[0], sp[1]), (ep[0] - sp[0], ep[1] - sp[1])
 
-    def trim_extend_wall(self, guid: str, end_index: int, target_guid: str) -> Dict[str, Any]:
+    def trim_extend_wall(
+        self,
+        guid: str,
+        end_index: int,
+        target_guid: str,
+        corner_mode: bool = True,
+        target_end_index: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
-        Moves one wall endpoint onto its intersection with another wall's baseline.
-
-        `end_index` 0 = start, 1 = end. Trims when the intersection is between the
-        endpoints, extends when it is beyond them — the same operation Revit calls
-        Trim/Extend to corner.
+        Moves wall endpoints onto their intersection with another wall or datum.
+        - corner_mode=True (TR): moves BOTH guid and target_guid endpoints to the intersection.
+        - corner_mode=False: moves guid's endpoint clamped to target's body.
+        - Datum trimming: supports trimming/extending to IfcGrid and Level datums.
+        Uses scoped join recomputes.
         """
-        if guid not in self.element_meta or target_guid not in self.element_meta:
-            raise KeyError("Wall or target wall not found")
+        if guid not in self.element_meta:
+            raise KeyError(f"Wall {guid} not found")
         meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcWallStandardCase", "IfcWall"):
+            raise ValueError("Trim/Extend source must be a wall")
+
+        # 1. Datum trimming to Level
+        level_record = self.levels.get(target_guid)
+        if not level_record:
+            for lid, lv in self.levels.items():
+                if lv.get("name") == target_guid:
+                    level_record = lv
+                    break
+        if level_record is not None:
+            target_elev = float(level_record["elevation"])
+            old_base = meta["start"][2]
+            old_height = float(meta.get("height", FEET_10))
+            if int(end_index) == 1:
+                # Trim / extend top of wall to level
+                new_height = max(0.1, target_elev - old_base)
+                meta["height"] = new_height
+            else:
+                # Trim / extend base of wall to level
+                new_base = target_elev
+                meta["start"][2] = new_base
+                meta["end"][2] = new_base
+                meta["height"] = max(0.1, old_height - (new_base - old_base))
+            meta["footprint"] = None
+            self._rebuild_wall_representation(guid)
+            self.mark_mesh_dirty(guid)
+            return {
+                "status": "datum_trimmed",
+                "guid": guid,
+                "level_id": level_record.get("id", target_guid),
+                "height": meta["height"],
+            }
+
+        if target_guid not in self.element_meta:
+            raise KeyError(f"Target {target_guid} not found")
         target = self.element_meta[target_guid]
-        for m in (meta, target):
-            if m.get("ifc_class") not in ("IfcWallStandardCase", "IfcWall"):
-                raise ValueError("Trim/Extend needs two walls")
+
+        # 2. Datum trimming to IfcGrid
+        if target.get("ifc_class") == "IfcGrid":
+            p1, d1 = self._wall_baseline_line(meta)
+            p2, d2 = self._wall_baseline_line(target)
+            hit = self._line_intersect(p1, d1, p2, d2)
+            if hit is None:
+                raise ValueError("Wall and grid line are parallel")
+            key = "start" if int(end_index) == 0 else "end"
+            old = list(meta[key])
+            meta[key] = [float(hit[0]), float(hit[1]), old[2]]
+            sp, ep = meta["start"], meta["end"]
+            meta["length"] = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
+            meta["angle"] = math.atan2(ep[1] - sp[1], ep[0] - sp[0])
+            meta["footprint"] = None
+            self._rebuild_wall_representation(guid)
+            self.mark_mesh_dirty(guid)
+            self.recompute_wall_joins(only=[guid])
+            return {
+                "status": "datum_trimmed",
+                "guid": guid,
+                "end_index": int(end_index),
+                "target_guid": target_guid,
+                "new_point": [float(hit[0]), float(hit[1])],
+                "length": meta["length"],
+            }
+
+        # 3. Wall to Wall trimming
+        if target.get("ifc_class") not in ("IfcWallStandardCase", "IfcWall"):
+            raise ValueError("Trim/Extend target must be a wall, grid, or level")
 
         p1, d1 = self._wall_baseline_line(meta)
         p2, d2 = self._wall_baseline_line(target)
@@ -1056,29 +1126,86 @@ class BimModelManager:
         if hit is None:
             raise ValueError("Walls are parallel; there is no corner to trim to")
 
-        key = "start" if int(end_index) == 0 else "end"
-        old = list(meta[key])
-        meta[key] = [float(hit[0]), float(hit[1]), old[2]]
-        sp, ep = meta["start"], meta["end"]
-        meta["length"] = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
-        meta["angle"] = math.atan2(ep[1] - sp[1], ep[0] - sp[0])
-        self._rebuild_wall_representation(guid)
-        self.mark_mesh_dirty(guid)
-        self.recompute_wall_joins()
-        return {
-            "status": "trimmed",
-            "guid": guid,
-            "end_index": int(end_index),
-            "new_point": [float(hit[0]), float(hit[1])],
-            "length": meta["length"],
-        }
+        if corner_mode:
+            # Wall 1 endpoint
+            key1 = "start" if int(end_index) == 0 else "end"
+            old1 = list(meta[key1])
+            meta[key1] = [float(hit[0]), float(hit[1]), old1[2]]
+            sp1, ep1 = meta["start"], meta["end"]
+            meta["length"] = math.hypot(ep1[0] - sp1[0], ep1[1] - sp1[1])
+            meta["angle"] = math.atan2(ep1[1] - sp1[1], ep1[0] - sp1[0])
+            meta["footprint"] = None
+            self._rebuild_wall_representation(guid)
+            self.mark_mesh_dirty(guid)
 
-    def split_wall(self, guid: str, at_offset: float) -> Dict[str, Any]:
+            # Target wall endpoint
+            if target_end_index is not None:
+                t_idx = int(target_end_index)
+            else:
+                d_start = math.hypot(target["start"][0] - hit[0], target["start"][1] - hit[1])
+                d_end = math.hypot(target["end"][0] - hit[0], target["end"][1] - hit[1])
+                t_idx = 0 if d_start <= d_end else 1
+
+            key2 = "start" if t_idx == 0 else "end"
+            old2 = list(target[key2])
+            target[key2] = [float(hit[0]), float(hit[1]), old2[2]]
+            sp2, ep2 = target["start"], target["end"]
+            target["length"] = math.hypot(ep2[0] - sp2[0], ep2[1] - sp2[1])
+            target["angle"] = math.atan2(ep2[1] - sp2[1], ep2[0] - sp2[0])
+            target["footprint"] = None
+            self._rebuild_wall_representation(target_guid)
+            self.mark_mesh_dirty(target_guid)
+
+            self.recompute_wall_joins(only=[guid, target_guid])
+            return {
+                "status": "corner_trimmed",
+                "guid": guid,
+                "end_index": int(end_index),
+                "target_guid": target_guid,
+                "target_end_index": t_idx,
+                "new_point": [float(hit[0]), float(hit[1])],
+                "length": meta["length"],
+                "target_length": target["length"],
+            }
+        else:
+            # Single trim / extend: clamp hit to target wall body [target["start"], target["end"]]
+            A = target["start"]
+            B = target["end"]
+            ab_x = B[0] - A[0]
+            ab_y = B[1] - A[1]
+            ab_len_sq = ab_x * ab_x + ab_y * ab_y
+            if ab_len_sq > 1e-12:
+                t = ((hit[0] - A[0]) * ab_x + (hit[1] - A[1]) * ab_y) / ab_len_sq
+                t_clamped = max(0.0, min(1.0, t))
+                clamped_hit = (A[0] + t_clamped * ab_x, A[1] + t_clamped * ab_y)
+            else:
+                clamped_hit = (A[0], A[1])
+
+            key = "start" if int(end_index) == 0 else "end"
+            old = list(meta[key])
+            meta[key] = [float(clamped_hit[0]), float(clamped_hit[1]), old[2]]
+            sp, ep = meta["start"], meta["end"]
+            meta["length"] = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
+            meta["angle"] = math.atan2(ep[1] - sp[1], ep[0] - sp[0])
+            meta["footprint"] = None
+            self._rebuild_wall_representation(guid)
+            self.mark_mesh_dirty(guid)
+            self.recompute_wall_joins(only=[guid, target_guid])
+            return {
+                "status": "trimmed",
+                "guid": guid,
+                "end_index": int(end_index),
+                "new_point": [float(clamped_hit[0]), float(clamped_hit[1])],
+                "length": meta["length"],
+            }
+
+    def split_wall(self, guid: str, at_offset: float, gap: float = 0.0) -> Dict[str, Any]:
         """
-        Splits a wall at `at_offset` along its baseline into two walls.
-
-        The original keeps the first segment (so its GUID and any hosted openings
-        that fall in that range survive); a new wall takes the second.
+        Splits a wall at `at_offset` along its baseline into two walls, optionally with a `gap`.
+        - Re-hosts openings beyond the cut onto the new wall with updated offset and IFC rel.
+        - Strictly refuses if an opening straddles the cut point or gap.
+        - Carries join policy to the second segment.
+        - Uses scoped join recomputation.
         """
         if guid not in self.element_meta:
             raise KeyError(f"Wall {guid} not found")
@@ -1087,36 +1214,118 @@ class BimModelManager:
             raise ValueError("Split is currently supported for walls")
         length = float(meta.get("length", 0.0))
         offset = float(at_offset)
-        if not (0.0 < offset < length):
-            raise ValueError(f"Split offset {offset} must be inside the wall (0..{length:.3f})")
+        gap = float(gap)
+        if gap < 0.0:
+            raise ValueError(f"Split gap {gap} cannot be negative")
+
+        half_gap = gap / 2.0
+        cut_start = offset - half_gap
+        cut_end = offset + half_gap
+
+        if gap > 0.0:
+            if cut_start <= 0.0 or cut_end >= length:
+                raise ValueError(
+                    f"Split-with-gap {gap} at offset {offset} must fit within wall (0..{length:.3f})"
+                )
+        else:
+            if not (0.0 < offset < length):
+                raise ValueError(f"Split offset {offset} must be inside the wall (0..{length:.3f})")
+
+        # Check hosted openings for straddle refusal
+        hosted_openings = list(meta.get("hosted_openings") or [])
+        for op_guid in hosted_openings:
+            op_meta = self.element_meta.get(op_guid)
+            if not op_meta:
+                continue
+            op_offset = float(op_meta.get("offset_along_wall", 0.0))
+            op_width = float(op_meta.get("width", 0.0))
+            op_start = op_offset
+            op_end = op_offset + op_width
+            # Straddle condition: cut intersects opening interior
+            if (op_start < cut_end and cut_start < op_end) or (op_start < offset < op_end):
+                raise ValueError(
+                    f"Cannot split wall across hosted opening '{op_meta.get('name', op_guid)}' "
+                    f"at offset {op_start:.2f}..{op_end:.2f} (cut at {offset:.2f})"
+                )
 
         sp, ep = meta["start"], meta["end"]
         ang = float(meta.get("angle", 0.0))
-        mid = (sp[0] + math.cos(ang) * offset, sp[1] + math.sin(ang) * offset)
-        older_end = list(ep)
+        ux, uy = math.cos(ang), math.sin(ang)
 
-        # New wall for the second half.
+        p1_end = [sp[0] + ux * cut_start, sp[1] + uy * cut_start, sp[2]]
+        p2_start = [sp[0] + ux * cut_end, sp[1] + uy * cut_end, sp[2]]
+        p2_end = [ep[0], ep[1], ep[2]]
+
+        # New wall for the second half
         second = self.add_wall(
-            (mid[0], mid[1], sp[2]), (older_end[0], older_end[1], older_end[2]),
+            (p2_start[0], p2_start[1], p2_start[2]),
+            (p2_end[0], p2_end[1], p2_end[2]),
             height=meta.get("height", FEET_10),
             thickness=meta.get("thickness", INCHES_8),
             level_id=meta.get("level_id"),
             name=f"{meta.get('name')} (2)",
         )
+        second_guid = second["guid"]
+        second_meta = self.element_meta[second_guid]
 
-        # Shorten the original in place, keeping its identity.
-        meta["end"] = [mid[0], mid[1], sp[2]]
-        meta["length"] = offset
+        # Transfer join policy if present
+        if guid in self.join_policies:
+            self.join_policies[second_guid] = copy.deepcopy(self.join_policies[guid])
+
+        # Shorten the original in place, keeping its identity
+        meta["end"] = p1_end
+        meta["length"] = cut_start
+        meta["footprint"] = None
         self._rebuild_wall_representation(guid)
-        self.mark_mesh_dirty(guid)
-        self.recompute_wall_joins()
+
+        # Re-host openings whose offset is beyond cut_end
+        openings_to_rehost = []
+        for op_guid in list(meta.get("hosted_openings") or []):
+            op_meta = self.element_meta.get(op_guid)
+            if not op_meta:
+                continue
+            op_offset = float(op_meta.get("offset_along_wall", 0.0))
+            if op_offset >= cut_end:
+                openings_to_rehost.append(op_guid)
+
+        for op_guid in openings_to_rehost:
+            op_meta = self.element_meta[op_guid]
+            old_offset = float(op_meta.get("offset_along_wall", 0.0))
+            new_offset = old_offset - cut_end
+            op_meta["host_wall_guid"] = second_guid
+            op_meta["offset_along_wall"] = new_offset
+            if "hosted_openings" not in second_meta:
+                second_meta["hosted_openings"] = []
+            second_meta["hosted_openings"].append(op_guid)
+            if "hosted_openings" in meta and op_guid in meta["hosted_openings"]:
+                meta["hosted_openings"].remove(op_guid)
+
+            # Relink IfcRelVoidsElement in IFC model
+            opening_ent = op_meta.get("opening_entity")
+            if opening_ent is not None:
+                try:
+                    for rel in self.model.by_type("IfcRelVoidsElement"):
+                        if rel.RelatedOpeningElement == opening_ent:
+                            rel.RelatingBuildingElement = second_meta["entity"]
+                            break
+                except Exception:
+                    pass
+
+            self.mark_mesh_dirty(op_guid)
+
+        self._invalidate_geometry_cache(guid)
+        self._invalidate_geometry_cache(second_guid)
+        self.mark_mesh_dirty(guid, second_guid)
+        self.recompute_wall_joins(only=[guid, second_guid])
+
         return {
             "status": "split",
             "guid": guid,
-            "new_guid": second["guid"],
+            "new_guid": second_guid,
             "at_offset": offset,
-            "original_length": offset,
-            "new_length": length - offset,
+            "gap": gap,
+            "original_length": meta["length"],
+            "new_length": second_meta["length"],
         }
 
     # =========================================================================
