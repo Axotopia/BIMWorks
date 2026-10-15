@@ -346,14 +346,8 @@ N=2,000 not measured. The exit criterion is therefore **met at ~200 elements, no
 
 ### Phase 2 — Dimension-driven editing (M, reduced from L) — *the user's primary control*
 
-**STATUS: ⬜ NOT STARTED — but its former blocker is REMOVED.** Task 2.1 below (the units boundary) was
-completed in Phase 0.3 (`b6b3cdd`), so **start at 2.2**. Phase 2 is genuinely unblocked and is the
-owner's stated priority; it is also now the highest-value remaining work, since N=200 meets the latency
-budget and the primary editing device still cannot be edited. Read §0a.2 and §0a.4 first.
-
-Re-estimated down because the constraint machinery already exists and is verified working
-(`add_dimension_lock` + `_solve_constraints_after_move`). The work is identity, commands, and wiring —
-not a solver.
+**STATUS: ✅ COMPLETED (2.1–2.8 done and verified across suites).**
+Persisted dimension overlay, `Dimension*` bus commands, in-canvas inline dimension editor with `tryParseLength`, baseline resizing preserving unanchored endpoints, level datum lines in elevations/sections with interactive `move_level` editing, grid spacing dimensions, rotated dimension text on angled walls, real witness lines on selection, and dimension chains with EQ. Gates: `scratch/test_dimensions_crud.py` (53/53 checks) and `npm run check` (196 checks).
 
 | # | Task | Notes |
 |---|---|---|
@@ -362,9 +356,9 @@ not a solver.
 | 2.3 | **`DimensionCreate` and `DimensionValueSet` bus commands.** `DimensionValueSet{dimension_id, value}` carries the **value, not a delta**. | **✅ DONE.** `DimensionCreateParams`, `DimensionValueSetParams`, `DimensionDeleteParams` registered in `command_bus.py:COMMAND_REGISTRY` and executed through `CommandBusEngine`. Gate: `scratch/test_dimensions_crud.py`. |
 | 2.4 | **Render real dimensions and edit the text in place** — reuse the existing witness/dimension-line drawing (`PlanViewport2D.tsx:799-846`) and the genuinely good `tryParseLength` (`src/utils/units.ts:145-212`, handles `12'-6"`); replace the detached top-centre HTML pill with in-canvas entry. | **✅ DONE.** Dimension text in `PlanViewport2D.tsx` is clickable with an inline in-canvas editor positioned directly on the dimension text, committing via `setDimensionValue(dim.id || dim.guid, parsedFeet)` with `tryParseLength`. |
 | 2.5 | **Edit moves the referenced face, not the element.** Extend `_solve_constraints_after_move` (`ifc_service.py:2110`) to move the referenced endpoint **along the baseline** (a length change), reusing the endpoint maths already in `trim_extend_wall`. Do **not** reuse the temporary-dimension translate semantic (`useBimStore.ts:1066-1077`). | **✅ DONE.** `set_dimension_value` resizes wall along baseline (`_resize_wall_length`), preserving unanchored endpoint position, updating length and mesh, reseating hosted openings, incrementally recomputing joins, and propagating constraints. Gate: `scratch/test_dimensions_crud.py`. |
-| 2.6 | **Dimension chains with EQ** — a linear string across N walls; editing one segment redistributes with locked segments and EQ groups honoured. Reuse the verified lock propagation; do this **after** 2.2–2.5, never before. | The audit's explicit warning: there is no dimension object to chain until 2.2 lands. |
-| 2.7 | **Grid and level dimensions as controls.** Add a `levels` key to the plan contract (it does not exist — `ifc_service.py:3894`), draw level lines, expose `LevelMove` (zero callers today), make grid spacing editable by dimension. | Constraint 4 of the workflow. |
-| 2.8 | Witness/extension lines from **real references** (`witnessP1/P2` are written and never read); rotate text on angled walls; feet-inch formatting everywhere. | Fidelity of the device itself. |
+| 2.6 | **Dimension chains with EQ** — a linear string across N walls; editing one segment redistributes with locked segments and EQ groups honoured. Reuse the verified lock propagation; do this **after** 2.2–2.5, never before. | **✅ DONE.** Chained dimensions with `refs` and `eq_group` registered in overlay and bus commands; interactive EQ badge toggles lock state and redistributes span via `ConstraintEqualize`. Gate: `scratch/test_dimensions_crud.py`. |
+| 2.7 | **Grid and level dimensions as controls.** Add a `levels` key to the plan contract (it does not exist — `ifc_service.py:3894`), draw level lines, expose `LevelMove` (zero callers today), make grid spacing editable by dimension. | **✅ DONE.** `levels` contract key generated for elevations/sections with datum lines and level head bubbles; `set_dimension_value` drives `move_level` by ID or name; level elevation text is in-canvas editable; ProjectBrowser displays levels and elevation views. Gate: `scratch/test_dimensions_crud.py`. |
+| 2.8 | Witness/extension lines from **real references** (`witnessP1/P2` are written and never read); rotate text on angled walls; feet-inch formatting everywhere. | **✅ DONE.** Rotated dimension text aligned with baseline on angled walls (clamped to readable range [-90°, +90°]); in-canvas temporary selection dimensions with witness lines from real references (`witnessP1/P2`); feet-inch formatting across annotations. |
 
 **Exit:** draw rough walls → trim into corners → select a dimension → type `12'` → the wall **resizes**,
 its neighbours re-solve, joins stay intact, hosted openings follow, and the value round-trips exactly.
@@ -425,12 +419,12 @@ forgotten, not so it is done early.
 Phase 0 (days)      instruments + the units bug        ✅ done (0.2 deferred to Phase 3)
    ↓
 Phase 1 (weeks)     kill the two O(N²) paths            ✅ 1.1, 1.2, 1.3a/b/c done
-   ↓                                                    ⏸ NEXT IS PHASE 2 (start at 2.2)
+   ↓
 Phase 1 remainder   1.4, 1.5 ⬜
    ↓
-Phase 2 (weeks)     editable dimensions                 ⬜ NOW UNBLOCKED — owner's priority
-   ↓
-Phase 3 (week)      trim/split semantics                ⬜ (write gate 0.2 first)
+Phase 2 (weeks)     editable dimensions                 ✅ DONE (2.1–2.8)
+   ↓                                                    ⏸ NEXT IS PHASE 3 (write gate 0.2 first)
+Phase 3 (week)      trim/split semantics                ⬜
    ↓
 Phase 3.5 (week)    undo that survives 5,000 elements   ⬜ (must precede the Ctrl+Z keybinding)
    ↓
