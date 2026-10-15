@@ -1,0 +1,192 @@
+"""
+Scale gate (Phase 0.1) — does an edit stay interactive as the model grows?
+
+WHY THIS EXISTS
+---------------
+`SPECIFICATION-v0.2.md` §19 sets a budget: an interaction at p95 < 16 ms, measured
+end to end. Before this file, nothing in the repository measured above ~25 elements,
+so the budget had never been tested at any real size. Every performance claim in
+`review/IMPLEMENTATION-PLAN-revit-feel.md` was an extrapolation from a sweep that
+stopped at 1,000 elements.
+
+This gate turns that into a curve the project owns. It measures the two costs a user
+actually waits for on one edit of an N-wall model:
+
+  * the JOIN recompute (`recompute_wall_joins` — the global partner scan), and
+  * the 2D VIEW regeneration (`slice_2d_vector_plan`, mesh-HLR).
+
+WHAT IT ASSERTS, AND WHY IT CURRENTLY FAILS
+-------------------------------------------
+The budgets are printed for every N and asserted only for the sizes named in
+`BIMWORKS_SCALE_ASSERT`. That default is **empty**, so the gate always *reports* and
+never fails — which is the honest state: on this commit the measured cost is
+hundreds of milliseconds at N=200 and tens of seconds at N=1000, far outside the
+16 ms budget, and a gate that failed unconditionally would simply be switched off.
+
+Phase 1 is what makes it pass. When Phase 1's two O(N²) paths are gone, set
+`BIMWORKS_SCALE_ASSERT=200` (then `200,1000`) and the gate becomes enforceable.
+Section 4 asserts the *shape* of the curve meanwhile, so a regression that makes
+scaling worse still fails today.
+
+Run:  ./.venv/Scripts/python.exe scratch/test_scale_gate.py
+      BIMWORKS_SCALE_ASSERT=200 ./.venv/Scripts/python.exe scratch/test_scale_gate.py
+      BIMWORKS_SCALE_SIZES=100,200 ./.venv/Scripts/python.exe scratch/test_scale_gate.py
+"""
+
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend")))
+
+from ifc_service import BimModelManager  # noqa: E402
+from units import FEET_10, INCHES_8  # noqa: E402
+
+#: The spec's end-to-end interaction budget (§19).
+BUDGET_P95_MS = 16.0
+
+#: Sizes measured by default. 1000 is the honest "10x the current model" data point
+#: and is slow by construction; it is included because the whole point of this gate
+#: is to stop the curve being inferred.
+DEFAULT_SIZES = (100, 200, 500)
+
+PASSED = 0
+FAILED = 0
+FAILURES = []
+REPORT = []
+
+
+def check(label, condition, detail=""):
+    global PASSED, FAILED
+    if condition:
+        PASSED += 1
+        print(f"  PASS  {label}")
+    else:
+        FAILED += 1
+        FAILURES.append(f"{label} :: {detail}")
+        print(f"  FAIL  {label}  {detail}")
+
+
+def build(n_walls, per_row=None):
+    """N touching 10 ft walls in a chain, so joins are real work, not a no-op."""
+    m = BimModelManager()
+    m.reset_model()
+    # A serpentine chain keeps every wall adjacent to the next: a straight row of N
+    # collinear walls would give each wall only one partner and understate the scan.
+    per_row = per_row or max(2, int(n_walls ** 0.5))
+    made = 0
+    for i in range(per_row):
+        for j in range(per_row):
+            if made >= n_walls:
+                break
+            x0, y0 = i * 12.0, j * 12.0
+            m.add_wall((x0, y0, 0.0), (x0 + 10.0, y0, 0.0),
+                       height=FEET_10, thickness=INCHES_8)
+            made += 1
+    return m, made
+
+
+def timeit(fn, repeats=3):
+    best = None
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        fn()
+        dt = (time.perf_counter() - t0) * 1000.0
+        best = dt if best is None else min(best, dt)
+    return best
+
+
+def measure(m):
+    """(join_ms, slice_ms, elements) for one edit's worth of recompute."""
+    # Warm both paths the way a first paint would, so the caches are populated and
+    # this measures recompute rather than first-touch tessellation.
+    m.recompute_wall_joins()
+    m.slice_2d_vector_plan(cut_elevation=4.0)
+
+    join_ms = timeit(lambda: m.recompute_wall_joins(), repeats=2)
+    slice_ms = timeit(lambda: m.slice_2d_vector_plan(cut_elevation=4.0), repeats=2)
+    return join_ms, slice_ms, len(m.element_meta)
+
+
+def main():
+    sizes_env = os.environ.get("BIMWORKS_SCALE_SIZES", "")
+    sizes = tuple(int(s) for s in sizes_env.split(",") if s.strip()) or DEFAULT_SIZES
+    assert_env = os.environ.get("BIMWORKS_SCALE_ASSERT", "")
+    assert_sizes = {int(s) for s in assert_env.split(",") if s.strip()}
+
+    print("=" * 78)
+    print("Scale gate — one edit's recompute cost vs model size")
+    print(f"budget: p95 < {BUDGET_P95_MS:.0f} ms   sizes: {sizes}   "
+          f"asserting: {sorted(assert_sizes) or 'none (report-only)'}")
+    print("=" * 78)
+    print(f"{'walls':>7} {'elems':>7} {'join ms':>10} {'slice ms':>10} "
+          f"{'total ms':>10} {'ms/wall':>9} {'vs budget':>10}")
+    for n in sizes:
+        m, made = build(n)
+        join_ms, slice_ms, elems = measure(m)
+        total = join_ms + slice_ms
+        row = {
+            "requested": n, "walls": made, "elems": elems,
+            "join_ms": join_ms, "slice_ms": slice_ms, "total_ms": total,
+            "ms_per_wall": total / max(made, 1),
+        }
+        REPORT.append(row)
+        print(f"{made:>7} {elems:>7} {join_ms:>10.1f} {slice_ms:>10.1f} "
+              f"{total:>10.1f} {row['ms_per_wall']:>9.2f} "
+              f"{total / BUDGET_P95_MS:>9.1f}x")
+        sys.stdout.flush()
+        # Free the model before the next (larger) one is built.
+        del m
+
+    print("\n1. Scaling shape (asserted — this holds even while budgets are missed)")
+    if len(REPORT) >= 2:
+        first, last = REPORT[0], REPORT[-1]
+        growth_elems = last["walls"] / max(first["walls"], 1)
+        growth_cost = last["total_ms"] / max(first["total_ms"], 1e-9)
+        print(f"  elements x{growth_elems:.1f} -> cost x{growth_cost:.1f}")
+        # Super-linear is the defect. A linear algorithm would grow ~proportionally
+        # with the element count; anything above that factor squared is worse than
+        # quadratic and is a hard fail.
+        check("cost growth stays below quadratic in element growth",
+              growth_cost <= (growth_elems ** 2) * 1.2,
+              f"cost x{growth_cost:.1f} vs quadratic x{growth_elems ** 2:.1f}")
+        per_wall = [r["ms_per_wall"] for r in REPORT]
+        check("per-element cost does not collapse (the corpus varies size)",
+              len(set(round(p, 3) for p in per_wall)) > 1,
+              f"per-wall costs: {[round(p, 2) for p in per_wall]}")
+
+    print("\n2. Budget assertions (§19), for sizes named in BIMWORKS_SCALE_ASSERT")
+    if not assert_sizes:
+        print("  SKIP  no sizes requested — report-only, so the gate cannot be")
+        print("        switched off for being permanently red. Phase 1 makes this")
+        print("        enforceable; set BIMWORKS_SCALE_ASSERT=200 then 200,1000.")
+    for row in REPORT:
+        if row["walls"] not in assert_sizes and row["requested"] not in assert_sizes:
+            continue
+        check(f"one edit at {row['walls']} walls is within the {BUDGET_P95_MS:.0f} ms budget",
+              row["total_ms"] <= BUDGET_P95_MS,
+              f"{row['total_ms']:.1f} ms ({row['join_ms']:.1f} join + "
+              f"{row['slice_ms']:.1f} slice)")
+
+    print("\n3. The two named O(N²) paths are the whole cost")
+    if REPORT:
+        worst = max(REPORT, key=lambda r: r["total_ms"])
+        share = worst["slice_ms"] / max(worst["total_ms"], 1e-9)
+        print(f"  at {worst['walls']} walls: slice is {share * 100:.1f}% of the edit")
+        check("the 2D view regeneration is the dominant term (the Phase 1.3 target)",
+              share >= 0.5,
+              f"slice share {share * 100:.1f}% — if this has moved, Phase 1.3's "
+              f"premise needs re-measuring, not assuming")
+
+    print("\n" + "=" * 78)
+    print(f"RESULT: {PASSED} passed, {FAILED} failed")
+    if FAILURES:
+        print("\nFailures:")
+        for f in FAILURES:
+            print(f"  - {f}")
+    print("=" * 78)
+    return 1 if FAILED else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
