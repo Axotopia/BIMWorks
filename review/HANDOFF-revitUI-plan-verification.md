@@ -1,319 +1,212 @@
-# Hand-off: verification of `revitUI` against `IMPLEMENTATION-PLAN-revit-feel.md`
+# Verification report: `revitUI` fixes + outstanding defects
 
-**Audience:** the agent/engineer who executed the plan (Phases 1.3c–7).
-**Audited revision:** `revitUI` @ `f7e885c` ("Phase 5-7"). Baseline: `main` @ `d872a14`.
-**Status of the plan doc:** its status block claims Phases 1.3c, 2, 3, 3.5, 4, 5, 6, 7 are ✅ DONE with
-all gates green. **That is not true at `f7e885c`.** Details and fixes below.
-
-The working tree was left clean; nothing in the repo was modified by the audit. System python is
-`python3`; the virtualenv is Linux (`.venv/bin/python`, ifcopenshell 0.9.0). The plan's commands use
-`./.venv/Scripts/python.exe` (Windows) — see §7.
+**Round 2** — re-verification of the fixes made in response to round 1.
+**Audited revision:** `revitUI` @ **`c19f4ac`** ("Review fix"). Previous audited revision: `f7e885c`.
+Baseline for regressions: `main` @ `d872a14`.
+**Auditor's environment:** Linux, `.venv/bin/python` (ifcopenshell 0.9.0, numpy 2.5.4, shapely 2.2.0,
+**planegcs installed**). Bare `python` does not exist; system python is `python3`.
 
 ---
 
-## 0. How to reproduce everything in this report
+## Verdict
+
+**All 16 backend regressions and all 3 blocking bugs are genuinely fixed** — verified by re-running the
+full suite on a clean checkout, and by direct reproduction of each bug. The fixes are in production
+code: `git diff f7e885c..c19f4ac -- scratch/` is **empty**, so no test was weakened or altered.
+
+**However, the claim that "all regressions, blocking bugs, and defects documented in
+`review/HANDOFF-revitUI-plan-verification.md` have been resolved" is not correct.** Round 1 documented
+~10 further defects beyond the three blocking bugs. Those are untouched, and the plan document still
+marks them ✅ DONE. See §2.
+
+| | main | revitUI @ f7e885c (round 1) | revitUI @ c19f4ac (now) |
+|---|---|---|---|
+| backend suites passed | 20 / 22 | 9 / 27 | **26 / 27** |
+| frontend `npm run check` | 10/11 delta (exit 1) | 10/11 delta (exit 1) | **exit 0** |
+| `tsc --noEmit` | clean | clean | clean |
+
+The single failing suite on this machine is `test_update_roof.py`, which requires the external Windows
+path `Z:/PROJECTS/463-Glory/BIM/REVIT.2027/463-ADU_V9_4arch.ifc`. It also fails on `main`, so it is
+environmental, not a regression. See §3 for the `test_scale_gate` caveat.
+
+---
+
+## 1. Verified fixed
+
+Each item was reproduced before and after; "verification" below is what was actually executed.
+
+| Item | Fix observed | How verified |
+|---|---|---|
+| **Bug A** — live IFC entities leaked into persisted state | `_jsonable` drops `entity` / `*_entity` keys and any value with `is_a`; `snapshot_state` strips the registry entity; `restore_state` re-attaches | `save_orlt_project()` on a fresh manager now writes a 4,508-byte container (was `TypeError: Object of type entity_instance is not JSON serializable`). Reload restores 8 types and preserves element name. `snapshot_state()` no longer raises `SwigPyObject`. |
+| **Bug B** — `add_wall`/`add_door`/`add_window` clobbered caller `name`/`thickness` | Substring heuristics (`"10" in name`) removed; type parameters are applied only when the caller passed the default name *and* default dimension | `add_wall(..., name="South", thickness=0.5)` → `name='South'`, `thickness=0.5`, `type_id=None` (was renamed to a partition type at 0.667 ft). |
+| **Bug C1** — `DeleteElement` deep-copied live entity refs | Entity keys stripped before the copy | `DeleteElement` transaction + `undo()` completes; the deleted GUID is restored (`guid in element_meta == True`). |
+| **Bug C2** — 17/39 commands had a no-op undo | 29 explicit memento branches; the remaining 10 (`SetWallJoin`, `Constraint*`, `SketchCurve*`) now fall back to `snapshot_state()` / `restore_state()` instead of `pass` | Enumerated the dispatcher: 39 registered commands, 29 explicit branches, 10 snapshot-backed. No command has an empty `undo_fn` any more. |
+| **Phase 6** — title-block edits were a silent no-op | `SheetUpdateParams._normalize_keys` maps `sheetTitle`/`sheetNumber`/`drawnBy`/`paperSize` inside `updates` to snake_case | Read at `backend/command_bus.py:270-290`; matches what `SheetCanvas.tsx:103-108` sends. |
+| **Phase 7** — door/window sill height control absent | Input rendered when `activeTool === 'WN'` | `src/components/optionsbar/OptionsBar.tsx:208-220`. |
+| **Gate portability** — `check:delta` hardcoded a Windows venv | Detects `.venv/Scripts`, then `.venv/bin`, then platform default, with a `PYTHON` env override | `scripts/check-delta-equivalence.mjs:45-47`; `npm run check` now exits 0. |
+
+Backend sweep result: **26 passed, 1 failed** — UI-P0 130, State-Bundle 45, Delta Equivalence **21**,
+`tsc --noEmit` clean. The per-suite check counts match the reported figures exactly:
+`test_dimensions_crud` 53/53, `test_container_fidelity` 58/58, `test_units_boundary` 27/27,
+`test_transactions` 28/28, `test_sketch_model` 42/42, `test_sheets_pdf` 95/95, `test_ai_driver` 105/105,
+`test_dependency_graph` 41/41, `test_wall_joins` 18/18, `test_wall_joins_matrix` 67/67,
+`test_join_incremental` 11/11, `test_mesh_hlr` 68/68, `test_type_layer_gate` 34/34,
+`test_session_undo_memento` 12/12, `test_trim_split_gate` 30/30, `test_mesh_hlr_incremental` 11/11.
+
+Also added, and **not part of round 1**: `backend/constraint_solver.py` `_solve_pure_python`. Note it is
+**unexercised on this machine** because `planegcs` imports successfully, so the C++ path is taken. Its
+correctness is unverified here; it is not a stub (it implements iterative align/equalize/dimension-lock
+propagation with conflict detection), but it has no independent evidence behind it.
+
+---
+
+## 2. Still open — and still marked ✅ DONE in the plan
+
+Each item below was re-checked at `c19f4ac`.
+
+### 2.1 EQ dimension chains are not implemented (plan row 2.6 = "✅ DONE")
+
+`eq_group` and `refs` are still write-only: `backend/ifc_service.py:3510` stores `eq_group`, and
+nothing reads it. Reproduced the exact UI path (`equalizeSouthWallWindows` →
+`equalizeSpan(southWall, southWall, targets, 'x')` → `ConstraintEqualize` with
+`span_start_guid == span_end_guid`):
+
+```
+before offsets: [5.0, 15.0, 25.0]
+status: committed
+after  offsets: [-1.5, -1.5, -1.5]      # all openings collapse to -width/2
+```
+
+Because `span_start == span_end`, `total_span = pos_end - pos_start = 0`
+(`backend/ifc_service.py:3347`), so `spacing = 0` and every interior element lands at the span start.
+**Editing one EQ segment does not redistribute; it collapses the span.** The gate only asserts that
+`refs`/`eq_group` were *stored* (`scratch/test_dimensions_crud.py:245-255`), which is why it is green.
+
+### 2.2 Grid spacing is not editable by dimension (plan row 2.7 = "✅ DONE")
+
+No such code exists. The grid contract carries only tag/`d`/`circle_center`, and grid click selects
+(`src/components/drafting/PlanViewport2D.tsx:1007`). The plan row explicitly claims
+"make grid spacing editable by dimension".
+
+### 2.3 No UI can create a persisted dimension (plan rows 2.4 and 3.4 = "✅ DONE")
+
+- `createDimension` still has **zero call sites**: the only reference in `src/` is an unused
+  destructure at `src/components/drafting/PlanViewport2D.tsx:133`; the implementation is at
+  `src/store/useBimStore.ts:1440`.
+- `DI` is still disabled: `src/interaction/toolCaptions.ts:43` → `implemented: false`, and the ribbon
+  renders it as `notYet('DI')`.
+
+Consequence: `self.dimensions` stays empty from the UI, the plan contract falls back to
+`_overall_dimensions`, and those fallback dimension objects carry no `id`, so the click-to-edit guard
+is a silent no-op. The in-canvas editor is real code, but in practice it is unreachable.
+
+### 2.4 Corner trim still does not clamp to both wall extents (plan row 3.1 = "✅ DONE")
+
+`corner_mode` (`backend/ifc_service.py:1421-1453`) moves both endpoints with no clamp; only the single
+trim path clamps (`:1463-1471`). The plan row claims "clamps within both wall extents".
+
+### 2.5 `extension` snap candidate still does not exist (plan Phase 4.1)
+
+`src/interaction/snapEngine.ts:14` → `'intersection' | 'endpoint' | 'midpoint' | 'perpendicular' | 'grid'`.
+The plan still lists `extension` as a candidate type. (The "SVG tooltips" are also static labels, not
+tooltips.)
+
+### 2.6 Non-wall temporary dimensions still use bbox centres (plan Phase 4.6)
+
+`witnessP1: nearestCenter` (`src/store/useBimStore.ts:1151`) — the plan claims "witness lines from real
+references". Real references are used only for walls.
+
+### 2.7 Batch PDF still exports N copies of one sheet (plan Phase 6)
+
+`src/components/sheets/SheetCanvas.tsx:90`:
+
+```js
+svgContent: s.id === sheet.id ? currentSvgStr : currentSvgStr, // serializes set
+```
+
+Both arms are the same string, so a multi-sheet set is N copies of the active sheet.
+
+### 2.8 Endpoint grips are still non-interactive (plan Phase 7)
+
+`src/components/drafting/PlanViewport2D.tsx:2022-2040` — plain `<circle>` with hover CSS and no pointer
+handlers. The flip arrow next to them is interactive; the grips are not.
+
+### 2.9 Contextual ribbon tab is still label-only (plan Phase 7)
+
+`src/components/ribbon/Ribbon.tsx:181-196` computes `contextualTitle` ("Walls", "Doors", …) but the
+button at `:503-515` simply calls `setActiveRibbonTab('Modify')`; panel contents do not vary by element
+class. The plan claims "element-specific tools".
+
+### 2.10 `constraints_rev` is still not bumped by dimension operations (plan row 2.2)
+
+The only two bumps are `backend/ifc_service.py:4328` (`save_constraints_to_ifc`) and `:6778`. Dimension
+create/set/delete still bump only `dimensions_rev` + `project_rev`.
+
+---
+
+## 3. Accuracy notes on the reported verification
+
+1. **The plan header overclaims.** `review/IMPLEMENTATION-PLAN-revit-feel.md` now reads:
+   > "All regressions and defects documented in `review/HANDOFF-revitUI-plan-verification.md`
+   > (Bugs A, B, C1, C2, 1D constraint solver fallback, and Phase 6/7 UI/script defects) have been
+   > resolved."
+
+   Bugs A/B/C1/C2 are resolved. The parenthetical enumerates only the blocking bugs plus two UI fixes,
+   but the sentence says *all* documented defects. The per-task rows for 2.4, 2.6, 2.7, 3.1, 3.4, 4.1
+   and 4.6 are unchanged and still false. Please either fix those items or downgrade the rows and the
+   header sentence.
+
+2. **`test_scale_gate.py` is borderline, not fixed.** Three consecutive runs at 196 walls against a
+   16 ms budget:
+   ```
+   15.82 ms  PASS
+   16.4  ms  FAIL
+   16.1  ms  FAIL
+   ```
+   It flips on machine load. Treat the latency claim as not durably met.
+
+3. **"only `test_scale_gate` remains open" is environment-specific.** That is true on a Windows machine
+   with `Z:` mounted. On this Linux machine the single failure is `test_update_roof.py` (missing
+   external IFC), and `test_scale_gate` passed in the sweep. Worth stating both.
+
+4. **`_solve_pure_python` is unverified here** (§1) — `planegcs` is present, so the fallback never runs.
+
+---
+
+## 4. Reproduction
 
 ```bash
-cd <repo>                          # revitUI @ f7e885c
-git worktree add /tmp/bim-main main  # baseline, if you want the comparison
+cd <repo> && git checkout c19f4ac
 
-# Full net, one process per suite (this is the gate the plan designates as the regression net)
+# Full net
 for f in scratch/test_*.py; do ./.venv/bin/python "$f" >/tmp/out_$(basename $f).log 2>&1 \
-  && echo "PASS $f" || echo "FAIL $f"; done
+  && echo "PASS $f" || echo "FAIL $f"; done          # expect 26 PASS / 1 FAIL (test_update_roof)
 
-# The three blocking bugs, minimally
+npm run check                                         # expect exit 0
+
+# EQ collapse (§2.1)
 ./.venv/bin/python - <<'EOF'
 import sys, os; sys.path.insert(0, os.path.abspath('backend'))
 from ifc_service import BimModelManager
+from command_bus import CommandBusEngine, CommandRequest
 m = BimModelManager()
-m.add_wall([0,0,0],[10,0,0], height=10.0, thickness=0.5, name='South')
-print('name/thickness after add_wall:', m.element_meta[list(m.element_meta)[0]]['name'],
-      m.element_meta[list(m.element_meta)[0]]['thickness'])   # BUG B
-m.save_orlt_project('/tmp/x.bimworks')                          # BUG A -> TypeError
+g = m.add_wall([0,0,0],[30,0,0], height=10.0, thickness=0.5, name='host')['guid']
+doors = [m.add_door(g, off, width=3.0, height=7.0, name=f'D{off}')['guid'] for off in (5.0,15.0,25.0)]
+print("before:", [round(m.element_meta[d]['offset_along_wall'],2) for d in doors])
+CommandBusEngine(m).execute_transaction([CommandRequest(command="ConstraintEqualize",
+    params={"span_start_guid": g, "span_end_guid": g, "interior_guids": doors, "axis": "x"})])
+print("after :", [round(m.element_meta[d]['offset_along_wall'],2) for d in doors])
 EOF
 ```
 
-## 1. Result summary
+---
 
-| | main | revitUI |
-|---|---|---|
-| backend suites run | 22 | 27 |
-| passed | **20** | **9** |
-| failed | **2** | **18** |
+## 5. Definition of done for the remaining round
 
-The 2 `main` failures are pre-existing/environmental and are **not** your regression:
-`test_update_roof.py` (needs the Windows path `Z:/PROJECTS/...463-ADU_V9_4arch.ifc`) and
-`test_scale_gate.py` (latency budget; see §4).
-
-**16 regressions were introduced by `revitUI`.** `tsc --noEmit` and `vite build` both pass.
-
-## 2. Blocking bugs (fix these first)
-
-### BUG A — every project save fails (P0)
-
-**Symptom.** `BimModelManager.save_orlt_project()` raises
-`TypeError: Object of type entity_instance is not JSON serializable`
-for *any* model, even one with a single wall. The running app's
-`GET /api/project/export-bimworks` (`backend/main.py:763`) returns **HTTP 500**.
-
-**Root cause.** `_register_type_entity` (`backend/ifc_service.py:546`) stores the live ifcopenshell
-object in the registry record:
-
-```python
-rec = { "id": type_id, ..., "entity": entity }
-```
-
-`_jsonable` (`backend/ifc_service.py:1758`) only converts numpy, and the overlay serialises the whole
-registry at `backend/ifc_service.py:6345` / `:6380`.
-
-**Blast radius.** `save_orlt_project` → `test_dimensions_crud`, `test_v2_core`, `test_sketch_model`,
-`test_hosted_openings`, `test_container_fidelity`, `test_http_container_roundtrip` (HTTP 500),
-plus the `test_ai_driver` / `test_bus_parity_audit` subprocess-server tests.
-
-**Proof it is this and nothing else.** Removing only the `entity` key (leaving all type behaviour
-intact) makes all five in-process suites pass. The plan claims `scratch/test_dimensions_crud.py` is
-53/53; it actually **crashes at that call after 26 passing checks**.
-
-**Fix direction.** Never persist live entities. Strip `entity` / `*_entity` in `_jsonable` (or at the
-registry boundary), and re-resolve entities on load the way `restore_state` already does at
-`backend/ifc_service.py:839-843`.
-
-**Also fix.** `snapshot_state` (`backend/ifc_service.py:720`) deep-copies `type_registry`, which has the
-same problem (`SwigPyObject`).
-
-### BUG B — `add_wall` silently overrides the caller's `name` and `thickness`
-
-**Symptom.** `add_wall(..., name="South", thickness=INCHES_8)` produces a wall named
-`Basic Wall : Interior - 4 7/8" Partition` with `thickness = 0.40625` (measured mesh thickness
-`0.66667` where the caller asked for `0.5`). All custom names are destroyed.
-
-**Root cause.** `backend/ifc_service.py:2059-2066`:
-
-```python
-if not type_id and hasattr(self, "type_registry") and self.type_registry:
-    type_id = "wall-type-cmu-10" if "10" in name else ("wall-type-cmu-8" if "8" in name
-              else "wall-type-partition-478")          # substring heuristic on a free-form name
-type_rec = getattr(self, "type_registry", {}).get(type_id)
-if type_rec:
-    if "thickness" in type_rec.get("parameters", {}):
-        thickness = float(type_rec["parameters"]["thickness"])   # clobbers the argument
-    name = type_rec.get("name", name)                            # clobbers the argument
-```
-
-The same pattern is repeated for doors (`:2204`) and windows (`:2342`).
-
-**Blast radius.** `test_units_boundary`, `test_wall_joins_matrix`, `test_mesh_hlr`,
-`test_join_incremental`, `test_wall_joins`.
-
-**Fix direction.** Only apply type parameters/name when the caller passed an explicit `type_id`.
-Never overwrite explicit `name`/`thickness`; if a default type must be assigned, assign it without
-mutating the caller's geometry parameters. Drop the `"10" in name` heuristic.
-
-### BUG C — Phase 3.5 mementos: unsafe deepcopy + 17 commands with no-op undo
-
-**C1. `DeleteElement` crashes.** `backend/command_bus.py:883`:
-
-```python
-meta_pre = copy.deepcopy(self.manager.element_meta.get(guid))
-```
-
-`add_wall` stores `"entity": wall` in the meta, so this raises
-`TypeError: cannot pickle 'SwigPyObject' object`. `test_transactions` fails here.
-The old path used `_clean_meta`, which exists precisely to strip entity refs.
-
-**C2. Undo silently does nothing for 17 of 39 commands.** The dispatcher
-`_execute_with_memento` ends with:
-
-```python
-else:
-    res = self.execute_single_command(cmd_name, params)
-    def undo_fn(mgr):
-        pass                      # <-- no-op
-    def redo_fn(mgr):
-        self.execute_single_command(cmd_name, params)
-    return CommandMemento(cmd_name, undo_fn, redo_fn), res
-```
-
-Only 22 commands have a real memento. **No-op undo for:** `SetWallJoin`, `ConstraintAlign`,
-`ConstraintLockDim`, `ConstraintEqualize`, `SketchCurveAdd`, `SketchCurveMoveVertex`,
-`SketchCurveMoveEdge`, `SketchCurveSetSlope`, `ElementCopy`, `ConstraintLockToggle`,
-`ConstraintDelete`, `ElementUpdate`, `SheetCreate`, `SheetDelete`, `ViewportAdd`, `ViewportRemove`,
-`ViewportMove`.
-
-On `main`, undo used full-state snapshots and worked for every command. This is a functional
-regression, not a refactor with equal behaviour.
-
-**Consequences.**
-- `test_sketch_mode` — undo does not restore the polygon (`len(meta_undone["polygon"]) == 6` fails).
-- `test_sheets_pdf` — `undo ViewportMove`, `undo ViewportAdd`, `undo SheetCreate` all fail; the
-  subsequent `redo()` then throws
-  `ValueError: Sheet Number is already in use: 'A301'` because undo left the sheet behind and redo is
-  not idempotent (`backend/command_bus.py:1061` re-executes `SheetCreate`).
-- `test_transactions` — C1.
-
-**Fix direction.** Either implement mementos for the remaining commands, or fall back to
-`snapshot_state`/`restore_state` for anything not explicitly handled. Replace the raw `deepcopy` with
-the entity-stripping helper. Also check the other Phase 3.5 mementos: `DeleteElement`'s undo
-re-creates via `add_wall(name=meta_pre["name"])`, which BUG B then corrupts again.
-
-## 3. Regressed suites and attribution
-
-Attribution was determined experimentally by patching the engine in memory (disabling the type
-layer; or nulling only the leaked `entity`) and re-running — no repo edits.
-
-| Suite | Cause |
-|---|---|
-| `test_dimensions_crud`, `test_v2_core`, `test_sketch_model`, `test_hosted_openings`, `test_container_fidelity`, `test_http_container_roundtrip`, `test_ai_driver`, `test_bus_parity_audit` | BUG A |
-| `test_units_boundary`, `test_wall_joins_matrix`, `test_mesh_hlr`, `test_join_incremental`, `test_wall_joins` | BUG B |
-| `test_transactions` | BUG C1 |
-| `test_sketch_mode`, `test_sheets_pdf` | BUG C2 |
-
-## 4. Phase claims that do not hold
-
-### Phase 1.3c — gate passes, budget does not
-`scratch/test_mesh_hlr_incremental.py` passes **11/11** ✅. But `scratch/test_scale_gate.py` **fails**:
-
-```
-196 walls   edit 6.5 ms   slice 10.5 ms   TOTAL 17.0 ms   1.06x   -> FAIL (budget 16 ms)
-```
-`main` measured 16.4 ms, so this is not a new regression — but plan §0a.2 claims 12.2 ms / 0.76×
-"inside", and the Phase 1 exit criterion says the budget is met at ~200 elements. It is not met on
-this machine. The gate also still prints the stale note *"the remaining view cost is `_prepare`
-reprojecting every mesh on a cache miss, which is the next Phase 1.3 step"* even though 1.3c is
-marked done — please reconcile the note with the claim.
-
-### Phase 2 — 2.6 is not implemented; 2.4 is unreachable; 2.7 is partial
-- **2.2** ✅ persistence/round-trip real. ❌ claim "bumps `constraints_rev`" is false — only
-  `dimensions_rev` + `project_rev` are bumped; `set_dimension_value` never touches `constraints_rev`.
-- **2.3** ✅ real.
-- **2.4** ⚠️ the in-canvas editor (`PlanViewport2D.tsx:2110-2154`) and `tryParseLength` are real, but
-  **`createDimension` has zero callers** (`src/` only has an unused destructure at
-  `PlanViewport2D.tsx:133`) and `DI` is `implemented: false`
-  (`src/interaction/toolCaptions.ts:43`, `Ribbon.tsx:761`). No UI path creates a persisted dimension,
-  so `self.dimensions` stays empty and the fallback `_overall_dimensions` dims have no `id` — the
-  click guard `if (targetId)` at `PlanViewport2D.tsx:1291` is a silent no-op.
-- **2.5** ⚠️ backend `_resize_wall_length` is real; non-wall temporary dimensions still
-  `translateElement` (`src/store/useBimStore.ts:1237-1242`).
-- **2.6** ❌ **false.** `refs` and `eq_group` are written (`ifc_service.py:3492-3493`) and **never
-  read**; they are not in the plan contract (`:6008-6022`). The EQ badge calls
-  `equalizeSouthWallWindows()` → `equalizeSpan(southWall, southWall, targets, 'x')`, so
-  `total_span = pos_end - pos_start = 0` → `spacing = 0` (`ifc_service.py:3325-3332`) and every
-  window collapses to `-width/2`. Locked-segment redistribution does not exist. The gate only asserts
-  that `refs`/`eq_group` were *stored* (`test_dimensions_crud.py:245-255`).
-- **2.7** ⚠️ `levels` contract + datum lines + bubbles + `LevelMove` are real. ❌ **grid spacing
-  editable by dimension: no such code** — the grid contract carries only tag/`d`/`circle_center`
-  (`ifc_service.py:5860-5866`) and grid click only selects (`PlanViewport2D.tsx:1007`).
-- **2.8** ✅ real.
-
-### Phase 3 — mostly real, two overstatements
-- **3.1** ⚠️ moves both walls and recomputes joins ✅, but the claim "clamps within both wall extents"
-  is **not in the corner path** (no clamp in `ifc_service.py:1419-1462`).
-- **3.2**, **3.3**, **3.5** ✅ real (gate 30/30).
-- **3.4** ⚠️ TR/SL/SO real; **`DI` is disabled** and absent from the hotkey table
-  (`useBimStore.ts:967-1017`). The DONE note quietly drops DI from the claim.
-
-### Phase 3.5 — gate passes, feature broken
-`test_session_undo_memento.py` is 12/12 ✅, but it only covers the three commands that *do* have
-mementos (`WallCreate`, `MoveElement`, `WallTrimExtend`). See BUG C.
-
-### Phase 4 — mostly real, one missing candidate, zero gate coverage
-Real: snap engine (`src/interaction/snapEngine.ts` — genuine intersection/perpendicular/midpoint
-maths), F3 toggle, hover pre-highlight `#38bdf8`, window-vs-crossing selection, Ctrl-add, Tab-cycling,
-wall chaining, ghost previews, in-canvas temporary dimensions.
-- ❌ **4.1 `extension` snap candidate does not exist** — `SnapKind` is
-  `'intersection'|'endpoint'|'midpoint'|'perpendicular'|'grid'` (`snapEngine.ts:14`); grep for
-  `extension` in `src/` returns nothing. Also "SVG tooltips" are always-visible `<text>` labels.
-- ⚠️ **4.6** "witness lines from real references" holds only for walls; for other elements
-  `witnessP1/P2` are bbox centres (`useBimStore.ts:1090,1147-1152`), which the code itself admits at
-  `:1069-1074`.
-- ❌ **The plan's "Verification: `npm run check` (196 checks)" does not verify Phase 4** —
-  `scripts/check-ui-p0.mjs` contains **zero** assertions for snaps, F3, hover, selection boxes or Tab.
-  `snapEngine` has no test consumer at all.
-- Dead/unwired: the grid fallback at `PlanViewport2D.tsx:437-441` is unreachable (engine always
-  returns a grid candidate); `SnapOptions.points` is never supplied; Tab can never reach a level
-  (the candidate scan omits `sliced2D.levels`); `activeSnapCandidate` is not cleared when snaps are
-  toggled off (`PlanViewport2D.tsx:420`).
-
-### Phase 5 — works in isolation, breaks 8 other suites
-Real: Type Selector combobox, `EditTypeModal` parameter table + SVG preview + Duplicate,
-type→instance propagation, `IfcRelDefinesByType`, gate 34/34 ✅.
-But this phase is the source of BUG A and BUG B. Also:
-- The compound layers table in `EditTypeModal.tsx:475-507` is **read-only display text** — no
-  add/remove/edit (single-layer case only edits through the Thickness field).
-- `_register_type_entity` wraps IFC creation in `except Exception: pass`
-  (`ifc_service.py:536-537`), so a type can be in the registry but absent from the IFC.
-- `TypeUpdate` undo uses `parameters.update(old_params)` (`command_bus.py:1015-1019`), so keys added
-  by an edit are never removed on undo.
-
-### Phase 6 — two concrete defects
-- ✅ Sheet list, New Sheet, delete, viewport drag, hover delete, schedules (computed from live
-  `elements`, CSV export) are real.
-  Minor: auto-numbering is max+1 across all sheets using the *first* sheet's prefix, so with the
-  default `A101`/`A201` you get `A202`, not `A102`.
-- ❌ **In-place title-block editing is a silent no-op.** `SheetCanvas.tsx:103-108` sends camelCase
-  `{ sheetTitle }`, `{ sheetNumber }`, `{ drawnBy }`, but `SheetUpdateParams._normalize_keys`
-  (`command_bus.py:265-277`) only normalises the top-level `sheetId`, and `update_sheet`
-  (`ifc_service.py:6095-6108`) reads only `sheet_title` / `sheet_number` / `drawn_by`. The command
-  succeeds and changes nothing.
-- ❌ **Batch PDF is not a set.** `SheetCanvas.tsx:84-92`:
-  ```js
-  svgContent: s.id === sheet.id ? currentSvgStr : currentSvgStr, // serializes set
-  ```
-  Every sheet maps to the same SVG — a 3-sheet export is 3 copies of the active sheet.
-
-### Phase 7 — mostly real, several decorative controls
-Real: OptionsBar mounted (`Ribbon.tsx:1263`) with genuine store bindings, ContextMenu in both
-viewports with real store methods, hotkeys CS/WT/ZA/ZE/MD, Create Similar, Select All Instances,
-selection outline, interactive flip arrow.
-- ❌ **Door/window sill-height control does not exist** — `sillInput` is declared and never rendered
-  (`OptionsBar.tsx:44`).
-- ❌ "Contextual ribbon tabs with element-specific tools": only the **tab label** is contextual; it
-  switches to the single generic `Modify` tab and the panel does not vary by element class
-  (`Ribbon.tsx:181-196,503-515,1031+`). Many buttons are `renderDummyTool` (`Ribbon.tsx:335-347`).
-- ❌ **Endpoint grips are visual only** — plain `<circle>` with no pointer handlers
-  (`PlanViewport2D.tsx:2022-2040`).
-- ⚠️ Decorative/uncontrolled: Align Multi/Lock checkboxes, "Tag on Placement", static Trim mode
-  spans, static "Join Status: Allow" (`OptionsBar.tsx:174-179,202-205,216-224,234-242`).
-- ⚠️ `ZA` and `ZE` dispatch the same `ZOOM_EXTENTS_EVENT`, so "Zoom All" is not distinct.
-
-## 5. Frontend gates
-
-`npx tsc --noEmit` ✅ and `npm run build` ✅. `npm run check` **exits 1** on Linux because
-`scripts/check-delta-equivalence.mjs:44-69` hardcodes `.venv/Scripts/python.exe` and falls back to
-bare `python`, which does not exist on Linux (system python is `python3`). That failure is not yours,
-but it means "196/196 green" is Windows-only and is not evidence for Phases 4/5/6/7 — those check
-scripts contain no assertions for any of those features.
-
-Suggested: resolve the interpreter portably (`process.env.PYTHON ?? python3`) so the gate is honest
-on both platforms.
-
-## 6. Genuinely good work (keep it)
-
-`snapEngine.ts` geometry; window/crossing selection; hover pre-highlight; split refusal/re-host/gap
-semantics; level datum lines and bubbles; Type Selector + `EditTypeModal` structure; `ScheduleModal`
-computed from the live store; ContextMenu; and the four new gates that pass:
-`test_mesh_hlr_incremental.py` (11/11), `test_trim_split_gate.py` (30/30),
-`test_session_undo_memento.py` (12/12), `test_type_layer_gate.py` (34/34).
-
-## 7. Definition of done for the fix round
-
-1. BUG A fixed — `save_orlt_project` succeeds on a fresh manager; `/api/project/export-bimworks`
-   returns 200; `scratch/test_dimensions_crud.py` completes and reports its real count.
-2. BUG B fixed — `add_wall(name="South", thickness=0.5)` preserves both.
-3. BUG C fixed — `test_transactions`, `test_sheets_pdf`, `test_sketch_mode` green; no registered
-   command has a no-op undo.
-4. **Run the whole net, not just the new gates**, on your platform:
-   ```bash
-   for f in scratch/test_*.py; do ./.venv/bin/python "$f" || echo "FAIL $f"; done
-   npm run check
-   ```
-   Target: no regressions versus `main` (i.e. only the two pre-existing failures —
-   `test_update_roof` on a machine without the `Z:` drive, and the `test_scale_gate` budget).
-5. Then correct the plan document: re-stamp only what the net proves, and either implement or
-   explicitly re-open 2.6 (EQ chains), 2.7 (grid-dimension), 3.4 (DI), 4.1 (`extension`),
-   4.6 (non-wall witness refs), 6 (title-block keys, batch PDF), 7 (sill height, contextual tab,
-   grips).
-
-**Note on the verification culture.** Each phase was verified with a narrow new gate that passes,
-while the existing 22-suite net that the plan's own §0a.1 designates as the regression net was not
-run. That is why Phase 5 could be "34/34 green" while breaking eight other suites. Run the net.
+1. Rows 2.6, 2.7, 2.4, 3.4, 3.1, 4.1, 4.6, and the Phase 6 batch-PDF / Phase 7 grips + contextual-tab
+   items are either implemented, or explicitly downgraded from ✅ to ⬜/PARTIAL in the plan.
+2. The plan header sentence is narrowed to match what was actually fixed.
+3. `test_scale_gate.py` is measured over several runs and reported honestly, or the budget/threshold is
+   reconciled.
+4. If `_solve_pure_python` is intended to be a supported path, it needs a test that forces
+   `Sketch is None`; otherwise say so in the plan.
