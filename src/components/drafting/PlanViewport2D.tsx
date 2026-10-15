@@ -114,6 +114,8 @@ export const PlanViewport2D: React.FC = () => {
     toggleConstraintLock,
     lockDimension,
     equalizeSouthWallWindows,
+    setDimensionValue,
+    createDimension,
     activeTool,
     alignPickState,
     setAlignPickState,
@@ -148,6 +150,8 @@ export const PlanViewport2D: React.FC = () => {
   const [firstPoint, setFirstPoint] = useState<[number, number] | null>(null);
   const [currentPoint, setCurrentPoint] = useState<[number, number] | null>(null);
   const [sketchStartPoint, setSketchStartPoint] = useState<[number, number] | null>(null);
+  const [editingDimension, setEditingDimension] = useState<{ id: string; mx: number; my: number } | null>(null);
+  const [dimInputVal, setDimInputVal] = useState<string>('');
 
   // Helper to snap to nearest existing sketch vertex within tolerance
   const findSnapVertex = useCallback(
@@ -781,21 +785,27 @@ export const PlanViewport2D: React.FC = () => {
 
             // Check if dimension is locked or equalized
             const dimConstraint = constraints.find(
-              (c) => c.type === 'dimension_lock' && (c.guid_a === dim.guid || c.guid_b === dim.guid)
+              (c) =>
+                c.type === 'dimension_lock' &&
+                ((dim.guid && (c.guid_a === dim.guid || c.guid_b === dim.guid)) ||
+                  (dim.id && (c as any).dimension_id === dim.id))
             );
-            const isLocked = dimConstraint ? dimConstraint.is_locked : false;
+            const isLocked = dim.is_locked || (dimConstraint ? dimConstraint.is_locked : false);
             const isEq = constraints.some(
               (c) =>
                 c.type === 'equalize' &&
                 c.is_equalized &&
-                (c.interior_guids?.includes(dim.guid) ||
-                  c.span_start_guid === dim.guid ||
-                  c.span_end_guid === dim.guid)
+                Boolean(
+                  dim.guid &&
+                    (c.interior_guids?.includes(dim.guid) ||
+                      c.span_start_guid === dim.guid ||
+                      c.span_end_guid === dim.guid)
+                )
             );
             const showBadges = isSelected || isLocked || isEq;
 
             return (
-              <g key={`dim-${idx}`} className="text-dimension select-none">
+              <g key={dim.id || `dim-${idx}`} className="text-dimension select-none">
                 {/* Witness lines from wall to dimension line */}
                 <line
                   x1={dim.start[0]}
@@ -827,7 +837,7 @@ export const PlanViewport2D: React.FC = () => {
                   vectorEffect="non-scaling-stroke"
                 />
 
-                {/* Dimension Text with readability halo */}
+                {/* Dimension Text with readability halo & in-canvas click to edit */}
                 <text
                   x={mx}
                   y={-my - 0.10}
@@ -841,6 +851,15 @@ export const PlanViewport2D: React.FC = () => {
                   stroke="#ffffff"
                   strokeWidth="0.08"
                   strokeLinejoin="round"
+                  className="cursor-pointer hover:fill-sky-600 transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const targetId = dim.id || dim.guid;
+                    if (targetId) {
+                      setEditingDimension({ id: targetId, mx, my });
+                      setDimInputVal(formatLength(dim.length, displayUnit));
+                    }
+                  }}
                 >
                   {isEq ? 'EQ' : dim.text}
                 </text>
@@ -854,7 +873,9 @@ export const PlanViewport2D: React.FC = () => {
                       e.stopPropagation();
                       if (dimConstraint) {
                         toggleConstraintLock(dimConstraint.id, !isLocked);
-                      } else {
+                      } else if (dim.ref_a?.guid && dim.ref_b?.guid) {
+                        lockDimension(dim.ref_a.guid, dim.ref_b.guid, dim.length, (dim.axis as any) || 'x');
+                      } else if (dim.guid) {
                         lockDimension(dim.guid, dim.guid, dim.length);
                       }
                     }}
@@ -1295,6 +1316,46 @@ export const PlanViewport2D: React.FC = () => {
           </div>
         );
       })()}
+
+      {/* In-Canvas Inline Dimension Editor (Revit-feel in-place editing) */}
+      {editingDimension && (
+        <div
+          className="absolute z-30 -translate-x-1/2 -translate-y-1/2 flex items-center bg-white/95 px-2 py-1 rounded shadow-lg border border-sky-400 font-mono text-xs animate-fade-in"
+          style={{
+            left: `${pan.x + editingDimension.mx * scale}px`,
+            top: `${pan.y - editingDimension.my * scale}px`,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            type="text"
+            autoFocus
+            value={dimInputVal}
+            placeholder={'12\'-6"'}
+            onChange={(e) => setDimInputVal(e.target.value)}
+            onKeyDown={async (e) => {
+              if (e.key === 'Enter') {
+                const feet = tryParseLength(dimInputVal);
+                if (feet === null || feet <= 0) {
+                  setStatusMessage(`Not a valid positive length: "${dimInputVal}". Try 12'-6", 12.5', or 3800 mm.`);
+                  return;
+                }
+                try {
+                  await setDimensionValue(editingDimension.id, feet);
+                } catch (err) {
+                  console.error('Dimension edit failed', err);
+                }
+                setEditingDimension(null);
+              } else if (e.key === 'Escape') {
+                e.stopPropagation();
+                setEditingDimension(null);
+              }
+            }}
+            onBlur={() => setEditingDimension(null)}
+            className="w-24 px-1.5 py-0.5 bg-slate-900 text-sky-100 rounded border border-sky-500 text-xs font-mono outline-none shadow-inner"
+          />
+        </div>
+      )}
 
       {/* Dynamic Temporary Dimension Pill Overlay */}
       {tempDimension && (

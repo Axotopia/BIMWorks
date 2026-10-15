@@ -126,13 +126,32 @@ export interface Sliced2DData {
   }>;
   grids: Array<{ guid: string; tag: string; d: string; circle_center: [number, number] }>;
   dimensions: Array<{
-    guid: string;
+    id?: string;
+    guid?: string | null;
+    kind?: string;
     start: [number, number];
     end: [number, number];
     length: number;
     text: string;
     offset_norm: [number, number];
+    is_locked?: boolean;
+    ref_a?: { guid: string; ref?: string };
+    ref_b?: { guid: string; ref?: string };
+    axis?: string;
   }>;
+}
+
+export interface OverlayDimension {
+  id: string;
+  kind: 'aligned' | 'linear' | 'angular' | 'radial';
+  ref_a: { guid: string; ref?: string; point?: [number, number] };
+  ref_b: { guid: string; ref?: string; point?: [number, number] };
+  axis: 'x' | 'y' | 'aligned';
+  offset: number;
+  value: number;
+  is_locked: boolean;
+  constraint_id?: string | null;
+  eq_group?: string | null;
 }
 
 export type ViewType = 'floor_plan' | '3d' | 'section' | 'elevation' | 'sheet';

@@ -113,6 +113,28 @@ class ConstraintEqualizeParams(BaseModel):
     axis: Literal["x", "y"] = Field(default="x", description="Equalization axis")
 
 
+class DimensionCreateParams(BaseModel):
+    dimension_id: Optional[str] = Field(default=None, description="Optional stable dimension identifier")
+    kind: Literal["aligned", "linear", "angular", "radial"] = Field(default="aligned", description="Dimension type")
+    ref_a: Dict[str, Any] = Field(..., description="First witness reference, e.g. {'guid': str, 'ref': 'start'}")
+    ref_b: Dict[str, Any] = Field(..., description="Second witness reference, e.g. {'guid': str, 'ref': 'end'}")
+    axis: Literal["x", "y", "aligned"] = Field(default="aligned", description="Measurement axis")
+    offset: float = Field(default=1.0, description="Dimension line offset from reference in feet")
+    value: Optional[float] = Field(default=None, description="Optional explicit initial value in feet")
+    is_locked: bool = Field(default=False, description="Whether dimension is locked as constraint")
+    eq_group: Optional[str] = Field(default=None, description="Optional EQ group identifier")
+
+
+class DimensionValueSetParams(BaseModel):
+    dimension_id: str = Field(..., description="Identifier of dimension to edit (or element GUID)")
+    value: float = Field(..., gt=0.0, description="Target dimension value in decimal feet (must be > 0)")
+    anchor: Literal["start", "end", "center"] = Field(default="start", description="Which end is held fixed while resizing")
+
+
+class DimensionDeleteParams(BaseModel):
+    dimension_id: str = Field(..., description="Identifier of dimension to delete")
+
+
 class ElementUpdateParams(BaseModel):
     guid: str = Field(..., description="GUID of element to update")
     updates: Dict[str, Any] = Field(..., description="Element property updates (polygon, thickness, elevation, pitch, etc.)")
@@ -338,6 +360,9 @@ COMMAND_REGISTRY = {
     "ViewportAdd": ViewportAddParams,
     "ViewportRemove": ViewportRemoveParams,
     "ViewportMove": ViewportMoveParams,
+    "DimensionCreate": DimensionCreateParams,
+    "DimensionValueSet": DimensionValueSetParams,
+    "DimensionDelete": DimensionDeleteParams,
 }
 
 
@@ -619,6 +644,33 @@ class CommandBusEngine:
             p: ViewportMoveParams = validated
             vp = self.manager.move_viewport(p.viewport_id, p.x, p.y, p.sheet_id)
             return {"status": "moved", "viewport_id": p.viewport_id, "x": vp["x"], "y": vp["y"]}
+
+        elif cmd_name == "DimensionCreate":
+            p: DimensionCreateParams = validated
+            dim = self.manager.create_dimension(
+                ref_a=p.ref_a,
+                ref_b=p.ref_b,
+                kind=p.kind,
+                axis=p.axis,
+                offset=p.offset,
+                value=p.value,
+                is_locked=p.is_locked,
+                eq_group=p.eq_group,
+                dimension_id=p.dimension_id,
+            )
+            return {"status": "created", "dimension": dim, "dimension_id": dim["id"]}
+
+        elif cmd_name == "DimensionValueSet":
+            p: DimensionValueSetParams = validated
+            res = self.manager.set_dimension_value(p.dimension_id, p.value, p.anchor)
+            return {"status": "updated", "dimension_id": p.dimension_id, "value": p.value, "result": res}
+
+        elif cmd_name == "DimensionDelete":
+            p: DimensionDeleteParams = validated
+            ok = self.manager.delete_dimension(p.dimension_id)
+            if not ok:
+                raise ValueError(f"Dimension {p.dimension_id} not found")
+            return {"status": "deleted", "dimension_id": p.dimension_id}
 
         raise ValueError(f"Unhandled command execution: {cmd_name}")
 

@@ -211,6 +211,7 @@ class BimModelManager:
         self.constraints_rev: int = 0
         self.wall_joins_rev: int = 0
         self.project_rev: int = 0
+        self.dimensions_rev: int = 0
 
         # Storeys (Levels)
         self.levels: Dict[str, Any] = {}
@@ -235,6 +236,8 @@ class BimModelManager:
 
         # 1D/2D Parametric Constraints Manager
         self.constraints: Dict[str, Dict[str, Any]] = {}
+        # Parametric Overlay Dimensions (Phase 2)
+        self.dimensions: Dict[str, Dict[str, Any]] = {}
         # Last over-constraint/conflict report from the solver (None when clean).
         self.last_constraint_conflict: Optional[Dict[str, Any]] = None
         # Counters from the most recent incremental recompute (P3), used by the
@@ -430,6 +433,7 @@ class BimModelManager:
             "join_policies": copy.deepcopy(self.join_policies),
             "sheets": copy.deepcopy(self.sheets),
             "views": copy.deepcopy(self.views),
+            "dimensions": copy.deepcopy(getattr(self, "dimensions", {})),
             "georeference_data": copy.deepcopy(self.georeference_data),
             "project_name": self.project_name,
             "mesh_revs": copy.deepcopy(self.mesh_revs),
@@ -446,6 +450,7 @@ class BimModelManager:
             "constraints_rev": self.constraints_rev,
             "wall_joins_rev": self.wall_joins_rev,
             "project_rev": self.project_rev,
+            "dimensions_rev": getattr(self, "dimensions_rev", 0),
         }
 
     def restore_state(self, snap: Dict[str, Any]) -> None:
@@ -529,6 +534,7 @@ class BimModelManager:
         self.join_policies = copy.deepcopy(snap["join_policies"])
         self.sheets = copy.deepcopy(snap.get("sheets", {}))
         self.views = copy.deepcopy(snap.get("views", {}))
+        self.dimensions = copy.deepcopy(snap.get("dimensions", {}))
         self.georeference_data = copy.deepcopy(snap["georeference_data"])
         self.project_name = snap["project_name"]
         self.mesh_revs = copy.deepcopy(snap.get("mesh_revs", {}))
@@ -545,6 +551,7 @@ class BimModelManager:
         self.constraints_rev = snap.get("constraints_rev", 0)
         self.wall_joins_rev = snap.get("wall_joins_rev", 0)
         self.project_rev = snap.get("project_rev", 0)
+        self.dimensions_rev = snap.get("dimensions_rev", 0)
 
     def mark_mesh_dirty(self, *guids: str, clear_cache: bool = True) -> None:
         """Marks elements as having modified geometry/placement."""
@@ -2100,6 +2107,14 @@ class BimModelManager:
         if guid not in self.element_meta:
             return False
 
+        if hasattr(self, "dimensions") and self.dimensions:
+            dead_dims = [
+                did for did, d in self.dimensions.items()
+                if (d.get("ref_a", {}).get("guid") == guid or d.get("ref_b", {}).get("guid") == guid)
+            ]
+            for did in dead_dims:
+                self.delete_dimension(did)
+
         meta = self.element_meta[guid]
         ifc_class = meta.get("ifc_class")
         if ifc_class == "IfcGrid":
@@ -2328,27 +2343,31 @@ class BimModelManager:
         Runs on both axes because a constraint may pin an element on the axis the
         user did not drag.
         """
-        from constraint_solver import ConstraintSolver
+        try:
+            from constraint_solver import ConstraintSolver, SolverUnavailable
 
-        solver = ConstraintSolver(self)
-        scope = solver.affected_guids([moved_guid])
-        if len(scope) <= 1:
-            return
-        for axis in ("x", "y"):
-            pins = {
-                g: self.get_element_coord(g, axis)
-                for g in (moved_guid,)
-                if g in self.element_meta
-            }
-            result = solver.solve(axis=axis, pins=pins, scope=scope)
-            if result.ok:
-                solver.apply_solve(result)
-            elif result.status == "conflict":
-                self.last_constraint_conflict = {
-                    "axis": axis,
-                    "constraints": result.conflicting,
-                    "triggered_by": moved_guid,
+            solver = ConstraintSolver(self)
+            scope = solver.affected_guids([moved_guid])
+            if len(scope) <= 1:
+                return
+            for axis in ("x", "y"):
+                pins = {
+                    g: self.get_element_coord(g, axis)
+                    for g in (moved_guid,)
+                    if g in self.element_meta
                 }
+                result = solver.solve(axis=axis, pins=pins, scope=scope)
+                if result.ok:
+                    solver.apply_solve(result)
+                elif result.status == "conflict":
+                    self.last_constraint_conflict = {
+                        "axis": axis,
+                        "constraints": result.conflicting,
+                        "triggered_by": moved_guid,
+                    }
+        except Exception as e:
+            # Solver unavailable (e.g. planegcs not installed) or conflict: keep model intact
+            return
 
         # EQ is a relation over the whole span, so it is re-asserted last: if the
         # user moved an interior element of an equalized span, the constraint wins
@@ -2791,6 +2810,233 @@ class BimModelManager:
             self.save_constraints_to_ifc()
             return True
         return False
+
+    # =========================================================================
+    # PARAMETRIC OVERLAY DIMENSIONS & DIMENSION-DRIVEN EDITING (Phase 2)
+    # =========================================================================
+
+    def _resolve_ref_coords(self, ref: Dict[str, Any]) -> Tuple[float, float]:
+        """Resolves 2D coordinates [x, y] in decimal feet for a dimension witness reference."""
+        if not isinstance(ref, dict):
+            return (0.0, 0.0)
+        guid = ref.get("guid")
+        if not guid or guid not in self.element_meta:
+            if "point" in ref and len(ref["point"]) >= 2:
+                return (float(ref["point"][0]), float(ref["point"][1]))
+            return (0.0, 0.0)
+
+        meta = self.element_meta[guid]
+        target_ref = ref.get("ref", "center")
+        if target_ref == "start" and "start" in meta and meta["start"]:
+            return (float(meta["start"][0]), float(meta["start"][1]))
+        if target_ref == "end" and "end" in meta and meta["end"]:
+            return (float(meta["end"][0]), float(meta["end"][1]))
+        if target_ref in ("center", "midpoint"):
+            if "start" in meta and "end" in meta and meta["start"] and meta["end"]:
+                sp, ep = meta["start"], meta["end"]
+                return ((float(sp[0]) + float(ep[0])) / 2.0, (float(sp[1]) + float(ep[1])) / 2.0)
+            if "bbox" in meta and "min" in meta["bbox"] and "max" in meta["bbox"]:
+                b = meta["bbox"]
+                return ((float(b["min"][0]) + float(b["max"][0])) / 2.0, (float(b["min"][1]) + float(b["max"][1])) / 2.0)
+        if "start" in meta and meta["start"]:
+            return (float(meta["start"][0]), float(meta["start"][1]))
+        return (0.0, 0.0)
+
+    def create_dimension(
+        self,
+        ref_a: Dict[str, Any],
+        ref_b: Dict[str, Any],
+        kind: str = "aligned",
+        axis: str = "aligned",
+        offset: float = 1.0,
+        value: Optional[float] = None,
+        is_locked: bool = False,
+        eq_group: Optional[str] = None,
+        dimension_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Creates a persistent parametric dimension object in the overlay (A4).
+        If `is_locked` is True, registers an active distance constraint lock.
+        """
+        dim_id = dimension_id or f"dim_{uuid.uuid4().hex[:8]}"
+
+        # Derive initial value if not explicitly passed
+        if value is None:
+            if ref_a.get("guid") == ref_b.get("guid") and ref_a.get("guid") in self.element_meta:
+                meta = self.element_meta[ref_a["guid"]]
+                if "start" in meta and "end" in meta and meta["start"] and meta["end"]:
+                    sp, ep = meta["start"], meta["end"]
+                    value = float(math.hypot(ep[0] - sp[0], ep[1] - sp[1]))
+            if value is None:
+                pa = self._resolve_ref_coords(ref_a)
+                pb = self._resolve_ref_coords(ref_b)
+                if axis == "x":
+                    value = abs(pb[0] - pa[0])
+                elif axis == "y":
+                    value = abs(pb[1] - pa[1])
+                else:
+                    value = float(math.hypot(pb[0] - pa[0], pb[1] - pa[1]))
+
+        val_float = float(value if value is not None else 10.0)
+
+        constraint_id = None
+        if is_locked:
+            guid_a = ref_a.get("guid")
+            guid_b = ref_b.get("guid")
+            if guid_a and guid_b and guid_a != guid_b and guid_a in self.element_meta and guid_b in self.element_meta:
+                c = self.add_dimension_lock(
+                    guid_a=guid_a,
+                    guid_b=guid_b,
+                    locked_distance=val_float,
+                    is_locked=True,
+                    axis=axis if axis in ("x", "y") else "x",
+                )
+                constraint_id = c.get("id")
+
+        dim = {
+            "id": dim_id,
+            "kind": kind,
+            "ref_a": copy.deepcopy(ref_a),
+            "ref_b": copy.deepcopy(ref_b),
+            "axis": axis,
+            "offset": float(offset),
+            "value": val_float,
+            "is_locked": bool(is_locked),
+            "constraint_id": constraint_id,
+            "eq_group": eq_group,
+        }
+        self.dimensions[dim_id] = dim
+        self.dimensions_rev += 1
+        self.project_rev += 1
+        return dim
+
+    def delete_dimension(self, dimension_id: str) -> bool:
+        """Deletes a dimension object and releases any associated constraint lock."""
+        if dimension_id not in self.dimensions:
+            return False
+        dim = self.dimensions.pop(dimension_id)
+        cid = dim.get("constraint_id")
+        if cid and cid in self.constraints:
+            self.delete_constraint(cid)
+        self.dimensions_rev += 1
+        self.project_rev += 1
+        return True
+
+    def set_dimension_value(
+        self,
+        dimension_id: str,
+        value: float,
+        anchor: str = "start",
+    ) -> Dict[str, Any]:
+        """
+        Sets the value of a dimension and re-solves the geometry (Phase 2.5).
+        Carries the TARGET VALUE (not a delta).
+        - For a single-wall dimension (start <-> end), resizes the wall along its baseline.
+        - For a two-element dimension, translates the unanchored element and solves constraints.
+        """
+        if value <= 0:
+            raise ValueError(f"Dimension value must be positive, got {value}")
+
+        val_float = float(value)
+
+        # Case 1: dimension_id exists in self.dimensions
+        if dimension_id in self.dimensions:
+            dim = self.dimensions[dimension_id]
+            ref_a = dim.get("ref_a", {})
+            ref_b = dim.get("ref_b", {})
+            guid_a = ref_a.get("guid")
+            guid_b = ref_b.get("guid")
+
+            if guid_a and (guid_a == guid_b or not guid_b):
+                self._resize_wall_length(guid_a, val_float, anchor=anchor)
+                dim["value"] = val_float
+                self._solve_constraints_after_move(guid_a)
+            elif guid_a and guid_b:
+                pa = self._resolve_ref_coords(ref_a)
+                pb = self._resolve_ref_coords(ref_b)
+                axis = dim.get("axis", "aligned")
+                if axis == "x":
+                    cur_diff = pb[0] - pa[0]
+                    sign = 1.0 if cur_diff >= 0 else -1.0
+                    target_x = pa[0] + sign * val_float
+                    dx = target_x - pb[0]
+                    dy = 0.0
+                elif axis == "y":
+                    cur_diff = pb[1] - pa[1]
+                    sign = 1.0 if cur_diff >= 0 else -1.0
+                    target_y = pa[1] + sign * val_float
+                    dx = 0.0
+                    dy = target_y - pb[1]
+                else:
+                    dist = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
+                    if dist > 1e-6:
+                        ux = (pb[0] - pa[0]) / dist
+                        uy = (pb[1] - pa[1]) / dist
+                        target_x = pa[0] + ux * val_float
+                        target_y = pa[1] + uy * val_float
+                        dx = target_x - pb[0]
+                        dy = target_y - pb[1]
+                    else:
+                        dx = val_float
+                        dy = 0.0
+
+                self.translate_element(guid_b, dx, dy, 0.0)
+                dim["value"] = val_float
+                cid = dim.get("constraint_id")
+                if cid and cid in self.constraints:
+                    self.constraints[cid]["locked_distance"] = val_float
+                try:
+                    self._solve_constraints_after_move(guid_b)
+                except Exception:
+                    pass
+
+        # Case 2: dimension_id is an element GUID directly in self.element_meta
+        elif dimension_id in self.element_meta:
+            self._resize_wall_length(dimension_id, val_float, anchor=anchor)
+            # Synchronize any single-wall dimensions monitoring this element
+            for d in self.dimensions.values():
+                if d.get("ref_a", {}).get("guid") == dimension_id and d.get("ref_b", {}).get("guid") == dimension_id:
+                    d["value"] = val_float
+            try:
+                self._solve_constraints_after_move(dimension_id)
+            except Exception:
+                pass
+        else:
+            raise KeyError(f"Dimension or element '{dimension_id}' not found")
+
+        self.dimensions_rev += 1
+        self.project_rev += 1
+        return {"status": "updated", "dimension_id": dimension_id, "value": val_float}
+
+    def _resize_wall_length(self, guid: str, new_length: float, anchor: str = "start") -> None:
+        """Resizes a wall along its existing baseline to `new_length` in decimal feet."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Wall {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcWall", "IfcWallStandardCase"):
+            raise ValueError(f"Length resize only supported for walls, got {meta.get('ifc_class')}")
+
+        sp = list(meta["start"])
+        ep = list(meta["end"])
+        cur_len = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
+        if cur_len < 1e-6:
+            ux, uy = 1.0, 0.0
+        else:
+            ux = (ep[0] - sp[0]) / cur_len
+            uy = (ep[1] - sp[1]) / cur_len
+
+        if anchor == "end":
+            new_sp = [ep[0] - ux * new_length, ep[1] - uy * new_length, sp[2] if len(sp) > 2 else 0.0]
+            self.update_element(guid, {"start": new_sp})
+        elif anchor == "center":
+            mx, my = (sp[0] + ep[0]) / 2.0, (sp[1] + ep[1]) / 2.0
+            hl = new_length / 2.0
+            new_sp = [mx - ux * hl, my - uy * hl, sp[2] if len(sp) > 2 else 0.0]
+            new_ep = [mx + ux * hl, my + uy * hl, ep[2] if len(ep) > 2 else 0.0]
+            self.update_element(guid, {"start": new_sp, "end": new_ep})
+        else:  # default "start" (end moves along baseline)
+            new_ep = [sp[0] + ux * new_length, sp[1] + uy * new_length, ep[2] if len(ep) > 2 else 0.0]
+            self.update_element(guid, {"end": new_ep})
 
     def set_wall_join(
         self,
@@ -3723,6 +3969,16 @@ class BimModelManager:
                     self.views[vid] = copy.deepcopy(v)
             elif isinstance(raw_views, dict):
                 self.views = copy.deepcopy(raw_views)
+
+        if "dimensions" in overlay and isinstance(overlay["dimensions"], (list, dict)):
+            raw_dims = overlay["dimensions"]
+            self.dimensions = {}
+            if isinstance(raw_dims, list):
+                for d in raw_dims:
+                    did = d.get("id") or f"dim_{uuid.uuid4().hex[:8]}"
+                    self.dimensions[did] = copy.deepcopy(d)
+            elif isinstance(raw_dims, dict):
+                self.dimensions = copy.deepcopy(raw_dims)
 
         if reported_ifc_guids:
             overlay_guids = set(elements.keys())
@@ -5073,8 +5329,37 @@ class BimModelManager:
         # `_mesh_hlr_plan_contract` silently stopped rotating plans for a rotated model
         # (`plan_rotation` is -17.1 deg on the reference building).
         contract = self._orient_plan(contract, self._plan_rotation())
-        if not contract.get("dimensions"):
-            contract["dimensions"] = self._overall_dimensions(contract)
+        dims_out = []
+        if hasattr(self, "dimensions") and self.dimensions:
+            for did, d in self.dimensions.items():
+                ref_a = d.get("ref_a", {})
+                ref_b = d.get("ref_b", {})
+                pa = self._resolve_ref_coords(ref_a)
+                pb = self._resolve_ref_coords(ref_b)
+                dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+                dist = _math.hypot(dx, dy)
+                if dist > 1e-6:
+                    nx, ny = -dy / dist, dx / dist
+                else:
+                    nx, ny = 0.0, 1.0
+                val = float(d.get("value", dist))
+                dims_out.append({
+                    "id": did,
+                    "guid": ref_a.get("guid"),
+                    "kind": d.get("kind", "aligned"),
+                    "start": [float(pa[0]), float(pa[1])],
+                    "end": [float(pb[0]), float(pb[1])],
+                    "length": val,
+                    "text": format_feet_inches(val),
+                    "offset_norm": [float(nx), float(ny)],
+                    "is_locked": bool(d.get("is_locked", False)),
+                    "ref_a": ref_a,
+                    "ref_b": ref_b,
+                    "axis": d.get("axis", "aligned"),
+                })
+        if not dims_out:
+            dims_out = self._overall_dimensions(contract)
+        contract["dimensions"] = dims_out
         return contract
 
     # =========================================================================
@@ -5368,6 +5653,7 @@ class BimModelManager:
             "internal_units": INTERNAL_UNIT,
             "constraints": self._jsonable(self.constraints),
             "join_policies": self._jsonable(self.join_policies),
+            "dimensions": self._jsonable(list(self.dimensions.values())),
             "sheets": self._jsonable(sorted(list(self.sheets.values()), key=lambda s: s["id"])),
             "views": self._jsonable(sorted(list(self.views.values()), key=lambda v: v["id"])),
             "levels": [
@@ -5504,6 +5790,7 @@ class BimModelManager:
             # tessellation import and only re-attach metadata that is GUID-gated.
             self.constraints = self._jsonable(overlay.get("constraints", {}) or {})
             self.join_policies = self._jsonable(overlay.get("join_policies", {}) or {})
+            self.dimensions = self._jsonable(overlay.get("dimensions", {}) or {})
             elements_overlay = overlay.get("elements", {}) or {}
             applied, stale = [], []
             for g, o_meta in elements_overlay.items():

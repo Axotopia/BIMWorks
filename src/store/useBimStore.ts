@@ -129,6 +129,10 @@ export const UI_ACTION_COMMANDS = {
   addViewportToSheet: 'ViewportAdd',
   removeViewportFromSheet: 'ViewportRemove',
   moveViewport: 'ViewportMove',
+  // Phase 2 dimension-driven editing commands
+  createDimension: 'DimensionCreate',
+  setDimensionValue: 'DimensionValueSet',
+  deleteDimension: 'DimensionDelete',
 } as const;
 
 export type UiAction = keyof typeof UI_ACTION_COMMANDS;
@@ -562,6 +566,18 @@ interface BimStoreState {
   setAlignPickState: (state: { step: 'pick_ref' | 'pick_target' | null; refGuid: string | null }) => void;
   deleteConstraint: (constraintId: string) => Promise<void>;
   equalizeSouthWallWindows: () => Promise<void>;
+  setDimensionValue: (dimensionId: string, value: number, anchor?: 'start' | 'end' | 'center') => Promise<void>;
+  createDimension: (params: {
+    ref_a: { guid: string; ref?: string; point?: [number, number] };
+    ref_b: { guid: string; ref?: string; point?: [number, number] };
+    kind?: 'aligned' | 'linear' | 'angular' | 'radial';
+    axis?: 'x' | 'y' | 'aligned';
+    offset?: number;
+    value?: number;
+    is_locked?: boolean;
+    eq_group?: string;
+  }) => Promise<void>;
+  deleteDimension: (dimensionId: string) => Promise<void>;
 
   // API Async Actions
   fetchProjectState: () => Promise<void>;
@@ -987,6 +1003,33 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     // inventing a 12'-0" reading.
     const mesh = get().meshes.find((m) => m.guid === guid);
     if (mesh) {
+      // Phase 2: For walls, measure their baseline length directly so selecting a wall
+      // displays its actual length (and editing resizes it, rather than moving it).
+      if (mesh.params?.start && mesh.params?.end) {
+        const sp = mesh.params.start;
+        const ep = mesh.params.end;
+        const wallLen = Math.hypot(ep[0] - sp[0], ep[1] - sp[1]);
+        if (wallLen > 0.05) {
+          set({
+            tempDimension: {
+              elementGuid: guid,
+              distance: wallLen,
+              displayValue: formatLength(wallLen, get().displayUnit),
+              witnessP1: sp,
+              witnessP2: ep,
+              center: [
+                (sp[0] + ep[0]) / 2,
+                (sp[1] + ep[1]) / 2,
+                ((sp[2] ?? 0) + (ep[2] ?? 0)) / 2,
+              ],
+              axis: 'x',
+              kind: 'length',
+            } as any,
+          });
+          return;
+        }
+      }
+
       const center: [number, number, number] = [
         (mesh.bbox.min[0] + mesh.bbox.max[0]) / 2,
         (mesh.bbox.min[1] + mesh.bbox.max[1]) / 2,
@@ -1085,8 +1128,15 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   setTempDimension: (dim) => set({ tempDimension: dim }),
 
   applyTemporaryDimensionChange: async (newValue: number) => {
-    const { tempDimension, translateElement } = get();
+    const { tempDimension, translateElement, setDimensionValue } = get();
     if (!tempDimension) return;
+
+    // Phase 2.5: If dimension measures element length, resize the element's baseline
+    if ((tempDimension as any).kind === 'length') {
+      await setDimensionValue(tempDimension.elementGuid, newValue, 'start');
+      get().setSelectedGuid(tempDimension.elementGuid);
+      return;
+    }
 
     // Move along the axis the dimension actually measures (set when the
     // dimension was created) instead of always translating world X.
@@ -1227,6 +1277,52 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     } catch (e) {
       set({ statusMessage: `Delete constraint failed: ${failureMessage(e)}` });
       console.error('Failed to delete constraint', e);
+    }
+  },
+
+  setDimensionValue: async (dimensionId: string, value: number, anchor: 'start' | 'end' | 'center' = 'start') => {
+    try {
+      await get().dispatchTransaction(
+        'setDimensionValue',
+        {
+          dimension_id: dimensionId,
+          value,
+          anchor,
+        },
+        `Set dimension to ${value} ft`
+      );
+    } catch (e) {
+      set({ statusMessage: `Set dimension failed: ${failureMessage(e)}` });
+      console.error('Failed to set dimension value', e);
+      throw e;
+    }
+  },
+
+  createDimension: async (params) => {
+    try {
+      await get().dispatchTransaction(
+        'createDimension',
+        params,
+        'Create dimension'
+      );
+    } catch (e) {
+      set({ statusMessage: `Create dimension failed: ${failureMessage(e)}` });
+      console.error('Failed to create dimension', e);
+      throw e;
+    }
+  },
+
+  deleteDimension: async (dimensionId: string) => {
+    try {
+      await get().dispatchTransaction(
+        'deleteDimension',
+        { dimension_id: dimensionId },
+        'Delete dimension'
+      );
+    } catch (e) {
+      set({ statusMessage: `Delete dimension failed: ${failureMessage(e)}` });
+      console.error('Failed to delete dimension', e);
+      throw e;
     }
   },
 
