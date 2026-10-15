@@ -40,7 +40,7 @@ export function mmToFeet(mm: number): number {
  * Formats a decimal feet measurement according to the specified display style.
  */
 export function formatLength(feet: number, system: UnitSystem = 'imperial_fractional'): string {
-  if (isNaN(feet)) return '0"';
+  if (!isFinite(feet)) return '0"';
 
   const isNegative = feet < 0;
   const absFeet = Math.abs(feet);
@@ -60,19 +60,14 @@ export function formatLength(feet: number, system: UnitSystem = 'imperial_fracti
   }
 
   // Default: imperial_fractional (Revit architectural standard)
-  const totalInches = absFeet * 12;
+  const totalSixteenths = Math.round(absFeet * 12 * 16);
+  const sixteenths = totalSixteenths % 16;
+  const totalInches = Math.floor(totalSixteenths / 16);
+  const wholeInches = totalInches % 12;
   const wholeFeet = Math.floor(totalInches / 12);
-  const remainingInches = totalInches - wholeFeet * 12;
-  const wholeInches = Math.floor(remainingInches);
-  const frac = remainingInches - wholeInches;
 
-  // Round fraction to nearest 1/16th
-  const sixteenths = Math.round(frac * 16);
   let fracStr = '';
-
-  if (sixteenths === 16) {
-    return formatLength(isNegative ? -(absFeet + 1 / 12) : absFeet + 1 / 12, 'imperial_fractional');
-  } else if (sixteenths > 0) {
+  if (sixteenths > 0) {
     if (sixteenths % 8 === 0) {
       fracStr = `${sixteenths / 8}/2"`;
     } else if (sixteenths % 4 === 0) {
