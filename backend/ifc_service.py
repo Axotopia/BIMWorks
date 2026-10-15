@@ -1444,8 +1444,10 @@ class BimModelManager:
             g: m for g, m in self.element_meta.items()
             if m.get("ifc_class") in ("IfcWall", "IfcWallStandardCase") and "start" in m and "end" in m
         }
+        join_index = self._build_join_index(wall_candidates)
         for end_idx in (0, 1):
-            partner_guid, _kind, _oe = self._find_join_partner(guid, end_idx, wall_candidates)
+            partner_guid, _kind, _oe = self._find_join_partner(
+                guid, end_idx, wall_candidates, join_index)
             if partner_guid:
                 self.mark_mesh_dirty(partner_guid)
         if not self._suppress_join_recompute:
@@ -2765,15 +2767,92 @@ class BimModelManager:
             (sx - nx, sy - ny),
         ]
 
-    def _find_join_partner(self, guid, end_index, walls):
+    #: Grid cell (feet) for the join-partner candidate index. See `_join_candidates`.
+    #: 1 ft >> the 0.05 ft coincidence tolerance, so a 3x3 neighbourhood lookup is a
+    #: superset of every candidate the old full scan could match.
+    _JOIN_INDEX_CELL = 1.0
+
+    def _build_join_index(self, walls):
+        """
+        Candidate index for `_find_join_partner`, built once per join pass.
+
+        The partner search used to scan every wall for every wall end, which is the
+        O(N^2) term that dominated an edit once the plan cache removed the view cost
+        (measured: 2,004,002 wall visits for a single move at N=1000). Two lookups:
+
+          * `endpoints` buckets wall ends by grid cell. A corner partner must have an
+            endpoint within `_JOIN_TOL` (0.05 ft), and 0.05 < 1.0 cell, so every
+            possible corner partner is in the query point's own or one adjacent cell.
+          * `baselines` buckets each wall by every grid cell its bounding box touches.
+            A tee partner must have the query point within `tol + thickness/2` of its
+            baseline, so its bbox is within that of the point — hence in the point's
+            cell or one adjacent.
+
+        Both yield a SUPERSET of the old scan's candidates; the exact tolerance tests
+        in `_find_join_partner` are unchanged, so results are identical. Candidates are
+        returned in `walls` iteration order so the first match, and therefore the
+        chosen partner, does not change.
+        """
+        endpoints: Dict[Tuple[int, int], List[Tuple[str, int]]] = {}
+        baselines: Dict[Tuple[int, int], List[str]] = {}
+        cell = self._JOIN_INDEX_CELL
+        for other_guid, om in walls.items():
+            if "start" not in om or "end" not in om:
+                continue
+            osp, oep = om["start"], om["end"]
+            for oe, P in ((0, osp), (1, oep)):
+                key = (int(math.floor(P[0] / cell)), int(math.floor(P[1] / cell)))
+                endpoints.setdefault(key, []).append((other_guid, oe))
+            t = float(om.get("thickness", 0.0) or 0.0)
+            xs = (osp[0], oep[0])
+            ys = (osp[1], oep[1])
+            for cx in range(int(math.floor((min(xs) - t) / cell)),
+                            int(math.floor((max(xs) + t) / cell)) + 1):
+                for cy in range(int(math.floor((min(ys) - t) / cell)),
+                                int(math.floor((max(ys) + t) / cell)) + 1):
+                    baselines.setdefault((cx, cy), []).append(other_guid)
+        return {"endpoints": endpoints, "baselines": baselines, "cell": cell}
+
+    def _join_candidates(self, index, walls, guid, E, tol: float) -> List[str]:
+        """
+        Partner candidates for one wall end, in `walls` iteration order.
+
+        Exact duplicate of the old `for other_guid, om in walls.items()` sequence,
+        restricted to the buckets the index says can possibly match.
+        """
+        cell = index["cell"]
+        span = int(math.floor(tol / cell)) + 1
+        cx0, cy0 = int(math.floor(E[0] / cell)), int(math.floor(E[1] / cell))
+        hit: set = set()
+        endpoints = index["endpoints"]
+        for dx in range(-span, span + 1):
+            for dy in range(-span, span + 1):
+                for g, _oe in endpoints.get((cx0 + dx, cy0 + dy), ()):
+                    if g != guid:
+                        hit.add(g)
+        baselines = index["baselines"]
+        for dx in range(-span, span + 1):
+            for dy in range(-span, span + 1):
+                for g in baselines.get((cx0 + dx, cy0 + dy), ()):
+                    if g != guid:
+                        hit.add(g)
+        return [g for g in walls if g in hit]
+
+    def _find_join_partner(self, guid, end_index, walls, index=None):
         """Finds the wall connected at this endpoint.
         Returns (partner_guid, kind, partner_end_index) where kind is
         'corner' (endpoint-to-endpoint) or 'tee' (endpoint on baseline), or None."""
         meta = self.element_meta[guid]
         E = (meta["start"][0], meta["start"][1]) if end_index == 0 else (meta["end"][0], meta["end"][1])
 
-        for other_guid, om in walls.items():
-            if other_guid == guid or "start" not in om or "end" not in om:
+        if index is not None:
+            candidates = self._join_candidates(index, walls, guid, E, self._JOIN_TOL)
+        else:
+            candidates = list(walls.keys())
+
+        for other_guid in candidates:
+            om = walls.get(other_guid)
+            if om is None or other_guid == guid or "start" not in om or "end" not in om:
                 continue
             osp, oep = om["start"], om["end"]
             ox, oy = osp[0], osp[1]
@@ -2830,6 +2909,12 @@ class BimModelManager:
         # creation order for deterministic butt "through wall" decisions
         order = {g: i for i, g in enumerate(self.element_meta.keys())}
 
+        # Candidate index built ONCE per pass. Note it is built over `all_walls`, not
+        # the `only` subset: a selected wall's partner may be outside the subset even
+        # though the subset was widened by the dependency graph, and the historical
+        # behaviour scans every wall, so narrowing this would change results.
+        join_index = self._build_join_index(all_walls)
+
         def _unit(dx, dy):
             n = math.hypot(dx, dy)
             return None if n < 1e-9 else (dx / n, dy / n)
@@ -2853,7 +2938,7 @@ class BimModelManager:
                     continue
                 # Search the full wall set: a subset pass must still see partners
                 # that are not themselves being recomputed.
-                partner_guid, kind, oe = self._find_join_partner(guid, end_index, all_walls)
+                partner_guid, kind, oe = self._find_join_partner(guid, end_index, all_walls, join_index)
                 resolved[end_index] = (partner_guid, kind, oe, policy)
                 if not partner_guid or kind != "corner":
                     continue
