@@ -2,7 +2,173 @@
 
 **Supersedes for execution purposes:** `review/CHANGE-PLAN-revit-parity.md` (the analysis). This is the
 plan that acts on it.
-**Branch:** `gemini` @ `318ce26`. **Companion audits:** the four under `review/AUDIT-*-vs-revit.md`.
+**Branch:** `gemini` @ `318ce26`, executed on `main` through `e3216fe`. **Companion audits:** the four
+under `review/AUDIT-*-vs-revit.md`.
+
+> ## ⏸ WHERE EXECUTION STOPPED — read §0a before touching anything
+>
+> **Phases completed and verified:** 0.1, 0.3, 0.4, 1.1, 1.2, 1.3a, 1.3b. Six commits,
+> `b6b3cdd` → `e3216fe`. All 23 backend suites and `npm run check` green at that commit.
+>
+> **Next task:** **1.3c — make `_prepare` incremental.** It is the measured blocker for N≥500 and it
+> needs a design decision (§0a.4), which is why it was not started.
+>
+> **Do not start Phase 2 (editable dimensions) before reading §0a.2** — the dimension feature is blocked
+> on a *different* prerequisite than this plan originally assumed, and the work is smaller than
+> planned *and* differently shaped.
+
+---
+
+## 0a. Handoff: state, measurements, and what this session learned
+
+Written to be read cold by a session that has none of the context above. **Re-verify the measurements
+before trusting them** — this project's own history is that a hand-maintained status block decays in
+about a day (§4.4 of `CHANGE-PLAN-revit-parity.md`).
+
+### 0a.1 What was verified working, and by which gate
+
+Run all of these before changing anything; they are the regression net.
+
+```bash
+# 23 backend suites — all green at e3216fe
+for f in scratch/test_*.py; do ./.venv/Scripts/python.exe "$f" || echo "FAIL $f"; done
+# frontend gates: bus parity, UI 130, state bundle 45, delta equivalence 21, tsc
+npm run check
+# the performance gate, with the budget assertion enabled by default at N<=200
+./.venv/Scripts/python.exe scratch/test_scale_gate.py
+```
+
+| Phase | Commit | What it did | Gate that protects it |
+|---|---|---|---|
+| 0.3 | `b6b3cdd` | One unit at the mesh boundary (feet out, metres internal) | `scratch/test_units_boundary.py` (27 checks, incl. a negative control for the 3.28084 signature) |
+| 0.1 | `fa9446a` | Scale gate; §19 budget measurable and enforced | `scratch/test_scale_gate.py` |
+| 0.4 | `73b7dbb` | Browser/Ribbon fed from engine `views`/`sheets` (was seed literals) | `npm run check:ui` |
+| 1.3a | `73b7dbb` | Revision-keyed plan cache | scale gate §3 (repeat request served from cache) |
+| 1.2 | `48ad6be` | Candidate index for join partners | `scratch/test_wall_joins*.py` |
+| 1.1 | `cc213fc` | Scoped join recompute | `scratch/test_join_incremental.py` (11 checks, scoped == global) |
+| 1.3b | `e3216fe` | Per-mesh union cached; occluder bounded per mesh | `scratch/test_mesh_hlr.py`, `test_hlr.py` |
+
+### 0a.2 The measurement that matters, and the honest gap
+
+One wall edit plus the view rebuild that follows it, against the §19 budget of **p95 < 16 ms**:
+
+| walls | edit ms | slice ms | TOTAL ms | vs budget |
+|---|---|---|---|---|
+| 100 | 2.2 | 3.0 | 5.3 | **0.33×** |
+| 196 | 3.3–5.5 | 8–11 | **12.2** | **0.76× — inside** |
+| 484 | 12.3 | 19.3 | **31.6** | **1.98× — still over** |
+
+Session start, for contrast: **629 ms at 196 walls (39.3× over)**. The global join pass alone, which is
+no longer what an edit pays, is still ~83 ms at 196 / ~264 ms at 484.
+
+**The gap to be honest about:** the owner's target is **~5,000 elements / 15 levels**. N=500 is ~2× over
+budget and 5,000 has never been measured. Do not describe this as "Revit-fast at scale" — it is
+"interactive at a few hundred, trending linear".
+
+### 0a.3 Traps this session hit, so the next one does not
+
+Every one of these cost real time and is not obvious from the code.
+
+1. **`cached_verts` had no single unit, and that is the root of a whole bug class.** The builders write
+   *feet*, `_get_product_shape` returns *metres*, and both wrote the same dict key. Any fix in one
+   direction broke the other: my first units fix passed its own gate and broke `test_container_fidelity`
+   and `test_sketch_mode`, which I only found by **stashing my changes and running the suites against a
+   clean tree**. All writes now go through `_cache_verts`, and the cache is always in the file's unit.
+2. **`metres_per_unit` and `METRES_PER_FOOT` are different factors and easy to confuse.**
+   `_metres_per_unit()` is metres per *file unit* (1.0 for a metres model); converting geometry authored
+   in *feet* needs `METRES_PER_FOOT` (0.3048). Using the former for the latter left the cache in feet and
+   a 12 ft slab came back as 39.37 ft.
+3. **Converting on read and caching the converted value self-amplifies.** One 30 ft wall returned
+   x = 30, 98.425, 322.92, 1059.44 on four successive calls. A cache must never hold a converted value
+   unless it is tagged.
+4. **Two caches are on the correctness-critical path, and both are deliberately conservative.** The plan
+   cache folds the *sorted element GUIDs* into its key because level→element membership is not covered
+   by any revision counter. The join radius uses the wall's **old and new** endpoints, because an edit
+   both gains and loses joins and a graph rebuilt from current state cannot see the one it just removed —
+   that partner would keep a stale footprint permanently. **A wrong cache key or a too-small radius
+   produces permanently wrong geometry that nothing later repairs.** Prefer a slower, conservative key.
+5. **`mesh_hlr` is unit-agnostic but is driven with `cut_z` in metres.** Feeding it the feet client
+   buffers put every cut path out by 3.28084 *and made door openings vanish*. It now gets
+   `_meshes_for_projection()`. If you touch the mesh unit boundary, this is the second consumer to check.
+6. **Deleting a method's tail silently orphaned its only caller.** Removing the end of
+   `_mesh_hlr_plan_contract` dropped the 6 ft drafting rule (`test_hlr.py` caught it) *and* orphaned
+   `_orient_plan`, which would have stopped rotating plans into the building's frame — **no test covered
+   that**; it was found only by grepping for callers after the deletion. When you delete a block, grep
+   for what it called.
+7. **"Spatial grouping" sounded right and was not.** The first occlusion fix bucketed meshes into 300 ft
+   tiles and changed nothing measurable, because in a building the whole plan fits in one tile. The
+   quadratic term was the occluder *growing*, not the ordering. Recorded in `e3216fe` so it is not
+   re-attempted.
+8. **A gate can assert noise.** The scale gate's "the slice is no longer dominant" was meaningful at 86%
+   and a coin-flip at 59–79% once both terms got small — it failed the default run. Replaced with
+   absolute guards (view rebuild < 60 ms; repeat request served from cache). **Prefer absolute thresholds
+   to share-of-total assertions once both terms are small.**
+9. **Watch for `.pyc`-induced confusion.** During the units work one measurement said 44.84 where another
+   said 13.67 for the same wall; the difference was a stale `backend/__pycache__`. Clear it (or run with
+   `-B`) before believing a surprising number.
+10. **`recompute_wall_joins(only=...)` is only as correct as its widening.** It is built over ALL walls,
+    not the `only` subset, because a selected wall's partner can lie outside the subset.
+
+### 0a.4 The next task, with the decision it needs
+
+**Phase 1.3c — incremental `_prepare`.** `mesh_hlr._prepare` re-projects **every** mesh whenever the
+revision changes, so moving one wall reprojects the whole scene. Measured with the scale gate's new
+instrumentation: **plan cache miss 350 ms vs hit 7.5 ms** at 196 walls. That 350 ms is the entire
+remaining per-edit cost at N=500.
+
+The blocker is a **design decision, not effort**: the projector receives a plain list of mesh dicts and
+has no revision identity, so it cannot know which entries are stale. Options, cheapest first:
+
+* **Per-element `cached_verts` object identity.** The cache is replaced (not mutated) whenever geometry
+  changes, so `id(verts)` is a usable staleness key within a process. Cheap, no plumbing, but a false
+  *hit* is possible if a freed list's address is reused — mitigate by holding a reference in the prepared
+  entry so the address cannot be recycled while cached.
+* **Explicit revision signature.** Pass `mesh_revs` (or a `(guid → rev)` map) into `MeshHlrProjector` and
+  key the prepared cache on `(rev, camera_key)`. Honest and debuggable, needs plumbing through
+  `_meshes_for_projection` → `_mesh_hlr_plan_contract` → `_hlr_plan_contract`.
+
+Either way: **the camera must be part of the key** (a plan and a section project differently), and the
+prepared cache must live somewhere that survives an individual `render()` call — today `render()` sets
+`self._prepared = None` on entry, and the projector itself is constructed fresh per request.
+
+**Acceptance for 1.3c:** a cache miss at 484 walls drops to roughly the cache-hit cost plus one element's
+projection, and the scale gate asserts the budget at N=500 (raise the default `assert_sizes` ceiling from
+200 once it passes).
+
+### 0a.5 What is *not* next, and why
+
+* **Phase 2 (editable dimensions) is the owner's stated priority, and it is blocked on 0.3 — which is
+  done.** Phase 2 changed shape during this session: `add_dimension_lock` + `_solve_constraints_after_move`
+  already hold and propagate a constraint (probe-confirmed), so this is **not** "build a dimension
+  solver". It is: give dimensions identity in the overlay, add `DimensionCreate` / `DimensionValueSet`
+  (which carries a **value, not a delta**), make the edit move the **referenced face** rather than
+  translate the element, and wire the UI. Phase 2 is *M*, not *L* — the single largest estimate change in
+  this plan. The units prerequisite it was blocked on is now fixed, so Phase 2 is genuinely unblocked.
+* **Phase 3 (trim/split) has two confirmed correctness defects** that are independent of performance and
+  safe to fix now: trim is one-sided and lands on the target's *infinite baseline*; and split **strands
+  hosted openings** (a door at offset 15 on a wall split at 10 stays hosted to the now-10-ft half,
+  outside its own host). The second is the spec's own §17 "wrong building, not a wrong line" class.
+* **The `Ctrl+Z` keybinding still must not ship** (Phase 0.5). Undo deep-copies the whole IFC to STEP
+  twice per transaction (`ifc_service.py:397-445` via `command_bus.py:642`, `:677`). At 5,000 elements
+  the undo stack is projected in **GBs**. Phase 3.5.1 (command-scoped mementos) comes first.
+
+### 0a.6 Methodology that produced these results
+
+Worth keeping, because it is what caught nine of the ten traps above:
+
+1. **Measure before and after, and print the numbers.** The scale gate and the equivalence gate exist to
+   make each optimisation falsifiable. Every performance claim in this plan that was *inferred* has been
+   wrong at least once.
+2. **Compare incremental results against the slow-but-correct version, exactly.** `test_join_incremental.py`
+   runs the same scenario twice and asserts byte-identical footprints, vertices and bboxes. That is the
+   only reason the scoped join recompute is trustworthy.
+3. **Assert that a gate can fail.** `test_units_boundary.py` carries an explicit negative control for the
+   3.28084 signature; `test_join_incremental.py` asserts its corpus actually contains joins (otherwise a
+   "no mismatches" result is vacuous).
+4. **When a gate fails after a fix, first ask whether the gate is measuring a stale premise.** It happened
+   twice here, and in both cases the assertion — not the code — needed inverting.
+5. **Verify by executing, never by reading.** Four separate times this session, a claim that looked right
+   in the diff was wrong when run.
 
 ---
 
@@ -146,38 +312,51 @@ Effort key: **S** ≤ 1 day · **M** ~1 week · **L** 2+ weeks.
 
 ### Phase 0 — Instruments and honesty (S) — *nothing else can be verified without this*
 
-| # | Task | Why |
-|---|---|---|
-| 0.1 | **Scale gate**: a parameterised benchmark at N ∈ {200, 1000, 2000, 5000} measuring one wall edit end-to-end (join, slice, transport), **asserting** p95 latency — not reporting. Reuse the measurement probes already in `scratch/_probe_*.py`. | The spec's §19 budgets have never been measured above 25 elements. Every claim in this plan is currently extrapolation; this converts it to a curve you own. |
-| 0.2 | **Dimension/trim gate**: fixtures that assert trim-to-corner geometry, split preserving hosted openings, and dimension-edit propagation. Must vary thickness, angle, and join mode (§20.1's meta-test rule). | The workflow's core operations have no falsifiable tests today. |
-| 0.3 | **Fix the units boundary — not just the label.** `ifc_service.py:3767` mislabels decimal feet as metres; underneath it, mesh geometry is metres while `params` are feet, which is why the one editable dimension shows `9'-2"` for a real 30 ft spacing and cannot round-trip. Fix the boundary (or the single conversion point), then audit every length-emitting site. | Every dimensional feature sits on this; it is the cheapest high-value fix in the plan and it currently mislabels every number on every drawing. |
-| 0.4 | Stop the **Project Browser and Ribbon showing seed literals** on load — `/api/state` already returns `views` and `sheets`. | Makes the app's own state trustworthy while the rest is rebuilt. |
-| 0.5 | **Do NOT bind Ctrl+Z/Ctrl+Y yet.** Undo currently serializes the whole IFC to STEP twice per transaction (`ifc_service.py:397-445` via `command_bus.py:642`, `:677`). | At 5,000 elements the undo stack is projected at **GBs**; shipping the keybinding would hand users a button that hangs and then crashes the engine. Bind it in Phase 3.5. |
+**STATUS: 0.1 ✅ · 0.2 ⬜ NOT DONE · 0.3 ✅ · 0.4 ✅ · 0.5 ✅ (deliberately unbound)**
 
-**Exit:** gates run and fail meaningfully on injected regressions; a 5,000-element curve exists.
+| # | Task | Why | Status |
+|---|---|---|---|
+| 0.1 | **Scale gate**: a parameterised benchmark at N ∈ {200, 1000, 2000, 5000} measuring one wall edit end-to-end (join, slice, transport), **asserting** p95 latency — not reporting. Reuse the measurement probes already in `scratch/_probe_*.py`. | The spec's §19 budgets have never been measured above 25 elements. Every claim in this plan is currently extrapolation; this converts it to a curve you own. | **✅ `fa9446a`.** `scratch/test_scale_gate.py`. Enforces the 16 ms budget at N≤200 by default (raise the ceiling once 1.3c lands); also guards the cache and the view-rebuild ceiling, and reports N=500 explicitly rather than asserting it. |
+| 0.2 | **Dimension/trim gate**: fixtures that assert trim-to-corner geometry, split preserving hosted openings, and dimension-edit propagation. Must vary thickness, angle, and join mode (§20.1's meta-test rule). | The workflow's core operations have no falsifiable tests today. | **⬜ NOT DONE.** Deliberately deferred: these fixtures assert the *intended* Phase 3 semantics, so writing them now would produce a red suite with no owner. Write them as the first step of Phase 3, and expect the split-opening case to fail until 3.2 lands. |
+| 0.3 | **Fix the units boundary — not just the label.** `ifc_service.py:3767` mislabels decimal feet as metres; underneath it, mesh geometry is metres while `params` are feet, which is why the one editable dimension shows `9'-2"` for a real 30 ft spacing and cannot round-trip. Fix the boundary (or the single conversion point), then audit every length-emitting site. | Every dimensional feature sits on this; it is the cheapest high-value fix in the plan and it currently mislabels every number on every drawing. | **✅ `b6b3cdd`.** Three defects, not one: mesh unit, a self-amplifying cache, and `mesh_hlr` fed the wrong unit. Also `format_feet_inches` rounded to a 3/4" grid. Gate: `scratch/test_units_boundary.py` (27 checks). |
+| 0.4 | Stop the **Project Browser and Ribbon showing seed literals** on load — `/api/state` already returns `views` and `sheets`. | Makes the app's own state trustworthy while the rest is rebuilt. | **✅ `73b7dbb`.** `App.tsx` now calls `fetchStateBundle()` on mount instead of `fetch2DSlice()`. |
+| 0.5 | **Do NOT bind Ctrl+Z/Ctrl+Y yet.** Undo currently serializes the whole IFC to STEP twice per transaction (`ifc_service.py:397-445` via `command_bus.py:642`, `:677`). | At 5,000 elements the undo stack is projected at **GBs**; shipping the keybinding would hand users a button that hangs and then crashes the engine. Bind it in Phase 3.5. | **✅ held** — still unbound. Do not bind it before 3.5.1. |
+
+**Exit:** gates run and fail meaningfully on injected regressions ✅; a 5,000-element curve exists ⬜
+(measured to 484; 961 measured in an earlier pass, 5,000 never run — see §0a.2).
 
 ### Phase 1 — Make trim and dimension edits fast (L) — *the felt bottleneck*
 
-| # | Task | Expected effect | Files |
-|---|---|---|---|
-| 1.1 | **Route every mutation through the dependency graph.** `translate_element`, `update_element`, trim, split and level move must call `DependencyGraph.recompute([guid])`, not the global `recompute_wall_joins()`. | Removes the dominant term: 992 ms → ~190 ms/tx at N=1000 | `ifc_service.py:2022`, `:2359`, `:2796-2821` |
-| 1.2 | **O(1) join-partner lookup** via a coordinate-keyed endpoint index (the graph already has the shape at `dependency_graph.py:93-98`). | Kills the 2,004,002-visit scan; removes the N² term entirely | `ifc_service.py:2767` |
-| 1.3 | **Incremental 2D view.** Revision-keyed cache of the composited contract per (view, revision); re-project only dirty GUIDs; replace the O(N²) view-depth closure with a spatial index; **bound the occluder set geographically** — the profile shows 76 % of slice time is GEOS `union_all` called ~4× per element against a growing occluder union. | 17,509 ms → target low hundreds of ms at N=1000; makes 5,000 conceivable | `mesh_hlr.py:116-164`, `:231-266`, `:390-476`, `main.py:1062` |
-| 1.4 | **Scope the constraint solve** to the affected component. | 31 participants → 3 in a 32-element probe | `constraint_solver.py:110-137`, `:224-250` |
-| 1.5 | **Delta transport for the slice.** Stop shipping the full storey's linework per edit (99.6 % of a 444 KB delta at N=200). Ship only changed paths. | delta 444 KB → ~2 KB | `main.py:1030-1109` |
+**STATUS: 1.1 ✅ · 1.2 ✅ · 1.3a ✅ · 1.3b ✅ · 1.3c ⬜ NEXT · 1.4 ⬜ · 1.5 ⬜**
+
+| # | Task | Expected effect | Files | Status |
+|---|---|---|---|---|
+| 1.1 | **Route every mutation through the dependency graph.** `translate_element`, `update_element`, trim, split and level move must call `DependencyGraph.recompute([guid])`, not the global `recompute_wall_joins()`. | Removes the dominant term: 992 ms → ~190 ms/tx at N=1000 | `ifc_service.py:2022`, `:2359`, `:2796-2821` | **✅ `cc213fc`.** Done differently from the plan: `DependencyGraph` was *not* used (its `join` edge keys on exact shared endpoints with 1e-6 tolerance, which misses tee joins). The radius is derived from the wall's OLD and NEW endpoint positions via the join index. 82.8 → 3.3 ms at 196 walls. |
+| 1.2 | **O(1) join-partner lookup** via a coordinate-keyed endpoint index (the graph already has the shape at `dependency_graph.py:93-98`). | Kills the 2,004,002-visit scan; removes the N² term entirely | `ifc_service.py:2767` | **✅ `48ad6be`.** Two grid buckets (`endpoints`, `baselines`), superset candidates in `walls` order. Per-element cost went flat: 0.33→0.37 ms/wall from 100 to 961 walls. |
+| 1.3 | **Incremental 2D view.** Revision-keyed cache of the composited contract per (view, revision); re-project only dirty GUIDs; replace the O(N²) view-depth closure with a spatial index; **bound the occluder set geographically** — the profile shows 76 % of slice time is GEOS `union_all` called ~4× per element against a growing occluder union. | 17,509 ms → target low hundreds of ms at N=1000; makes 5,000 conceivable | `mesh_hlr.py:116-164`, `:231-266`, `:390-476`, `main.py:1062` | **✅ a `73b7dbb`** (revision-keyed contract cache: 542 → 6 ms). **✅ b `e3216fe`** (per-mesh union cached once; occluder bounded per mesh: cold slice 945 → ~250 ms; `union_all` 783 calls/525 ms → 392/20 ms). **⬜ c NEXT** — `_prepare` still re-projects every mesh on any revision change. **Cache miss 350 ms vs hit 7.5 ms.** See §0a.4 for the design decision it needs. |
+| 1.4 | **Scope the constraint solve** to the affected component. | 31 participants → 3 in a 32-element probe | `constraint_solver.py:110-137`, `:224-250` | **⬜** untouched. |
+| 1.5 | **Delta transport for the slice.** Stop shipping the full storey's linework per edit (99.6 % of a 444 KB delta at N=200). Ship only changed paths. | delta 444 KB → ~2 KB | `main.py:1030-1109` | **⬜** untouched. Note the slice is now small in *time* but the payload question is separate and unmeasured since these changes. |
 
 **Exit:** one wall edit at **2,000 elements** completes in < 50 ms end-to-end, asserted by 0.1. Trim and
 dimension edits are in the same envelope.
 
+**Actual at `e3216fe`:** 12.2 ms at 196 walls (**inside** the 16 ms budget), 31.6 ms at 484 (**1.98× over**).
+N=2,000 not measured. The exit criterion is therefore **met at ~200 elements, not met at 484+**.
+
 ### Phase 2 — Dimension-driven editing (M, reduced from L) — *the user's primary control*
 
+**STATUS: ⬜ NOT STARTED — but its former blocker is REMOVED.** Task 2.1 below (the units boundary) was
+completed in Phase 0.3 (`b6b3cdd`), so **start at 2.2**. Phase 2 is genuinely unblocked and is the
+owner's stated priority; it is also now the highest-value remaining work, since N=200 meets the latency
+budget and the primary editing device still cannot be edited. Read §0a.2 and §0a.4 first.
+
 Re-estimated down because the constraint machinery already exists and is verified working
-(`add_dimension_lock` + `_solve_constraints_after_move`). The work is identity, commands, units and
-wiring — not a solver.
+(`add_dimension_lock` + `_solve_constraints_after_move`). The work is identity, commands, and wiring —
+not a solver.
 
 | # | Task | Notes |
 |---|---|---|
-| 2.1 | **Fix the units boundary** — convert mesh geometry to feet at the single boundary (or stop mixing), and fix `ifc_service.py:3767`. Add a test over every length-emitting site. | **Gates all of Phase 2.** Until geometry and `params` agree, no dimension can round-trip. `USE_WORLD_COORDS` at `:3458`/`:3492` is the conversion point. |
+| ~~2.1~~ | ~~**Fix the units boundary**~~ | **✅ DONE in Phase 0.3 (`b6b3cdd`).** All three sub-defects (mesh unit, self-amplifying cache, `mesh_hlr` unit) plus `format_feet_inches`. Gate: `scratch/test_units_boundary.py`. Nothing to do here — do not re-fix it; if a dimension still fails to round-trip, that is a **new** defect, not this one returning. |
 | 2.2 | **Dimension objects in the overlay** (A4): id, kind, ordered **references** (element + face/endpoint/plane), axis, offset, value, lock flag, EQ group; persisted and round-tripped; bump `constraints_rev`/`project_rev` on change. | Today the dimension list is regex-derived from its own SVG paths (`ifc_service.py:4311-4364`) with `guid: None`. Nothing else is honest without identity. |
 | 2.3 | **`DimensionCreate` and `DimensionValueSet` bus commands.** `DimensionValueSet{dimension_id, value}` carries the **value, not a delta**. | The current edit path is `WallMove` with a derived delta — which is why the wall moves instead of resizing. |
 | 2.4 | **Render real dimensions and edit the text in place** — reuse the existing witness/dimension-line drawing (`PlanViewport2D.tsx:799-846`) and the genuinely good `tryParseLength` (`src/utils/units.ts:145-212`, handles `12'-6"`); replace the detached top-centre HTML pill with in-canvas entry. | The single most important feature in this plan. |
@@ -242,21 +421,23 @@ forgotten, not so it is done early.
 ## 4. Order, and the reasoning
 
 ```
-Phase 0 (days)      instruments + the units bug
+Phase 0 (days)      instruments + the units bug        ✅ done (0.2 deferred to Phase 3)
    ↓
-Phase 1 (weeks)     kill the two O(N²) paths   ← gates everything interactive
+Phase 1 (weeks)     kill the two O(N²) paths            ✅ 1.1, 1.2, 1.3a/b done
+   ↓                                                    ⏸ STOPPED HERE — next is 1.3c
+Phase 1 remainder   1.3c incremental _prepare, 1.4, 1.5 ⬜
    ↓
-Phase 2 (weeks)     editable dimensions        ← the user's primary control
+Phase 2 (weeks)     editable dimensions                 ⬜ NOW UNBLOCKED — owner's priority
    ↓
-Phase 3 (week)      trim/split semantics
+Phase 3 (week)      trim/split semantics                ⬜ (write gate 0.2 first)
    ↓
-Phase 3.5 (week)    undo that survives 5,000 elements
+Phase 3.5 (week)    undo that survives 5,000 elements   ⬜ (must precede the Ctrl+Z keybinding)
    ↓
-Phase 4 (week)      draw-and-place feel
+Phase 4 (week)      draw-and-place feel                 ⬜
    ↓
-Phase 5 / 6         types; sheets
+Phase 5 / 6         types; sheets                       ⬜
    ↓
-Phase 7             chrome
+Phase 7             chrome                              ⬜
 ```
 
 Three reasons for this order specifically:
@@ -273,17 +454,35 @@ Three reasons for this order specifically:
 performance track — they touch the model's *shape*, not its hot path. If there is a second pair of hands,
 that is where they go.
 
+**Revised after execution (read this, it changes the plan's advice):**
+
+1. **Reason 1 (Phase 1 before Phase 2) held and has now been satisfied.** The dependency was real: a
+   dimension edit triggers the recompute that was O(N²), and at 484 walls that was seconds. It is now
+   ~3 ms for a wall edit, so **Phase 2 can start immediately — it is no longer gated.**
+2. **Phase 1 is NOT finished, and Phase 2 does not need it to be.** Only 1.3c/1.4/1.5 remain, and none of
+   them block the dimension work. **Do not serialise Phase 2 behind the rest of Phase 1.** The measured
+   headroom at N≈200 (0.76× budget) is where most editing actually happens today.
+3. **New sequencing advice from what was learned:** when the owner's first-choice feature is blocked only
+   by a *sub*-task, unblock the sub-task and start the feature — that is exactly what happened with the
+   units boundary, which was one line of Phase 2's original scope and turned out to be the whole
+   prerequisite. The plan's original ordering would have run all of Phase 1 first.
+
+**Recommended next session:** **1.3c** (it is the measured blocker for the stated 5,000-element target
+and needs a design decision, §0a.4), then **Phase 2** in parallel if there are two hands. Phase 3.2
+(split stranding hosted openings) is a genuine correctness defect and is safe to fix at any time.
+
 ---
 
 ## 5. Risk register
 
-| Risk | Mitigation |
-|---|---|
-| The 5,000-element target proves unreachable in Python even after Phase 1 | Gate 0.1 gives an early, honest answer. If the incremental design still misses, the fallback is **per-view geometry residency** (only the active view's elements tessellated) — a real but bounded loss of fidelity. Decide this on data, not on optimism. |
-| Dimension chains need solver behaviour the current planegcs wrapper cannot express | Phase 1.4 scopes the solve first; if a chain is not expressible, ship edit-one-dimension (2.2–2.5) and defer chains (2.6) rather than blocking. |
-| Three 2D pipelines drift further apart | A1 freezes them at Phase 1.3; the scale gate covers whichever path is default. |
-| The Rust port is derailed by Python-only abstractions | A2/A3 are enforced by review, and the Phase 1 work is deliberately written as numeric-array in / plain-dict out. |
-| Undo memory crashes a long session before 3.5 lands | 0.5 keeps the keybinding unbound; 3.5.1 is the first task after Phase 3. |
+| Risk | Mitigation | Re-verified at `e3216fe` |
+|---|---|---|
+| The 5,000-element target proves unreachable in Python even after Phase 1 | Gate 0.1 gives an early, honest answer. If the incremental design still misses, the fallback is **per-view geometry residency** (only the active view's elements tessellated) — a real but bounded loss of fidelity. Decide this on data, not on optimism. | **Still open and now the main risk.** N=484 is 1.98× over budget; 5,000 never measured. The trend is linear per element, which is encouraging, but do not claim the target is reachable until 1.3c lands and the sweep is re-run. |
+| Dimension chains need solver behaviour the current planegcs wrapper cannot express | Phase 1.4 scopes the solve first; if a chain is not expressible, ship edit-one-dimension (2.2–2.5) and defer chains (2.6) rather than blocking. | **De-risked.** Lock propagation is probe-confirmed working, and the single-dimension case (2.2–2.5) does not need the solver work at all. |
+| Three 2D pipelines drift further apart | A1 freezes them at Phase 1.3; the scale gate covers whichever path is default. | **Partially done.** `_meshes_for_projection()` was added as the single metric accessor for the projector; the three renderers still coexist. |
+| The Rust port is derailed by Python-only abstractions | A2/A3 are enforced by review, and the Phase 1 work is deliberately written as numeric-array in / plain-dict out. | **Held.** The new code passes plain lists and dicts; the join index and plan cache are data, not control flow. |
+| Undo memory crashes a long session before 3.5 lands | 0.5 keeps the keybinding unbound; 3.5.1 is the first task after Phase 3. | **Held** — still unbound, deliberately. |
+| **NEW: a conservative cache is mistaken for a correct one** | Both new caches (plan contract, prepared geometry) can be keyed wrongly in a way that produces *silently stale* drawings, which no existing suite would necessarily catch. | The plan cache folds sorted GUIDs into its key and is guarded by "repeat request served from cache". **1.3c will add a second such cache — it must carry an equivalence test like `test_join_incremental.py`, not just a speed assertion.** |
 | A dimension edit changes a value in a way the solver silently cannot honour | Reuse the **verified** `add_dimension_lock` propagation rather than writing a new solve; assert round-trip (typed value == re-read value) in gate 0.2, which the current temporary dimension fails by 3.28×. |
 
 ---

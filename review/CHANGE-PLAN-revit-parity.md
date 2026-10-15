@@ -1,5 +1,13 @@
 # What has to change for BIMWorks to look and perform like Revit
 
+> **THIS IS THE ANALYSIS, NOT THE PLAN.** It records what was found and why. Execution status,
+> measurements after the work, and the handoff notes for a new session live in
+> [`IMPLEMENTATION-PLAN-revit-feel.md`](IMPLEMENTATION-PLAN-revit-feel.md) — **read §0a there first.**
+>
+> Everything below was read against HEAD `318ce26`. Several findings have since been fixed
+> (notably the units boundary in §3 and the whole of the performance section §2); the figures here are
+> the **before** state and are kept deliberately, so the improvement is checkable rather than asserted.
+
 **Subject:** `C:\Users\desig\Documents\GitHub\BIMWorks`, branch `gemini`, HEAD `318ce26`
 **Scope of this analysis (as narrowed):** **basic architectural model editing and sheet management** —
 a simplified Revit LT. Rendering pipelines, multi-user sharing and coordination are explicitly out of
