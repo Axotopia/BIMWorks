@@ -1282,7 +1282,7 @@ export const PlanViewport2D: React.FC = () => {
               {/* UI-P0-2: the cut plane is decimal feet, so this rendered the value
                   in feet AND converted it as if it were metres — "(4'-0" / 4m)"
                   for a 4 ft cut. One number, one unit. */}
-              {currentView.name} (Cut Plane: {formatLength(currentView.viewRange.cut ?? 4.0, displayUnit)})
+              {currentView.name} (Cut Plane: {formatLength(currentView.viewRange?.cut ?? (currentView as any)?.view_range?.cut ?? 4.0, displayUnit)})
             </span>
             <span className="text-slate-400">|</span>
             <button

@@ -30,18 +30,21 @@ export const ViewRangeModal: React.FC = () => {
   } = useBimStore();
 
   const view = views.find((v) => v.id === activeViewId);
+  const viewRange = view?.viewRange ?? (view as any)?.view_range;
+  const viewLevelId = view?.levelId ?? (view as any)?.level_id;
 
   // Derive the storey this plan should draw: the view's own level if set, otherwise the
   // highest storey at or below the current cut — the same rule the backend applies, so
   // the dialog opens showing what is actually being drawn.
   const defaultLevelId = useMemo(() => {
-    if (view?.levelId) return view.levelId;
+    if (viewLevelId) return viewLevelId;
     if (!levels.length) return undefined;
+    const cutElevation = viewRange?.cut ?? 0;
     const below = levels
-      .filter((l) => l.elevation <= (view?.viewRange.cut ?? 0) + 1e-6)
+      .filter((l) => l.elevation <= cutElevation + 1e-6)
       .sort((a, b) => a.elevation - b.elevation);
     return (below.length ? below[below.length - 1] : levels[0]).id;
-  }, [view?.levelId, view?.viewRange.cut, levels]);
+  }, [viewLevelId, viewRange?.cut, levels]);
 
   const [levelId, setLevelId] = useState<string | undefined>(defaultLevelId);
   const [cut, setCut] = useState<string>('4.0');
@@ -53,11 +56,11 @@ export const ViewRangeModal: React.FC = () => {
   useEffect(() => {
     if (!isViewRangeModalOpen) return;
     setLevelId(defaultLevelId);
-    setCut(String(view?.viewRange.cut ?? 4.0));
-    setTop(String(view?.viewRange.top ?? 8.0));
-    setBottom(String(view?.viewRange.bottom ?? 0.0));
-    setDepth(String(view?.viewRange.viewDepth ?? 0.0));
-  }, [isViewRangeModalOpen, defaultLevelId, view?.id]);
+    setCut(String(viewRange?.cut ?? 4.0));
+    setTop(String(viewRange?.top ?? 8.0));
+    setBottom(String(viewRange?.bottom ?? 0.0));
+    setDepth(String(viewRange?.viewDepth ?? viewRange?.view_depth ?? 0.0));
+  }, [isViewRangeModalOpen, defaultLevelId, view?.id, viewRange?.cut, viewRange?.top, viewRange?.bottom, viewRange?.viewDepth, viewRange?.view_depth]);
 
   if (!isViewRangeModalOpen) return null;
 

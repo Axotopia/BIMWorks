@@ -849,7 +849,12 @@ export const PropertiesPalette: React.FC = () => {
                   <td className="py-1 text-[#858585]">View Range — Cut Plane</td>
                   <td className="py-1 text-right text-[#38bdf8] font-mono">
                     {activeView
-                      ? formatLength(activeView.viewRange.cut, displayUnit)
+                      ? formatLength(
+                          activeView.viewRange?.cut ??
+                            (activeView as any)?.view_range?.cut ??
+                            4.0,
+                          displayUnit
+                        )
                       : '—'}
                   </td>
                 </tr>

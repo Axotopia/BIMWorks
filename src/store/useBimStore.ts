@@ -184,6 +184,26 @@ function geometryPatch(
   };
 }
 
+function normalizeView(v: any): ViewDefinition {
+  const vr = v.viewRange || v.view_range || {};
+  return {
+    id: v.id,
+    name: v.name,
+    type: v.type ?? 'floor_plan',
+    levelId: v.levelId ?? v.level_id,
+    scale: v.scale ?? '1/4" = 1\'-0"',
+    detailLevel: v.detailLevel ?? v.detail_level ?? 'medium',
+    visualStyle: v.visualStyle ?? v.visual_style ?? 'hidden_line',
+    viewRange: {
+      top: Number(vr.top ?? 8.0),
+      cut: Number(vr.cut ?? 4.0),
+      bottom: Number(vr.bottom ?? 0.0),
+      viewDepth: Number(vr.viewDepth ?? vr.view_depth ?? 0.0),
+    },
+    ...(v.sectionBox ? { sectionBox: v.sectionBox } : {}),
+  };
+}
+
 /**
  * Resolves the active view's 2D request context. Shared by fetch2DSlice() and
  * fetchStateBundle() so the two cannot route a section as a plan.
@@ -198,14 +218,14 @@ function sliceContext(
   cutElevation?: number
 ) {
   const active = views.find((v) => v.id === activeViewId);
-  const range = active?.viewRange;
+  const range = active?.viewRange ?? (active as any)?.view_range;
   return {
     viewType: active?.type ?? 'floor_plan',
     cut: cutElevation ?? range?.cut ?? 4.0,
-    levelId: active?.levelId,
+    levelId: active?.levelId ?? (active as any)?.level_id,
     top: range?.top,
     bottom: range?.bottom,
-    viewDepth: range?.viewDepth,
+    viewDepth: range?.viewDepth ?? range?.view_depth,
   };
 }
 
@@ -943,7 +963,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     // Any 2D view type, not just plans: sections and elevations are drawn by the same
     // view engine and were previously never requested.
     if (view && view.type !== '3d' && view.type !== 'sheet') {
-      get().fetch2DSlice(view.viewRange.cut);
+      const cut = view.viewRange?.cut ?? (view as any)?.view_range?.cut ?? 4.0;
+      get().fetch2DSlice(cut);
     }
   },
 
@@ -1096,7 +1117,15 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   setViewCut: (viewId, cutAboveLevel) => {
     set((state) => ({
       views: state.views.map((v) =>
-        v.id === viewId ? { ...v, viewRange: { ...v.viewRange, cut: cutAboveLevel } } : v
+        v.id === viewId
+          ? {
+              ...v,
+              viewRange: {
+                ...(v.viewRange ?? (v as any)?.view_range ?? DEFAULT_VIEW_RANGE),
+                cut: cutAboveLevel,
+              },
+            }
+          : v
       ),
     }));
     const active = get().activeViewId;
@@ -1376,7 +1405,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           ...(data.levels ? { levels: data.levels } : {}),
           ...(data.grids ? { grids: data.grids } : {}),
           ...(data.sheets ? { sheets: data.sheets } : {}),
-          ...(data.views ? { views: data.views } : {}),
+          ...(data.views ? { views: (data.views as any[]).map(normalizeView) } : {}),
           ...(data.constraints ? { constraints: data.constraints } : {}),
           ...(data.wall_joins ? { wallJoins: data.wall_joins } : {}),
           ...(data.project
@@ -1407,7 +1436,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         ...(data.slice2d ? { sliced2D: data.slice2d } : {}),
         ...(data.journal ? { transactionJournal: data.journal.slice(-50) } : {}),
         ...(data.sheets ? { sheets: data.sheets } : {}),
-        ...(data.views ? { views: data.views } : {}),
+        ...(data.views ? { views: (data.views as any[]).map(normalizeView) } : {}),
       });
 
       if (data.errors) {
@@ -1497,7 +1526,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       // though the backend could draw both.
       const active = get().views.find((v) => v.id === get().activeViewId);
       const viewType = active?.type ?? 'floor_plan';
-      const range = active?.viewRange;
+      const range = active?.viewRange ?? (active as any)?.view_range;
       const cut = cutElevation ?? range?.cut ?? 4.0;
 
       let url: string;
@@ -1517,7 +1546,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         // elevation, which is the Revit convention and the only thing that works on a
         // real model (a storey at 1824 ft cut at an absolute 4 ft sections empty space).
         // The active view's level is the storey it draws.
-        const levelId = active?.levelId;
+        const levelId = active?.levelId ?? (active as any)?.level_id;
         const q = new URLSearchParams({ cut_elevation: String(cut) });
         if (levelId) q.set('level_id', levelId);
         url = `${API_BASE}/slice/2d?${q.toString()}`;

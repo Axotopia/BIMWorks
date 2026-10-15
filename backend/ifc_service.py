@@ -5037,9 +5037,26 @@ class BimModelManager:
 
     def get_views(self) -> List[Dict[str, Any]]:
         """
-        Returns all registered views.
+        Returns all registered views with both snake_case and camelCase keys for UI compatibility.
         """
-        return [copy.deepcopy(self.views[vid]) for vid in sorted(self.views.keys())]
+        res = []
+        for vid in sorted(self.views.keys()):
+            v = copy.deepcopy(self.views[vid])
+            vr = v.get("view_range") or v.get("viewRange") or {}
+            normalized_vr = {
+                "top": float(vr.get("top", 8.0)),
+                "cut": float(vr.get("cut", 4.0)),
+                "bottom": float(vr.get("bottom", 0.0)),
+                "viewDepth": float(vr.get("viewDepth", vr.get("view_depth", 0.0))),
+                "view_depth": float(vr.get("view_depth", vr.get("viewDepth", 0.0))),
+            }
+            v["viewRange"] = normalized_vr
+            v["view_range"] = normalized_vr
+            v["levelId"] = v.get("level_id", v.get("levelId"))
+            v["detailLevel"] = v.get("detail_level", v.get("detailLevel", "medium"))
+            v["visualStyle"] = v.get("visual_style", v.get("visualStyle", "hidden_line"))
+            res.append(v)
+        return res
 
     def compile_sheet_to_vector_pdf(self, svg_content: str) -> bytes:
         """
