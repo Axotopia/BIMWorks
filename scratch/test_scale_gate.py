@@ -196,34 +196,41 @@ def main():
               f"{row['total_ms']:.1f} ms ({row['join_ms']:.1f} join + "
               f"{row['slice_ms']:.1f} slice)")
 
-    print("\n3. Where the cost is, at sizes inside budget (inverted by Phase 1.3)")
-    in_budget = [r for r in REPORT if r["total_ms"] <= BUDGET_P95_MS]
-    if not in_budget:
-        print("  SKIP  no size met the budget, so there is no interactive size to judge.")
-    else:
-        worst = max(in_budget, key=lambda r: r["total_ms"])
-        slice_share = worst["slice_ms"] / max(worst["total_ms"], 1e-9)
-        join_share = worst["join_ms"] / max(worst["total_ms"], 1e-9)
-        print(f"  at {worst['walls']} walls (the largest size inside budget): "
-              f"edit {join_share * 100:.1f}%, slice {slice_share * 100:.1f}%")
-        # Before Phase 1.3 the slice was 86.2% of an edit, so a proportional assertion
-        # would flip on noise now that the two terms are comparable (measured 38-62%
-        # across runs). The durable claim is that the slice is no longer overwhelmingly
-        # dominant; the precise split belongs in `docs/DELTA-MEASUREMENT.md`, not in a
-        # gate that would fail on a busy machine.
-        check("the 2D view regeneration is no longer dominant (Phase 1.3 held)",
-              slice_share < 0.7,
-              f"slice share {slice_share * 100:.1f}% — was 86.2% before Phase 1.3, so "
-              f"the per-view cache has regressed")
-    # Report — without asserting — where the slice has grown back. Beyond the
-    # interactive ceiling the per-mesh union still dominates the view pass, which is
-    # the unfixed half of Phase 1.3 and the reason N>200 stays out of budget.
+    print("\n3. Absolute guards on the two paths that were fixed")
+    if REPORT:
+        worst = max(REPORT, key=lambda r: r["total_ms"] if r["total_ms"] <= BUDGET_P95_MS
+                    else -1)
+        # Absolute slice ceiling, not a share. A relative assertion ("the slice is no
+        # longer dominant") was stable when the slice was 86% of an edit and became a
+        # coin-flip once both terms were small: measured 59-79% across runs on this
+        # machine. A share that noisy fails on a busy machine and teaches nothing, so the
+        # guard is the number that actually matters — the view rebuild must stay in the
+        # tens of milliseconds at the largest size inside budget. It was 542 ms before
+        # Phase 1.3.
+        print(f"  at {worst['walls']} walls (largest inside budget): "
+              f"edit {worst['edit_ms']:.2f} ms, slice {worst['slice_ms']:.2f} ms")
+        check("the view rebuild stays under 60 ms at the interactive ceiling",
+              worst["slice_ms"] < 60.0,
+              f"slice {worst['slice_ms']:.2f} ms — 542 ms before Phase 1.3, so this is "
+              f"the plan cache or the bounded occluder regressing")
+        # The plan cache is a correctness-adjacent optimisation (a stale key would draw
+        # the wrong plan), so assert it is still doing something: a repeat request must
+        # be far cheaper than the first.
+        m, _made = build(int(worst["walls"]))
+        first = timeit(lambda: m.slice_2d_vector_plan(cut_elevation=4.0), repeats=1)
+        repeat = timeit(lambda: m.slice_2d_vector_plan(cut_elevation=4.0), repeats=3)
+        print(f"  plan cache: first {first:.2f} ms, repeat {repeat:.2f} ms")
+        check("a repeated view request is served from cache",
+              repeat < max(first * 0.5, 1.0),
+              f"first {first:.2f} ms vs repeat {repeat:.2f} ms")
+        del m
     over = [(r["walls"], r["slice_ms"] / max(r["total_ms"], 1e-9)) for r in REPORT
             if r["total_ms"] > BUDGET_P95_MS]
     if over:
         print("  NOTE beyond budget, slice share: "
               + ", ".join(f"{w} walls {s * 100:.0f}%" for w, s in over)
-              + "  <- the per-mesh union (Phase 1.3, second half) is still unbuilt")
+              + "  <- the remaining view cost is `_prepare` reprojecting every mesh on "
+                "a cache miss, which is the next Phase 1.3 step")
 
     print("\n" + "=" * 78)
     print(f"RESULT: {PASSED} passed, {FAILED} failed")

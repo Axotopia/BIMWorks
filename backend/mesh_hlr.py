@@ -49,6 +49,15 @@ from shapely.ops import unary_union
 Point2 = Tuple[float, float]
 
 
+def _union_bounds(a, b):
+    """Bounding box covering both, tolerating a missing operand."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+
+
 @dataclass
 class ViewCamera:
     """
@@ -99,6 +108,8 @@ class MeshHlrProjector:
         self.tolerance = tolerance
         # Cache: guid -> list of (triangle3d, polygon2d, min_depth)
         self._prepared: Optional[List[Dict[str, Any]]] = None
+        #: Number of occlusion candidates used by the last render, for diagnostics.
+        self._last_occluder_candidates = 0
 
     # -- preparation --------------------------------------------------------
     def _triangles(self, mesh: Dict[str, Any]) -> Iterable[Tuple[Tuple, Tuple, Tuple]]:
@@ -148,11 +159,25 @@ class MeshHlrProjector:
                 polys.append((poly, d))
             if not polys:
                 continue
+            # Union the projected triangles ONCE per mesh, here.
+            #
+            # The outline union is needed twice per render — as the silhouette whose
+            # edges are tested for occlusion, and as the occluder contribution added to
+            # the running union — and it was being recomputed for both. `union_all` is
+            # 72% of a cold slice (783 calls for 196 meshes, i.e. ~2 per mesh per use),
+            # so halving the calls is the single largest saving available in this
+            # module. Interior triangulation edges must not become drawing edges, which
+            # is why the union is taken at all rather than emitting every triangle.
+            outline = self._safe_union([p for p, _ in polys])
+            if outline is None or outline.is_empty:
+                continue
             prepared.append({
                 "guid": mesh.get("guid"),
                 "ifc_class": mesh.get("ifc_class"),
                 "name": mesh.get("name"),
                 "polys": polys,
+                "outline": outline,
+                "outline_bounds": outline.bounds,
                 "min_depth": min_depth if min_depth is not None else 0.0,
                 # World Z extent, captured here because a prepared entry no longer
                 # carries the triangles the view range needs to test.
@@ -305,11 +330,16 @@ class MeshHlrProjector:
         Interior triangulation edges are not drawing edges; taking the union of the
         triangles and its boundary avoids drawing the tessellation, which is what a
         plan wants (wall faces, not triangles).
+
+        The outline is computed once in `_prepare` and reused here, rather than
+        re-unioned per call.
         """
-        polys = [p for p, _ in mesh["polys"]]
-        if not polys:
-            return []
-        merged = self._safe_union(polys)
+        merged = mesh.get("outline")
+        if merged is None:
+            polys = [p for p, _ in mesh.get("polys") or []]
+            if not polys:
+                return []
+            merged = self._safe_union(polys)
         if merged is None or merged.is_empty:
             return []
         rings = []
@@ -433,10 +463,27 @@ class MeshHlrProjector:
             else:
                 view.cut = self.cut_at(cut_z, camera)
 
-        # Nearer silhouette = occluder for everything behind it.
-        occluder = None
+        # Occlusion, against a bounded candidate set per mesh.
+        #
+        # WHAT WAS WRONG. The occluder accumulated EVERY nearer mesh in the view, so each
+        # mesh's edges were differenced and intersected against the union of the whole
+        # scene, and every mesh also paid a union that merged a growing multipolygon.
+        # `union_all` was 72% of a cold slice and the curve was quadratic. (A first
+        # attempt at this — bucketing meshes into 300 ft tiles — changed nothing, because
+        # in a building the whole plan fits in one tile; the growth, not the ordering,
+        # was the problem.)
+        #
+        # WHY A RADIUS IS EXACT. `_occlusion_candidates` returns every nearer mesh whose
+        # projected bounding box overlaps this one — which is precisely the set that can
+        # occlude it, since a mesh can only hide a point inside its own outline. Anything
+        # excluded cannot intersect this mesh at all, so it cannot contribute to
+        # `difference` or `intersection`. The occluder is rebuilt from those candidates
+        # per mesh instead of carried forward, which is more union calls but each one is
+        # over a handful of small disjoint rectangles rather than one scene-wide
+        # multipolygon that grows with the model.
         for mesh in prepared:
             edges = self._silhouette_edges(mesh)
+            occluder = self._occluder_for(mesh, prepared)
             if occluder is not None and not occluder.is_empty:
                 for line in edges:
                     remainder = line.difference(occluder)
@@ -466,14 +513,54 @@ class MeshHlrProjector:
                         "name": mesh.get("name"),
                         "coords": [(round(x, 6), round(y, 6)) for x, y in line.coords],
                     })
-            mesh_union = self._safe_union([p for p, _ in mesh["polys"]])
-            occluder = mesh_union if occluder is None else self._safe_union([occluder, mesh_union])
 
         view.stats = {
             **view.partition_counts(),
             "meshes": len(prepared),
+            # Diagnostics: proves the candidate bound is actually shrinking the work,
+            # rather than being a filter that never rejects anything.
+            "occluder_candidates_max": self._last_occluder_candidates,
         }
         return view
+
+    #: Extra allowance (model units) added to an occluder candidate's bounding box when
+    #: deciding whether it can overlap. Purely defensive: `difference`/`intersection`
+    #: are exact, so the box test only has to be conservative enough not to drop a real
+    #: overlap. Floating-point equality on a shared edge is the case this covers.
+    OCCLUDER_CANDIDATE_SLOP = 1e-6
+
+    def _occluder_for(self, mesh: Dict[str, Any],
+                      prepared: List[Dict[str, Any]]) -> Optional[Any]:
+        """
+        The union of every NEARER mesh whose projected box overlaps `mesh`.
+
+        Returns None when nothing can occlude `mesh`, which is the common case in a
+        sparse plan and is exactly the work this avoids.
+        """
+        b = mesh.get("outline_bounds")
+        depth = mesh.get("min_depth", 0.0)
+        if b is None:
+            return None
+        slop = self.OCCLUDER_CANDIDATE_SLOP
+        parts = []
+        for other in prepared:
+            if other is mesh:
+                break  # `prepared` is near-to-far: everything after this is behind.
+            if other.get("min_depth", 0.0) > depth:
+                break
+            ob = other.get("outline_bounds")
+            if ob is None:
+                continue
+            if (ob[2] < b[0] - slop or ob[0] > b[2] + slop
+                    or ob[3] < b[1] - slop or ob[1] > b[3] + slop):
+                continue
+            outline = other.get("outline")
+            if outline is not None and not outline.is_empty:
+                parts.append(outline)
+        self._last_occluder_candidates = max(self._last_occluder_candidates, len(parts))
+        if not parts:
+            return None
+        return self._safe_union(parts)
 
     # -- frontend contract ---------------------------------------------------
     @staticmethod
