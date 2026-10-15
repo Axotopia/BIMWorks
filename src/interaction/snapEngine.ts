@@ -11,7 +11,7 @@
  * 2. Window vs Crossing selection box containment helpers.
  */
 
-export type SnapKind = 'intersection' | 'endpoint' | 'midpoint' | 'perpendicular' | 'grid';
+export type SnapKind = 'intersection' | 'endpoint' | 'midpoint' | 'perpendicular' | 'extension' | 'grid';
 
 export interface SnapCandidate {
   point: [number, number];
@@ -251,7 +251,41 @@ export function findSnapCandidate(
     }
   }
 
-  // 5. Grid Snap
+  // 5. Extension Snap (collinear extension of segments beyond their endpoints)
+  const extReach = Math.max(tol * 10, 20.0);
+  const extSegments = options.segments.filter(
+    (s) =>
+      Math.min(s.p1[0], s.p2[0]) - extReach <= mx &&
+      Math.max(s.p1[0], s.p2[0]) + extReach >= mx &&
+      Math.min(s.p1[1], s.p2[1]) - extReach <= my &&
+      Math.max(s.p1[1], s.p2[1]) + extReach >= my
+  );
+  let bestExtension: SnapCandidate | null = null;
+  for (const s of extSegments) {
+    const sx = s.p2[0] - s.p1[0];
+    const sy = s.p2[1] - s.p1[1];
+    const lenSq = sx * sx + sy * sy;
+    if (lenSq > 1e-4) {
+      const t = ((mx - s.p1[0]) * sx + (my - s.p1[1]) * sy) / lenSq;
+      // Collinear extension: outside [0, 1] segment bounds but within reach
+      if ((t < 0 && t >= -2.0) || (t > 1 && t <= 3.0)) {
+        const proj: [number, number] = [s.p1[0] + t * sx, s.p1[1] + t * sy];
+        const d = Math.hypot(mx - proj[0], my - proj[1]);
+        if (d <= tol && (!bestExtension || d < bestExtension.distance)) {
+          bestExtension = {
+            point: [Number(proj[0].toFixed(4)), Number(proj[1].toFixed(4))],
+            kind: 'extension',
+            description: 'Extension',
+            distance: d,
+            sourceGuid: s.guid,
+          };
+        }
+      }
+    }
+  }
+  if (bestExtension) return bestExtension;
+
+  // 6. Grid Snap
   if (options.enableGridSnap !== false) {
     const grid = options.gridSize ?? 0.25;
     const gx = Math.round(mx / grid) * grid;
