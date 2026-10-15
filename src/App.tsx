@@ -17,6 +17,10 @@ export const App: React.FC = () => {
     handleKeyStroke,
     handleDeleteKey,
     exportIfc,
+    undo,
+    redo,
+    cycleTabSelection,
+    toggleSnaps,
   } = useBimStore();
 
   // Initial load.
@@ -45,10 +49,40 @@ export const App: React.FC = () => {
         return;
       }
 
+      // Handle Ctrl+Z for Undo, Ctrl+Y or Ctrl+Shift+Z for Redo (Phase 3.5.2)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
       // Handle Ctrl+S for Save IFC
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         exportIfc();
+        return;
+      }
+
+      // Tab key cycles candidate selection (Revit Tab-cycling)
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        cycleTabSelection();
+        return;
+      }
+
+      // F3 toggles typed object snaps
+      if (e.key === 'F3') {
+        e.preventDefault();
+        toggleSnaps();
         return;
       }
 
@@ -68,7 +102,7 @@ export const App: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleKeyStroke, handleDeleteKey, exportIfc]);
+  }, [handleKeyStroke, handleDeleteKey, exportIfc, undo, redo, cycleTabSelection, toggleSnaps]);
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#f3f4f6] text-[#1e293b] font-sans">

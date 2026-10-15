@@ -1071,8 +1071,10 @@ export const Ribbon: React.FC = () => {
 
                 {/* Split Element */}
                 <button
-                  onClick={() => {}}
-                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  onClick={() => setActiveTool('SL')}
+                  className={`p-1.5 rounded border ${
+                    activeTool === 'SL' ? 'bg-[#cce8ff] border-[#007acc]' : 'border-transparent hover:bg-[#e0f2fe]'
+                  }`}
                   title="Split Element (SL)"
                 >
                   <IconSplitElement size={18} />
@@ -1080,9 +1082,11 @@ export const Ribbon: React.FC = () => {
 
                 {/* Split with Gap */}
                 <button
-                  onClick={() => {}}
-                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
-                  title="Split with Gap"
+                  onClick={() => setActiveTool('SO')}
+                  className={`p-1.5 rounded border ${
+                    activeTool === 'SO' ? 'bg-[#cce8ff] border-[#007acc]' : 'border-transparent hover:bg-[#e0f2fe]'
+                  }`}
+                  title="Split with Gap (SO)"
                 >
                   <IconSplitElement size={18} />
                 </button>
@@ -1126,8 +1130,10 @@ export const Ribbon: React.FC = () => {
 
                 {/* Trim / Extend Corner */}
                 <button
-                  onClick={() => {}}
-                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  onClick={() => setActiveTool('TR')}
+                  className={`p-1.5 rounded border ${
+                    activeTool === 'TR' ? 'bg-[#cce8ff] border-[#007acc]' : 'border-transparent hover:bg-[#e0f2fe]'
+                  }`}
                   title="Trim / Extend to Corner (TR)"
                 >
                   <IconTrimCorner size={18} />

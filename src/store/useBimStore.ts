@@ -481,10 +481,14 @@ interface BimStoreState {
   // 1D/2D Parametric Constraints
   constraints: ParametricConstraint[];
   alignPickState: { step: 'pick_ref' | 'pick_target' | null; refGuid: string | null };
+  trimPickState: { step: 'pick_second' | null; firstGuid: string | null; firstPoint: [number, number] | null };
 
   // Selection & Properties
   selectedGuid: string | null;
+  selectedGuids: string[];
   hoveredGuid: string | null;
+  hoverCandidates: string[];
+  snapsEnabled: boolean;
 
   // Revit Spatial & Visibility Controls
   sectionBox: {
@@ -536,7 +540,11 @@ interface BimStoreState {
   setViewCut: (viewId: string, cutAboveLevel: number) => void;
   setActiveSheetId: (id: string) => void;
   setSelectedGuid: (guid: string | null) => void;
+  setSelectedGuids: (guids: string[]) => void;
   setHoveredGuid: (guid: string | null) => void;
+  setHoverCandidates: (guids: string[]) => void;
+  cycleTabSelection: () => void;
+  toggleSnaps: () => void;
 
   toggleSectionBox: () => void;
   setSectionBoxBounds: (min: [number, number, number], max: [number, number, number]) => void;
@@ -564,6 +572,9 @@ interface BimStoreState {
   lockDimension: (guidA: string, guidB: string, distance?: number, axis?: 'x' | 'y') => Promise<void>;
   equalizeSpan: (spanStartGuid: string, spanEndGuid: string, interiorGuids: string[], axis?: 'x' | 'y') => Promise<void>;
   setAlignPickState: (state: { step: 'pick_ref' | 'pick_target' | null; refGuid: string | null }) => void;
+  setTrimPickState: (state: { step: 'pick_second' | null; firstGuid: string | null; firstPoint: [number, number] | null }) => void;
+  trimExtendWall: (guid: string, endIndex: number, targetGuid: string, cornerMode?: boolean, targetEndIndex?: number) => Promise<void>;
+  splitWall: (guid: string, atOffset: number, gap?: number) => Promise<void>;
   deleteConstraint: (constraintId: string) => Promise<void>;
   equalizeSouthWallWindows: () => Promise<void>;
   setDimensionValue: (dimensionId: string, value: number, anchor?: 'start' | 'end' | 'center') => Promise<void>;
@@ -578,6 +589,8 @@ interface BimStoreState {
     eq_group?: string;
   }) => Promise<void>;
   deleteDimension: (dimensionId: string) => Promise<void>;
+  undo: () => Promise<void>;
+  redo: () => Promise<void>;
 
   // API Async Actions
   fetchProjectState: () => Promise<void>;
@@ -626,8 +639,6 @@ interface BimStoreState {
   copyElement: (guid: string, dx: number, dy: number, dz?: number) => Promise<void>;
   rotateElement: (guid: string, angleDegrees: number, center?: [number, number]) => Promise<void>;
   offsetElement: (guid: string, distance: number, side?: 1 | -1) => Promise<void>;
-  trimExtendWall: (guid: string, endIndex: 0 | 1, targetGuid: string) => Promise<void>;
-  splitWall: (guid: string, atOffset: number) => Promise<void>;
   moveLevel: (levelId: string, elevation: number) => Promise<void>;
 
   executeTransaction: (commands: CommandPayload[], origin?: 'ui' | 'ai' | 'script' | 'cli', description?: string) => Promise<any>;
@@ -797,9 +808,13 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   // 1D/2D Parametric Constraints
   constraints: [],
   alignPickState: { step: null, refGuid: null },
+  trimPickState: { step: null, firstGuid: null, firstPoint: null },
 
   selectedGuid: null,
+  selectedGuids: [],
   hoveredGuid: null,
+  hoverCandidates: [],
+  snapsEnabled: true,
 
   sectionBox: {
     enabled: false,
@@ -856,9 +871,11 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     const previous = get().activeTool;
     const base = ribbonTab ? { activeRibbonTab: ribbonTab } : {};
     if (tool === 'AL') {
-      set({ ...base, activeTool: 'AL', alignPickState: { step: 'pick_ref', refGuid: null } });
+      set({ ...base, activeTool: 'AL', alignPickState: { step: 'pick_ref', refGuid: null }, trimPickState: { step: null, firstGuid: null, firstPoint: null } });
+    } else if (tool === 'TR') {
+      set({ ...base, activeTool: 'TR', trimPickState: { step: 'pick_second', firstGuid: null, firstPoint: null }, alignPickState: { step: null, refGuid: null } });
     } else {
-      set({ ...base, activeTool: tool, alignPickState: { step: null, refGuid: null } });
+      set({ ...base, activeTool: tool, alignPickState: { step: null, refGuid: null }, trimPickState: { step: null, firstGuid: null, firstPoint: null } });
     }
     // UI-P0-11: switching tools discards any half-finished pick from the previous
     // tool. Without this, `boxStartPoint` was shared by Roof and Floor, so clicking
@@ -891,8 +908,10 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       set({
         activeTool: 'select',
         selectedGuid: null,
+        selectedGuids: [],
         tempDimension: null,
         alignPickState: { step: null, refGuid: null },
+        trimPickState: { step: null, firstGuid: null, firstPoint: null },
       });
       // UI-P0-10: this is the *only* Escape path now. It must also discard
       // in-progress viewport state (a first wall point, a first box corner, a
@@ -937,6 +956,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         // Routed through setActiveTool so the previous tool's in-progress pick is
         // discarded (UI-P0-11) — the raw `set` this used to do skipped that.
         get().setActiveTool('AL'),
+      TR: () => get().setActiveTool('TR', 'Modify'),
+      SL: () => get().setActiveTool('SL', 'Modify'),
+      SO: () => get().setActiveTool('SO', 'Modify'),
       EQ: () => get().equalizeSouthWallWindows(),
       HH: () => get().tempHideSelected(),
       HR: () => get().resetTempVisibility(),
@@ -987,7 +1009,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   setActiveSheetId: (id) => set({ activeSheetId: id }),
 
   setSelectedGuid: (guid) => {
-    set({ selectedGuid: guid });
+    set({ selectedGuid: guid, selectedGuids: guid ? [guid] : [] });
     if (!guid) {
       set({ tempDimension: null });
       return;
@@ -1091,6 +1113,33 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   },
 
   setHoveredGuid: (guid) => set({ hoveredGuid: guid }),
+
+  setSelectedGuids: (guids) => {
+    const primary = guids.length > 0 ? guids[guids.length - 1] : null;
+    get().setSelectedGuid(primary);
+    set({ selectedGuids: guids });
+  },
+
+  setHoverCandidates: (guids) => set({ hoverCandidates: guids }),
+
+  cycleTabSelection: () => {
+    const { hoverCandidates, hoveredGuid, elements, setHoveredGuid, setStatusMessage } = get();
+    if (!hoverCandidates || hoverCandidates.length === 0) return;
+    const currentIdx = hoveredGuid ? hoverCandidates.indexOf(hoveredGuid) : -1;
+    const nextIdx = (currentIdx + 1) % hoverCandidates.length;
+    const nextGuid = hoverCandidates[nextIdx];
+    setHoveredGuid(nextGuid);
+    const el = elements[nextGuid];
+    if (el) {
+      setStatusMessage(`${el.name || el.ifc_class} (${nextIdx + 1}/${hoverCandidates.length} - Tab to cycle)`);
+    }
+  },
+
+  toggleSnaps: () => {
+    const next = !get().snapsEnabled;
+    set({ snapsEnabled: next });
+    get().setStatusMessage(`Snaps ${next ? 'enabled' : 'disabled (F3)'}`);
+  },
 
   toggleSectionBox: () =>
     set((state) => ({
@@ -1212,6 +1261,47 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     }
   },
 
+  setTrimPickState: (state) => set({ trimPickState: state }),
+
+  trimExtendWall: async (guid, endIndex, targetGuid, cornerMode = true, targetEndIndex) => {
+    try {
+      await get().dispatchTransaction(
+        'trimExtendWall',
+        {
+          guid,
+          end_index: endIndex,
+          target_guid: targetGuid,
+          corner_mode: cornerMode,
+          target_end_index: targetEndIndex,
+        },
+        cornerMode ? 'Trim / extend to corner' : 'Trim / extend wall'
+      );
+      set({ trimPickState: { step: null, firstGuid: null, firstPoint: null } });
+      if (!get().chainTools) {
+        set({ activeTool: 'select' });
+      }
+    } catch (e) {
+      set({ statusMessage: `Trim/Extend failed: ${failureMessage(e)}` });
+      console.error('Failed to trim/extend wall', e);
+    }
+  },
+
+  splitWall: async (guid, atOffset, gap = 0.0) => {
+    try {
+      await get().dispatchTransaction(
+        'splitWall',
+        { guid, at_offset: atOffset, gap },
+        gap > 0 ? 'Split wall with gap' : 'Split wall'
+      );
+      if (!get().chainTools) {
+        set({ activeTool: 'select' });
+      }
+    } catch (e) {
+      set({ statusMessage: `Split wall failed: ${failureMessage(e)}` });
+      console.error('Failed to split wall', e);
+    }
+  },
+
   toggleConstraintLock: async (constraintId: string, isLocked: boolean) => {
     try {
       await get().dispatchTransaction(
@@ -1323,6 +1413,28 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       set({ statusMessage: `Delete dimension failed: ${failureMessage(e)}` });
       console.error('Failed to delete dimension', e);
       throw e;
+    }
+  },
+
+  undo: async () => {
+    try {
+      const res = await fetch('/api/transaction/undo', { method: 'POST' });
+      if (res.ok) {
+        await get().fetchStateBundle();
+      }
+    } catch (e) {
+      console.error('Undo failed', e);
+    }
+  },
+
+  redo: async () => {
+    try {
+      const res = await fetch('/api/transaction/redo', { method: 'POST' });
+      if (res.ok) {
+        await get().fetchStateBundle();
+      }
+    } catch (e) {
+      console.error('Redo failed', e);
     }
   },
 
@@ -1781,7 +1893,14 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       }));
       return;
     }
-    if (state.selectedGuid) get().deleteElement(state.selectedGuid);
+    if (state.selectedGuids && state.selectedGuids.length > 0) {
+      for (const g of state.selectedGuids) {
+        get().deleteElement(g);
+      }
+      set({ selectedGuids: [], selectedGuid: null });
+    } else if (state.selectedGuid) {
+      get().deleteElement(state.selectedGuid);
+    }
   },
 
   createWall: async (start, end, name = 'Basic Wall : Exterior - 10" CMU') => {
@@ -2234,28 +2353,6 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     } catch (e) {
       set({ statusMessage: `Offset element failed: ${failureMessage(e)}` });
       console.error('Failed to offset element', e);
-    }
-  },
-
-  trimExtendWall: async (guid, endIndex, targetGuid) => {
-    try {
-      await get().dispatchTransaction(
-        'trimExtendWall',
-        { guid, end_index: endIndex, target_guid: targetGuid },
-        'Trim/Extend wall'
-      );
-    } catch (e) {
-      set({ statusMessage: `Trim/extend wall failed: ${failureMessage(e)}` });
-      console.error('Failed to trim/extend wall', e);
-    }
-  },
-
-  splitWall: async (guid, atOffset) => {
-    try {
-      await get().dispatchTransaction('splitWall', { guid, at_offset: atOffset }, 'Split wall');
-    } catch (e) {
-      set({ statusMessage: `Split wall failed: ${failureMessage(e)}` });
-      console.error('Failed to split wall', e);
     }
   },
 

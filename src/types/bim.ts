@@ -254,6 +254,9 @@ export type ActiveTool =
   | 'BX' // Section Box
   | 'AL' // Align & Lock
   | 'EQ' // Equalize
+  | 'TR' // Trim / Extend to Corner
+  | 'SL' // Split Element
+  | 'SO' // Split with Gap
   | 'sketch'; // Revit Sketch Mode (Edit Boundary / Edit Footprint / Create)
 
 export interface SketchLine {
