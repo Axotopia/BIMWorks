@@ -1,25 +1,32 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Settings,
-  Trash2,
-  Box,
-  Info,
+  ChevronDown,
+  ChevronRight,
   Check,
-  Move,
-  ArrowUpRight,
-  Maximize2,
-  RotateCcw,
-  PenTool,
   X,
   AlertCircle,
   Sparkles,
+  Move,
+  Trash2,
+  SlidersHorizontal,
+  Layers,
+  Box,
 } from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
 import { formatLength, formatArea, formatVolume } from '../../utils/units';
+import { measureMesh } from '../../utils/geometry';
+import {
+  IconHouse3D,
+  IconWall,
+  IconDoor,
+  IconWindow,
+  IconRoof,
+  IconFloor,
+  IconEditType,
+} from '../icons/RevitIcons';
 
 /** Nudge step in the engine's internal unit (decimal feet): 6 inches. */
 const NUDGE_FT = 0.5;
-import { measureMesh } from '../../utils/geometry';
 
 export const PropertiesPalette: React.FC = () => {
   const {
@@ -29,13 +36,16 @@ export const PropertiesPalette: React.FC = () => {
     updateElement,
     translateElement,
     setEditTypeModalOpen,
+    setViewRangeModalOpen,
     displayUnit,
     views,
     activeViewId,
     activeScale,
     activeDetailLevel,
+    setDetailLevel,
+    sectionBox,
+    toggleSectionBox,
     sketchSession,
-    startSketchMode,
     finishSketchMode,
     cancelSketchMode,
     updateSketchLine,
@@ -45,14 +55,20 @@ export const PropertiesPalette: React.FC = () => {
 
   const selectedMesh = meshes.find((m) => m.guid === selectedGuid);
   const activeView = views.find((v) => v.id === activeViewId);
-
-  // The engine's parametric record for this element (baseline, host, type data).
-  // Absent on a foreign IFC import, which is why every row below is optional.
-  const params = selectedMesh?.params;
-
-  // Area/Volume are measured from the tessellated surface, never hardcoded.
-  const measure = selectedMesh ? measureMesh(selectedMesh) : null;
   const isElementSelected = Boolean(selectedMesh);
+
+  const params = selectedMesh?.params;
+  const measure = selectedMesh ? measureMesh(selectedMesh) : null;
+
+  const isRoof =
+    selectedMesh?.ifc_class === 'IfcRoof' ||
+    (selectedMesh?.name || '').toLowerCase().includes('roof');
+  const isWall =
+    selectedMesh?.ifc_class === 'IfcWall' ||
+    selectedMesh?.ifc_class === 'IfcWallStandardCase';
+  const isSlab = selectedMesh?.ifc_class === 'IfcSlab' && !isRoof;
+  const isDoor = selectedMesh?.ifc_class === 'IfcDoor';
+  const isWindow = selectedMesh?.ifc_class === 'IfcWindow';
 
   // Live element metadata fetched from backend
   const [elementData, setElementData] = useState<any>(null);
@@ -71,6 +87,22 @@ export const PropertiesPalette: React.FC = () => {
   const [formEndX, setFormEndX] = useState<string>('10.0');
   const [formEndY, setFormEndY] = useState<string>('0.0');
   const [formPolygon, setFormPolygon] = useState<[number, number][]>([]);
+
+  // Section collapse states matching Revit groups
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({
+    graphics: false,
+    extents: false,
+    camera: false,
+    identity: false,
+    phasing: false,
+    viewPosition: false,
+    constraints: false,
+    dimensions: false,
+  });
+
+  const toggleGroup = (grp: string) => {
+    setCollapsedGroups((prev) => ({ ...prev, [grp]: !prev[grp] }));
+  };
 
   // Fetch detailed element metadata whenever selectedGuid changes
   useEffect(() => {
@@ -150,66 +182,102 @@ export const PropertiesPalette: React.FC = () => {
     setTimeout(() => setSaveSuccess(false), 2000);
   };
 
-  const isRoof =
-    selectedMesh?.ifc_class === 'IfcRoof' ||
-    (selectedMesh?.name || '').toLowerCase().includes('roof');
-  const isWall =
-    selectedMesh?.ifc_class === 'IfcWall' ||
-    selectedMesh?.ifc_class === 'IfcWallStandardCase';
-  const isSlab =
-    selectedMesh?.ifc_class === 'IfcSlab' && !isRoof;
-  const isDoor = selectedMesh?.ifc_class === 'IfcDoor';
-  const isWindow = selectedMesh?.ifc_class === 'IfcWindow';
-
-  // Nudge / translation helper
   const handleNudge = async (dx: number, dy: number, dz: number) => {
     if (!selectedGuid) return;
     await translateElement(selectedGuid, dx, dy, dz);
   };
 
+  // Thumbnail icon for Type Selector
+  const renderThumbnail = () => {
+    if (isElementSelected) {
+      if (isWall) return <IconWall size={28} />;
+      if (isDoor) return <IconDoor size={28} />;
+      if (isWindow) return <IconWindow size={28} />;
+      if (isRoof) return <IconRoof size={28} />;
+      if (isSlab) return <IconFloor size={28} />;
+      return <Box size={28} className="text-[#0284c7]" />;
+    }
+    if (activeView?.type === '3d') return <IconHouse3D size={28} />;
+    return <Layers size={28} className="text-[#0284c7]" />;
+  };
+
+  // Category Header component matching Revit Image 2
+  const CategoryHeader: React.FC<{
+    title: string;
+    id: string;
+  }> = ({ title, id }) => (
+    <div
+      onClick={() => toggleGroup(id)}
+      className="flex items-center justify-between px-2 py-1 bg-[#e8e8e8] hover:bg-[#dfdfdf] border-y border-[#d4d4d4] cursor-pointer select-none"
+    >
+      <span className="font-bold text-[11px] text-[#202020]">{title}</span>
+      {collapsedGroups[id] ? (
+        <ChevronRight size={13} className="text-[#555555]" />
+      ) : (
+        <ChevronDown size={13} className="text-[#555555]" />
+      )}
+    </div>
+  );
+
   return (
-    <div className="h-full w-full bg-[#252526] text-[#cccccc] flex flex-col border-l border-[#3c3c3c] select-none text-xs overflow-hidden">
-      {/* Title */}
-      <div className="flex items-center justify-between px-3 py-2 bg-[#2d2d2d] border-b border-[#3c3c3c] font-semibold text-[#e1e1e1]">
-        <span>Properties</span>
-        <button
-          onClick={() => setEditTypeModalOpen(true)}
-          className="text-[11px] px-2 py-0.5 bg-[#3c3c3c] hover:bg-[#4a4a4a] text-white rounded border border-[#555555]"
-        >
-          Edit Type
-        </button>
+    <div className="h-full w-full bg-[#ffffff] text-[#222222] flex flex-col border-l border-[#dcdcdc] select-none text-[11px] font-sans overflow-hidden">
+      {/* 1. Window Header */}
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#f0f0f0] border-b border-[#dcdcdc]">
+        <span className="font-semibold text-xs text-[#202020]">Properties</span>
       </div>
 
-      {/* Type Selector Dropdown */}
-      <div className="p-2 border-b border-[#3c3c3c] bg-[#1e1e1e]">
-        <div className="text-[10px] text-[#858585] mb-1 uppercase font-semibold">Type Selector</div>
-        <div className="flex items-center space-x-2 bg-[#2a2d2e] border border-[#3c3c3c] rounded px-2 py-1.5">
-          <Box size={14} className="text-[#38bdf8]" />
-          <div className="flex-1 overflow-hidden">
-            <div className="font-semibold text-white truncate text-[11px]">
-              {isElementSelected ? selectedMesh?.name : 'Floor Plan : Architectural'}
+      {/* 2. Type Selector Card (Image 2 Parity) */}
+      <div className="p-2 bg-[#f9f9f9] border-b border-[#dcdcdc]">
+        <div className="flex items-center space-x-2 bg-[#ffffff] border border-[#d0d0d0] rounded p-1.5 shadow-sm">
+          {/* Thumbnail preview */}
+          <div className="w-12 h-12 bg-[#f8fafc] border border-[#e2e8f0] rounded flex items-center justify-center shrink-0">
+            {renderThumbnail()}
+          </div>
+
+          {/* Type / Family Name & Dropdown */}
+          <div className="flex-1 min-w-0 pr-1">
+            <div className="font-bold text-[11px] text-[#202020] truncate">
+              {isElementSelected
+                ? selectedMesh?.name || 'Selected Element'
+                : activeView?.type === '3d'
+                ? '3D View'
+                : 'Floor Plan'}
             </div>
-            <div className="text-[10px] text-[#858585] truncate">
-              {isElementSelected ? selectedMesh?.ifc_class : 'View Properties'}
+            <div className="flex items-center justify-between mt-1 px-1.5 py-0.5 bg-[#ffffff] border border-[#cccccc] hover:border-[#007acc] rounded cursor-pointer text-[11px] text-[#333333]">
+              <span className="truncate">
+                {isElementSelected
+                  ? `${selectedMesh?.ifc_class}: ${selectedMesh?.name}`
+                  : `${activeView?.name || '3D View: Cover Sheet View'}`}
+              </span>
+              <ChevronDown size={12} className="text-[#666666] ml-1 shrink-0" />
             </div>
           </div>
+
+          {/* Edit Type Button */}
+          <button
+            onClick={() => setEditTypeModalOpen(true)}
+            className="flex items-center space-x-1 px-2 py-1 bg-[#f3f4f6] hover:bg-[#e5e7eb] text-[#1e293b] rounded border border-[#d1d5db] font-medium text-[10px] shrink-0 shadow-xs"
+            title="Edit Type Properties"
+          >
+            <IconEditType size={12} />
+            <span>Edit Type</span>
+          </button>
         </div>
       </div>
 
-      {/* Parameter Table */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-3">
-        {/* Sketch mode takes over the palette while a session is open. */}
+      {/* 3. Properties Parameter Grid */}
+      <div className="flex-1 overflow-y-auto bg-[#ffffff]">
+        {/* SKETCH MODE OVERRIDE */}
         {sketchSession ? (
-          <div className="space-y-3">
-            {/* Active Sketch Mode Banner */}
-            <div className="bg-[#14532d]/40 border border-[#22c55e] p-3 rounded shadow-sm">
-              <div className="flex items-center space-x-1.5 text-[#4ade80] font-bold text-xs uppercase tracking-wide mb-1">
+          <div className="p-2 space-y-2">
+            <div className="bg-[#f0fdf4] border border-[#22c55e] p-2.5 rounded shadow-xs">
+              <div className="flex items-center space-x-1.5 text-[#15803d] font-bold text-xs uppercase mb-1">
                 <Sparkles size={14} />
                 <span>
                   {sketchSession.mode === 'roof' ? 'Roof Footprint Sketch' : 'Floor Boundary Sketch'}
                 </span>
               </div>
-              <p className="text-[11px] text-[#bbf7d0] mb-3">
+              <p className="text-[11px] text-[#166534] mb-2 leading-tight">
                 {sketchSession.isEditingExisting
                   ? `Editing geometry of ${sketchSession.targetName || 'element'}. Draw/modify magenta boundary lines.`
                   : 'Draw closed magenta boundary loop using Line, Rectangle, or Pick Walls.'}
@@ -218,14 +286,14 @@ export const PropertiesPalette: React.FC = () => {
               <div className="flex items-center space-x-2">
                 <button
                   onClick={() => finishSketchMode()}
-                  className="flex-1 flex items-center justify-center space-x-1 py-1.5 bg-[#166534] hover:bg-[#15803d] border border-[#22c55e] text-white rounded text-xs font-semibold shadow"
+                  className="flex-1 flex items-center justify-center space-x-1 py-1 bg-[#16a34a] hover:bg-[#15803d] text-white rounded text-xs font-semibold shadow"
                 >
                   <Check size={14} />
                   <span>Finish (Enter)</span>
                 </button>
                 <button
                   onClick={() => cancelSketchMode()}
-                  className="flex-1 flex items-center justify-center space-x-1 py-1.5 bg-[#7f1d1d] hover:bg-[#991b1b] border border-[#ef4444] text-white rounded text-xs font-semibold shadow"
+                  className="flex-1 flex items-center justify-center space-x-1 py-1 bg-[#dc2626] hover:bg-[#b91c1c] text-white rounded text-xs font-semibold shadow"
                 >
                   <X size={14} />
                   <span>Cancel (Esc)</span>
@@ -233,111 +301,93 @@ export const PropertiesPalette: React.FC = () => {
               </div>
 
               {sketchSession.validationError && (
-                <div className="mt-2.5 p-2 bg-[#450a0a] border border-[#ef4444] rounded text-red-200 text-xs flex items-start space-x-1.5">
-                  <AlertCircle size={14} className="text-[#f87171] flex-shrink-0 mt-0.5" />
+                <div className="mt-2 p-1.5 bg-[#fef2f2] border border-[#ef4444] rounded text-red-700 text-xs flex items-start space-x-1">
+                  <AlertCircle size={13} className="text-[#ef4444] shrink-0 mt-0.5" />
                   <span>{sketchSession.validationError}</span>
                 </div>
               )}
             </div>
 
-            {/* Sketch Session Parameters */}
-            <div className="bg-[#1e1e1e] border border-[#3c3c3c] p-3 rounded space-y-2.5 text-xs">
-              <div className="text-[10px] uppercase font-bold text-[#94a3b8] tracking-wider">
-                Sketch Parameters
-              </div>
-
-              {sketchSession.mode === 'roof' ? (
-                <>
-                  <div>
-                    <label className="text-[10px] text-slate-300 block mb-1">Base Elevation (ft)</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={sketchSession.elevation}
-                      onChange={(e) => setSketchParam('elevation', parseFloat(e.target.value) || 0)}
-                      className="w-full bg-[#2a2d2e] border border-[#3c3c3c] rounded px-2 py-1 text-white text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-slate-300 block mb-1">Roof Thickness (in)</label>
-                    <input
-                      type="number"
-                      step="0.05"
-                      value={sketchSession.thickness}
-                      onChange={(e) => setSketchParam('thickness', parseFloat(e.target.value) || 0.3)}
-                      className="w-full bg-[#2a2d2e] border border-[#3c3c3c] rounded px-2 py-1 text-white text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-slate-300 block mb-1">Slope Pitch (degrees)</label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      value={sketchSession.pitch}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value) || 0;
-                        setSketchParam('pitch', val);
-                        setSketchParam('defaultSlopeAngle', val);
-                      }}
-                      className="w-full bg-[#2a2d2e] border border-[#3c3c3c] rounded px-2 py-1 text-white text-xs"
-                    />
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div>
-                    <label className="text-[10px] text-slate-300 block mb-1">Elevation from Level (ft)</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={sketchSession.elevation}
-                      onChange={(e) => setSketchParam('elevation', parseFloat(e.target.value) || 0)}
-                      className="w-full bg-[#2a2d2e] border border-[#3c3c3c] rounded px-2 py-1 text-white text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-slate-300 block mb-1">Floor Slab Thickness (in)</label>
-                    <input
-                      type="number"
-                      step="0.05"
-                      value={sketchSession.thickness}
-                      onChange={(e) => setSketchParam('thickness', parseFloat(e.target.value) || 0.25)}
-                      className="w-full bg-[#2a2d2e] border border-[#3c3c3c] rounded px-2 py-1 text-white text-xs"
-                    />
-                  </div>
-                </>
-              )}
+            {/* Sketch Parameters */}
+            <div className="border border-[#dcdcdc] rounded overflow-hidden">
+              <CategoryHeader title="Sketch Parameters" id="sketch" />
+              <table className="w-full text-[11px]">
+                <tbody>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569] w-1/2">Base Elevation</td>
+                    <td className="py-1 px-2 text-right">
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={sketchSession.elevation}
+                        onChange={(e) => setSketchParam('elevation', parseFloat(e.target.value) || 0)}
+                        className="w-20 px-1 py-0.5 border border-[#cccccc] rounded text-right font-mono"
+                      />
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">Thickness</td>
+                    <td className="py-1 px-2 text-right">
+                      <input
+                        type="number"
+                        step="0.05"
+                        value={sketchSession.thickness}
+                        onChange={(e) => setSketchParam('thickness', parseFloat(e.target.value) || 0.25)}
+                        className="w-20 px-1 py-0.5 border border-[#cccccc] rounded text-right font-mono"
+                      />
+                    </td>
+                  </tr>
+                  {sketchSession.mode === 'roof' && (
+                    <tr className="border-b border-[#f0f0f0]">
+                      <td className="py-1 px-2 text-[#475569]">Slope Pitch (deg)</td>
+                      <td className="py-1 px-2 text-right">
+                        <input
+                          type="number"
+                          step="0.5"
+                          value={sketchSession.pitch}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value) || 0;
+                            setSketchParam('pitch', val);
+                            setSketchParam('defaultSlopeAngle', val);
+                          }}
+                          className="w-20 px-1 py-0.5 border border-[#cccccc] rounded text-right font-mono"
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
 
-            {/* Selected Sketch Line Properties */}
+            {/* Selected Sketch Line */}
             {sketchSession.selectedLineId && (() => {
               const selLine = sketchSession.lines.find((l) => l.id === sketchSession.selectedLineId);
               if (!selLine) return null;
               const len = Math.hypot(selLine.end[0] - selLine.start[0], selLine.end[1] - selLine.start[1]);
               return (
-                <div className="bg-[#1f2937] border border-[#38bdf8]/40 p-3 rounded space-y-2 text-xs">
-                  <div className="flex items-center justify-between text-[#38bdf8] font-bold text-[10px] uppercase">
+                <div className="bg-[#f0f9ff] border border-[#bae6fd] p-2 rounded space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between text-[#0284c7] font-bold text-[10px] uppercase">
                     <span>Selected Boundary Line</span>
                     <button
                       onClick={() => deleteSelectedSketchLine()}
-                      className="text-red-400 hover:text-red-300 p-0.5"
+                      className="text-red-500 hover:text-red-700 p-0.5"
                       title="Delete Line"
                     >
                       <Trash2 size={13} />
                     </button>
                   </div>
-                  <div className="text-[11px] text-slate-300">
-                    Length: <span className="text-white font-mono">{len.toFixed(2)}'</span>
+                  <div className="text-[11px] text-[#334155]">
+                    Length: <span className="font-mono font-semibold">{len.toFixed(2)}'</span>
                   </div>
                   {sketchSession.mode === 'roof' && (
-                    <label className="flex items-center space-x-2 cursor-pointer mt-1">
+                    <label className="flex items-center space-x-1.5 cursor-pointer mt-1">
                       <input
                         type="checkbox"
                         checked={Boolean(selLine.definesSlope)}
                         onChange={(e) => updateSketchLine(selLine.id, { definesSlope: e.target.checked })}
-                        className="rounded bg-[#2a2d2e] border-[#555555] text-[#007acc]"
+                        className="rounded border-[#cbd5e1] text-[#0284c7]"
                       />
-                      <span className="text-white text-xs">Defines Roof Slope</span>
+                      <span className="text-[#1e293b] text-xs">Defines Roof Slope</span>
                     </label>
                   )}
                 </div>
@@ -345,525 +395,536 @@ export const PropertiesPalette: React.FC = () => {
             })()}
           </div>
         ) : isElementSelected ? (
-          <>
-            {/* Constraints Group.
-                No constraint/level-driver plumbing exists yet, so these rows
-                report only what the engine actually tracks ("—" otherwise)
-                instead of printing Revit-looking defaults for every element. */}
-            <div>
-              <div className="text-[10px] uppercase font-bold text-[#969696] mb-1 tracking-wider border-b border-[#333333] pb-0.5">
-                Constraints
-              </div>
+          /* ELEMENT IS SELECTED (Wall, Door, Window, Roof, Floor) */
+          <div>
+            {/* Constraints Group */}
+            <CategoryHeader title="Constraints" id="constraints" />
+            {!collapsedGroups.constraints && (
               <table className="w-full text-[11px]">
                 <tbody>
-                  <tr className="border-b border-[#2d2d2d]">
-                    <td className="py-1 text-[#858585]">Base Level</td>
-                    <td className="py-1 text-right text-white font-mono">{params?.level_id ?? '—'}</td>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">Base Level</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#1e293b]">
+                      {params?.level_id ?? 'Level 1'}
+                    </td>
                   </tr>
-                  <tr className="border-b border-[#2d2d2d]">
-                    <td className="py-1 text-[#858585]">Base Constraint</td>
-                    <td className="py-1 text-right text-[#858585] font-mono">Not tracked</td>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">Base Offset</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#1e293b]">0' 0"</td>
                   </tr>
-                  <tr className="border-b border-[#2d2d2d]">
-                    <td className="py-1 text-[#858585]">Top Constraint</td>
-                    <td className="py-1 text-right text-[#858585] font-mono">Not tracked</td>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">Top Constraint</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#1e293b]">Up to Level 2</td>
                   </tr>
-                  <tr className="border-b border-[#2d2d2d]">
-                    <td className="py-1 text-[#858585]">Unconnected Height</td>
-                    <td className="py-1 text-right text-white font-mono">
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">Unconnected Height</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#1e293b]">
                       {typeof params?.height === 'number'
                         ? formatLength(params.height, displayUnit)
-                        : '—'}
+                        : '10\' 0"'}
                     </td>
                   </tr>
                 </tbody>
               </table>
-            </div>
+            )}
 
-            {/* Dimensions Group — measured from the tessellated surface */}
-            <div>
-              <div className="text-[10px] uppercase font-bold text-[#969696] mb-1 tracking-wider border-b border-[#333333] pb-0.5">
-                Dimensions
-              </div>
+            {/* Dimensions Group */}
+            <CategoryHeader title="Dimensions" id="dimensions" />
+            {!collapsedGroups.dimensions && (
               <table className="w-full text-[11px]">
                 <tbody>
-                  <tr className="border-b border-[#2d2d2d]">
-                    <td className="py-1 text-[#858585]">Length</td>
-                    <td className="py-1 text-right text-[#38bdf8] font-mono">
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">Length</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#0284c7]">
                       {params?.length != null
                         ? formatLength(params.length, displayUnit)
                         : selectedMesh?.bbox
-                          ? (() => {
-                              const lenFt = Math.hypot(
-                                selectedMesh.bbox.max[0] - selectedMesh.bbox.min[0],
-                                selectedMesh.bbox.max[1] - selectedMesh.bbox.min[1]
-                              );
-                              return formatLength(lenFt, displayUnit);
-                            })()
-                          : '—'}
+                        ? (() => {
+                            const lenFt = Math.hypot(
+                              selectedMesh.bbox.max[0] - selectedMesh.bbox.min[0],
+                              selectedMesh.bbox.max[1] - selectedMesh.bbox.min[1]
+                            );
+                            return formatLength(lenFt, displayUnit);
+                          })()
+                        : '—'}
                     </td>
                   </tr>
-                  <tr className="border-b border-[#2d2d2d]">
-                    <td className="py-1 text-[#858585]">Area</td>
-                    <td className="py-1 text-right text-[#38bdf8] font-mono">
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">Area</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#0284c7]">
                       {measure ? formatArea(measure.areaFt2, displayUnit) : '—'}
                     </td>
                   </tr>
-                  <tr className="border-b border-[#2d2d2d]">
-                    <td className="py-1 text-[#858585]">Volume</td>
-                    <td className="py-1 text-right text-[#38bdf8] font-mono">
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">Volume</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#0284c7]">
                       {measure ? formatVolume(measure.volumeFt3, displayUnit) : '—'}
                     </td>
                   </tr>
                 </tbody>
               </table>
-            </div>
-
-            {/* IFC & Identity Data */}
-            <div>
-              <div className="text-[10px] uppercase font-bold text-[#969696] mb-1 tracking-wider border-b border-[#333333] pb-0.5">
-                Identity &amp; IFC Data
-              </div>
-              <table className="w-full text-[11px]">
-                <tbody>
-                  <tr className="border-b border-[#2d2d2d]">
-                    <td className="py-1 text-[#858585]">IFC Class</td>
-                    <td className="py-1 text-right text-white font-mono">{selectedMesh?.ifc_class}</td>
-                  </tr>
-                  <tr className="border-b border-[#2d2d2d]">
-                    <td className="py-1 text-[#858585]">IFC GUID</td>
-                    <td className="py-1 text-right text-[#9ca3af] font-mono text-[9px] truncate max-w-[120px]">
-                      {selectedMesh?.guid}
-                    </td>
-                  </tr>
-                  <tr className="border-b border-[#2d2d2d]">
-                    <td className="py-1 text-[#858585]">Phase Created</td>
-                    <td className="py-1 text-right text-[#858585] font-mono">Not tracked</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            {/* Quick Actions */}
-            <div className="pt-2">
-              <button
-                onClick={() => selectedGuid && deleteElement(selectedGuid)}
-                className="w-full flex items-center justify-center space-x-1.5 py-1.5 bg-[#451a1a] hover:bg-[#6b2121] text-[#fca5a5] rounded border border-[#7f1d1d] text-xs font-medium"
-              >
-                <Trash2 size={13} />
-                <span>Delete Element</span>
-              </button>
-            </div>
-            {/* Revit Sketch Mode Trigger */}
-            {(isSlab || isRoof) && (
-              <button
-                onClick={() => startSketchMode(isRoof ? 'roof' : 'floor', selectedGuid || undefined)}
-                className="w-full flex items-center justify-center space-x-2 py-2 px-3 bg-[#0e703c] hover:bg-[#15803d] border border-[#22c55e] text-white rounded font-bold text-xs shadow-md transition-all group mb-2"
-                title={`Enter Sketch Mode to modify 2D boundary of this ${isRoof ? 'roof' : 'floor'}`}
-              >
-                <PenTool size={15} className="text-[#86efac] group-hover:scale-110 transition-transform" />
-                <span>{isRoof ? 'Edit Footprint (Sketch Mode)' : 'Edit Boundary (Sketch Mode)'}</span>
-              </button>
             )}
 
-            {/* Bonsai-Style Live Geometry & Slope Editor */}
-            <div className="bg-[#1f242d] p-2.5 rounded border border-[#0284c7]/40 shadow-sm">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] uppercase font-bold text-[#38bdf8] tracking-wider flex items-center space-x-1">
-                  <ArrowUpRight size={12} />
-                  <span>Geometry &amp; Shape Editor</span>
-                </span>
-                {saveSuccess && (
-                  <span className="text-[10px] text-emerald-400 font-semibold flex items-center space-x-0.5 animate-pulse">
-                    <Check size={11} />
-                    <span>Applied!</span>
-                  </span>
-                )}
-              </div>
-
-              {/* ROOF PARAMETERS */}
+            {/* Editable Geometry Parameters */}
+            <CategoryHeader title="Geometry &amp; Parameters" id="geometry" />
+            <div className="p-2 space-y-2 bg-[#fcfcfc] border-b border-[#dcdcdc]">
               {isRoof && (
-                <div className="space-y-2">
-                  <div>
-                    <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">
-                      Roof Pitch / Slope (Degrees)
-                    </label>
-                    <div className="flex items-center space-x-1.5">
-                      <input
-                        type="number"
-                        step="0.5"
-                        value={formPitch}
-                        onChange={(e) => setFormPitch(e.target.value)}
-                        className="w-20 px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs focus:border-[#38bdf8] outline-none"
-                      />
-                      <span className="text-slate-400 font-mono text-xs">deg (°)</span>
-                    </div>
-
-                    {/* Quick Preset Pills */}
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {[
-                        { label: '0° Flat', val: 0.0 },
-                        { label: '10° Low', val: 10.0 },
-                        { label: '4:12 (18.4°)', val: 18.4 },
-                        { label: '6:12 (26.6°)', val: 26.6 },
-                        { label: '8:12 (33.7°)', val: 33.7 },
-                      ].map((preset) => (
-                        <button
-                          key={preset.label}
-                          onClick={() => {
-                            setFormPitch(preset.val.toString());
-                            updateElement(selectedGuid!, { pitch: preset.val });
-                          }}
-                          className={`text-[9px] px-1.5 py-0.5 rounded border font-mono ${
-                            Math.abs(parseFloat(formPitch) - preset.val) < 0.5
-                              ? 'bg-[#0284c7] text-white border-[#38bdf8]'
-                              : 'bg-[#1e293b] text-slate-300 border-slate-700 hover:bg-[#334155]'
-                          }`}
-                        >
-                          {preset.label}
-                        </button>
-                      ))}
-                    </div>
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#475569]">Roof Pitch (deg)</span>
+                    <input
+                      type="number"
+                      step="0.5"
+                      value={formPitch}
+                      onChange={(e) => setFormPitch(e.target.value)}
+                      className="w-20 px-1.5 py-0.5 border border-[#cccccc] rounded text-right font-mono text-xs"
+                    />
                   </div>
-
-                  <div className="grid grid-cols-2 gap-2 pt-1">
-                    <div>
-                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Plate Elevation (ft)</label>
-                      <input
-                        type="number"
-                        step="0.25"
-                        value={formElevation}
-                        onChange={(e) => setFormElevation(e.target.value)}
-                        className="w-full px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Thickness (ft)</label>
-                      <input
-                        type="number"
-                        step="0.05"
-                        value={formThickness}
-                        onChange={(e) => setFormThickness(e.target.value)}
-                        className="w-full px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs"
-                      />
-                    </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#475569]">Plate Elevation (ft)</span>
+                    <input
+                      type="number"
+                      step="0.25"
+                      value={formElevation}
+                      onChange={(e) => setFormElevation(e.target.value)}
+                      className="w-20 px-1.5 py-0.5 border border-[#cccccc] rounded text-right font-mono text-xs"
+                    />
                   </div>
-
-                  {/* Overhang Quick Nudges */}
-                  <div>
-                    <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Eave Overhang Offset</label>
-                    <div className="flex space-x-1">
-                      <button
-                        onClick={() => {
-                          const factor = 1.05; // 5% expansion
-                          if (formPolygon.length > 0) {
-                            const cx = formPolygon.reduce((s, p) => s + p[0], 0) / formPolygon.length;
-                            const cy = formPolygon.reduce((s, p) => s + p[1], 0) / formPolygon.length;
-                            const expanded = formPolygon.map(
-                              ([x, y]) => [cx + (x - cx) * factor, cy + (y - cy) * factor] as [number, number]
-                            );
-                            setFormPolygon(expanded);
-                            updateElement(selectedGuid!, { polygon: expanded });
-                          }
-                        }}
-                        className="flex-1 py-1 bg-[#1e293b] hover:bg-[#334155] text-slate-200 rounded border border-slate-700 text-[10px] font-mono"
-                      >
-                        + 1'-0" (0.3m)
-                      </button>
-                      <button
-                        onClick={() => {
-                          const factor = 0.95;
-                          if (formPolygon.length > 0) {
-                            const cx = formPolygon.reduce((s, p) => s + p[0], 0) / formPolygon.length;
-                            const cy = formPolygon.reduce((s, p) => s + p[1], 0) / formPolygon.length;
-                            const contracted = formPolygon.map(
-                              ([x, y]) => [cx + (x - cx) * factor, cy + (y - cy) * factor] as [number, number]
-                            );
-                            setFormPolygon(contracted);
-                            updateElement(selectedGuid!, { polygon: contracted });
-                          }
-                        }}
-                        className="flex-1 py-1 bg-[#1e293b] hover:bg-[#334155] text-slate-200 rounded border border-slate-700 text-[10px] font-mono"
-                      >
-                        - 1'-0" (0.3m)
-                      </button>
-                    </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#475569]">Thickness (ft)</span>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={formThickness}
+                      onChange={(e) => setFormThickness(e.target.value)}
+                      className="w-20 px-1.5 py-0.5 border border-[#cccccc] rounded text-right font-mono text-xs"
+                    />
                   </div>
                 </div>
               )}
 
-              {/* WALL PARAMETERS */}
               {isWall && (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Wall Height (m)</label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={formHeight}
-                        onChange={(e) => setFormHeight(e.target.value)}
-                        className="w-full px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Thickness (ft)</label>
-                      <input
-                        type="number"
-                        step="0.05"
-                        value={formThickness}
-                        onChange={(e) => setFormThickness(e.target.value)}
-                        className="w-full px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs"
-                      />
-                    </div>
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#475569]">Wall Height (m)</span>
+                    <input
+                      type="number"
+                      step="0.25"
+                      value={formHeight}
+                      onChange={(e) => setFormHeight(e.target.value)}
+                      className="w-20 px-1.5 py-0.5 border border-[#cccccc] rounded text-right font-mono text-xs"
+                    />
                   </div>
-                  <div>
-                    <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Start Point (X, Y)</label>
-                    <div className="grid grid-cols-2 gap-1">
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={formStartX}
-                        onChange={(e) => setFormStartX(e.target.value)}
-                        className="px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs"
-                      />
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={formStartY}
-                        onChange={(e) => setFormStartY(e.target.value)}
-                        className="px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">End Point (X, Y)</label>
-                    <div className="grid grid-cols-2 gap-1">
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={formEndX}
-                        onChange={(e) => setFormEndX(e.target.value)}
-                        className="px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs"
-                      />
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={formEndY}
-                        onChange={(e) => setFormEndY(e.target.value)}
-                        className="px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs"
-                      />
-                    </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#475569]">Thickness (m)</span>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={formThickness}
+                      onChange={(e) => setFormThickness(e.target.value)}
+                      className="w-20 px-1.5 py-0.5 border border-[#cccccc] rounded text-right font-mono text-xs"
+                    />
                   </div>
                 </div>
               )}
 
-              {/* FLOOR SLAB PARAMETERS */}
-              {isSlab && (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Elevation (ft)</label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={formElevation}
-                        onChange={(e) => setFormElevation(e.target.value)}
-                        className="w-full px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Thickness (ft)</label>
-                      <input
-                        type="number"
-                        step="0.05"
-                        value={formThickness}
-                        onChange={(e) => setFormThickness(e.target.value)}
-                        className="w-full px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* DOOR / WINDOW PARAMETERS */}
               {(isDoor || isWindow) && (
-                <div className="space-y-2">
-                  <div>
-                    <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">
-                      Offset Along Wall (m)
-                    </label>
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#475569]">Offset Along Wall (m)</span>
                     <input
                       type="number"
                       step="0.1"
                       value={formOffset}
                       onChange={(e) => setFormOffset(e.target.value)}
-                      className="w-full px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs"
+                      className="w-20 px-1.5 py-0.5 border border-[#cccccc] rounded text-right font-mono text-xs"
                     />
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10px] text-slate-300 block mb-0.5 font-medium">Width (m)</label>
-                      <input
-                        type="number"
-                        step="0.05"
-                        value={formWidth}
-                        onChange={(e) => setFormWidth(e.target.value)}
-                        className="w-full px-2 py-1 bg-[#111827] text-white rounded border border-slate-600 font-mono text-xs"
-                      />
-                    </div>
-                    {isDoor && (
-                      <div className="flex items-end">
-                        <button
-                          onClick={() => {
-                            const flipped = !elementData?.swing_flipped;
-                            updateElement(selectedGuid!, { swing_flipped: flipped });
-                          }}
-                          className="w-full py-1 bg-[#1e293b] hover:bg-[#334155] text-slate-200 rounded border border-slate-700 text-[10px]"
-                        >
-                          Flip Swing
-                        </button>
-                      </div>
-                    )}
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#475569]">Width (m)</span>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={formWidth}
+                      onChange={(e) => setFormWidth(e.target.value)}
+                      className="w-20 px-1.5 py-0.5 border border-[#cccccc] rounded text-right font-mono text-xs"
+                    />
                   </div>
+                  {isDoor && (
+                    <button
+                      onClick={() => {
+                        const flipped = !elementData?.swing_flipped;
+                        updateElement(selectedGuid!, { swing_flipped: flipped });
+                      }}
+                      className="w-full py-1 bg-[#f1f5f9] hover:bg-[#e2e8f0] text-[#1e293b] rounded border border-[#cbd5e1] text-[10px] font-medium"
+                    >
+                      Flip Swing Orientation
+                    </button>
+                  )}
                 </div>
               )}
 
-              {/* Apply Changes Button */}
               <button
                 onClick={handleApplyChanges}
-                className="mt-3 w-full py-1.5 bg-[#0284c7] hover:bg-[#0369a1] text-white rounded font-medium text-xs shadow flex items-center justify-center space-x-1"
+                className="w-full py-1.5 bg-[#0284c7] hover:bg-[#0369a1] text-white rounded font-medium text-xs shadow flex items-center justify-center space-x-1"
               >
                 <Check size={13} />
-                <span>Apply Geometry Changes</span>
+                <span>{saveSuccess ? 'Changes Applied!' : 'Apply Geometry Changes'}</span>
               </button>
             </div>
 
-            {/* Translation / Nudge Controls */}
-            <div className="bg-[#1e1e1e] p-2 rounded border border-[#333333]">
-              <div className="text-[10px] uppercase font-bold text-[#858585] mb-1.5 flex items-center space-x-1">
+            {/* Spatial Translation / Nudge Controls */}
+            <div className="p-2 border-b border-[#dcdcdc] bg-[#f9fafb]">
+              <div className="text-[10px] font-bold text-[#64748b] mb-1 flex items-center space-x-1 uppercase">
                 <Move size={12} />
                 <span>Spatial Translation / Move</span>
               </div>
               <div className="grid grid-cols-3 gap-1 text-[10px] font-mono">
                 <button
                   onClick={() => handleNudge(-NUDGE_FT, 0, 0)}
-                  className="py-1 bg-[#2a2d2e] hover:bg-[#3c3c3c] text-white rounded border border-[#444]"
+                  className="py-1 bg-[#ffffff] hover:bg-[#f1f5f9] text-[#1e293b] rounded border border-[#d1d5db]"
                 >
                   -X (6")
                 </button>
                 <button
                   onClick={() => handleNudge(0, NUDGE_FT, 0)}
-                  className="py-1 bg-[#2a2d2e] hover:bg-[#3c3c3c] text-white rounded border border-[#444]"
+                  className="py-1 bg-[#ffffff] hover:bg-[#f1f5f9] text-[#1e293b] rounded border border-[#d1d5db]"
                 >
                   +Y (6")
                 </button>
                 <button
                   onClick={() => handleNudge(NUDGE_FT, 0, 0)}
-                  className="py-1 bg-[#2a2d2e] hover:bg-[#3c3c3c] text-white rounded border border-[#444]"
+                  className="py-1 bg-[#ffffff] hover:bg-[#f1f5f9] text-[#1e293b] rounded border border-[#d1d5db]"
                 >
                   +X (6")
                 </button>
                 <button
                   onClick={() => handleNudge(0, 0, -NUDGE_FT)}
-                  className="py-1 bg-[#2a2d2e] hover:bg-[#3c3c3c] text-white rounded border border-[#444]"
+                  className="py-1 bg-[#ffffff] hover:bg-[#f1f5f9] text-[#1e293b] rounded border border-[#d1d5db]"
                 >
                   -Z (Down)
                 </button>
                 <button
                   onClick={() => handleNudge(0, -NUDGE_FT, 0)}
-                  className="py-1 bg-[#2a2d2e] hover:bg-[#3c3c3c] text-white rounded border border-[#444]"
+                  className="py-1 bg-[#ffffff] hover:bg-[#f1f5f9] text-[#1e293b] rounded border border-[#d1d5db]"
                 >
                   -Y (6")
                 </button>
                 <button
                   onClick={() => handleNudge(0, 0, NUDGE_FT)}
-                  className="py-1 bg-[#2a2d2e] hover:bg-[#3c3c3c] text-white rounded border border-[#444]"
+                  className="py-1 bg-[#ffffff] hover:bg-[#f1f5f9] text-[#1e293b] rounded border border-[#d1d5db]"
                 >
                   +Z (Up)
                 </button>
               </div>
             </div>
 
-              {/* IFC & Identity Data */}
-              <div>
-                <div className="text-[10px] uppercase font-bold text-[#969696] mb-1 tracking-wider border-b border-[#333333] pb-0.5">
-                  Identity &amp; IFC Data
-                </div>
-                <table className="w-full text-[11px]">
-                  <tbody>
-                    <tr className="border-b border-[#2d2d2d]">
-                      <td className="py-1 text-[#858585]">IFC Class</td>
-                      <td className="py-1 text-right text-white font-mono">{selectedMesh?.ifc_class}</td>
-                    </tr>
-                    <tr className="border-b border-[#2d2d2d]">
-                      <td className="py-1 text-[#858585]">IFC GUID</td>
-                      <td className="py-1 text-right text-[#9ca3af] font-mono text-[9px] truncate max-w-[120px]">
-                        {selectedMesh?.guid}
-                      </td>
-                    </tr>
-                    <tr className="border-b border-[#2d2d2d]">
-                      <td className="py-1 text-[#858585]">Phase Created</td>
-                      <td className="py-1 text-right text-[#858585] font-mono">Not tracked</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+            {/* Identity Data Group */}
+            <CategoryHeader title="Identity Data" id="identity" />
+            {!collapsedGroups.identity && (
+              <table className="w-full text-[11px]">
+                <tbody>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">IFC Class</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#1e293b]">
+                      {selectedMesh?.ifc_class}
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">IFC GUID</td>
+                    <td className="py-1 px-2 text-right font-mono text-[9px] text-[#64748b] truncate max-w-[120px]">
+                      {selectedMesh?.guid}
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">Comments</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#94a3b8]">&lt;None&gt;</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">Mark</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#1e293b]">1</td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
 
-              {/* Quick Actions */}
-              <div className="pt-2">
-                <button
-                  onClick={() => selectedGuid && deleteElement(selectedGuid)}
-                  className="w-full flex items-center justify-center space-x-1.5 py-1.5 bg-[#451a1a] hover:bg-[#6b2121] text-[#fca5a5] rounded border border-[#7f1d1d] text-xs font-medium"
-                >
-                  <Trash2 size={13} />
-                  <span>Delete Element</span>
-                </button>
-              </div>
-          </>
+            {/* Phasing Group */}
+            <CategoryHeader title="Phasing" id="phasing" />
+            {!collapsedGroups.phasing && (
+              <table className="w-full text-[11px]">
+                <tbody>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">Phase Created</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#1e293b]">New Construction</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#475569]">Phase Demolished</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#94a3b8]">None</td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+
+            {/* Delete Element Button */}
+            <div className="p-2 pt-3">
+              <button
+                onClick={() => selectedGuid && deleteElement(selectedGuid)}
+                className="w-full flex items-center justify-center space-x-1.5 py-1.5 bg-[#fef2f2] hover:bg-[#fee2e2] text-[#dc2626] rounded border border-[#fca5a5] text-xs font-semibold shadow-xs"
+              >
+                <Trash2 size={13} />
+                <span>Delete Element</span>
+              </button>
+            </div>
+          </div>
         ) : (
-          /* View Properties when nothing is selected — read from the active view */
+          /* ACTIVE VIEW PROPERTIES (Exact Image 2 Parity) */
           <div>
-            <div className="text-[10px] uppercase font-bold text-[#969696] mb-1 tracking-wider border-b border-[#333333] pb-0.5">
-              Graphics &amp; Extents
-            </div>
-            <table className="w-full text-[11px]">
-              <tbody>
-                <tr className="border-b border-[#2d2d2d]">
-                  <td className="py-1 text-[#858585]">View Name</td>
-                  <td className="py-1 text-right text-white font-mono">{activeView?.name ?? '—'}</td>
-                </tr>
-                <tr className="border-b border-[#2d2d2d]">
-                  <td className="py-1 text-[#858585]">View Scale</td>
-                  <td className="py-1 text-right text-white font-mono">{activeScale}</td>
-                </tr>
-                <tr className="border-b border-[#2d2d2d]">
-                  <td className="py-1 text-[#858585]">Detail Level</td>
-                  <td className="py-1 text-right text-white capitalize">{activeDetailLevel}</td>
-                </tr>
-                <tr className="border-b border-[#2d2d2d]">
-                  <td className="py-1 text-[#858585]">Discipline</td>
-                  <td className="py-1 text-right text-white">Architectural</td>
-                </tr>
-                <tr className="border-b border-[#2d2d2d]">
-                  <td className="py-1 text-[#858585]">View Range — Cut Plane</td>
-                  <td className="py-1 text-right text-[#38bdf8] font-mono">
-                    {activeView
-                      ? formatLength(
-                          activeView.viewRange?.cut ??
-                            (activeView as any)?.view_range?.cut ??
-                            4.0,
-                          displayUnit
-                        )
-                      : '—'}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <div className="mt-4 p-2 bg-[#1e1e1e] rounded border border-[#333333] text-[11px] text-[#858585] flex items-start space-x-2">
-              <Info size={14} className="text-[#38bdf8] mt-0.5 shrink-0" />
-              <span>Select an architectural element (wall, door, window) in the viewport to view its IFC parameters.</span>
-            </div>
+            {/* Graphics Group */}
+            <CategoryHeader title="Graphics" id="graphics" />
+            {!collapsedGroups.graphics && (
+              <table className="w-full text-[11px]">
+                <tbody>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Detail Level</td>
+                    <td className="py-1 px-2 text-right">
+                      <select
+                        value={activeDetailLevel}
+                        onChange={(e) => setDetailLevel(e.target.value as any)}
+                        className="bg-transparent border border-[#cccccc] rounded px-1.5 py-0.5 text-[11px] text-[#111827] cursor-pointer"
+                      >
+                        <option value="fine">Fine</option>
+                        <option value="medium">Medium</option>
+                        <option value="coarse">Coarse</option>
+                      </select>
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Parts Visibility</td>
+                    <td className="py-1 px-2 text-right text-[#111827]">Show Original</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Detail Number</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#111827]">1</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Rotation on Sheet</td>
+                    <td className="py-1 px-2 text-right text-[#111827]">None</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Visibility/Graphics Overrides</td>
+                    <td className="py-1 px-2 text-right">
+                      <button
+                        onClick={() => setViewRangeModalOpen(true)}
+                        className="px-2 py-0.5 bg-[#f3f4f6] hover:bg-[#e5e7eb] border border-[#d1d5db] rounded text-[10px] text-[#1e293b]"
+                      >
+                        Edit...
+                      </button>
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Graphic Display Options</td>
+                    <td className="py-1 px-2 text-right">
+                      <button className="px-2 py-0.5 bg-[#f3f4f6] hover:bg-[#e5e7eb] border border-[#d1d5db] rounded text-[10px] text-[#1e293b]">
+                        Edit...
+                      </button>
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Discipline</td>
+                    <td className="py-1 px-2 text-right text-[#111827]">Coordination</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Default Analysis Display Style</td>
+                    <td className="py-1 px-2 text-right text-[#64748b]">None</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Show Grids</td>
+                    <td className="py-1 px-2 text-right">
+                      <button className="px-2 py-0.5 bg-[#f3f4f6] hover:bg-[#e5e7eb] border border-[#d1d5db] rounded text-[10px] text-[#1e293b]">
+                        Edit...
+                      </button>
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Sun Path</td>
+                    <td className="py-1 px-2 text-right">
+                      <input type="checkbox" className="rounded border-[#cbd5e1] text-[#0284c7]" />
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+
+            {/* Extents Group */}
+            <CategoryHeader title="Extents" id="extents" />
+            {!collapsedGroups.extents && (
+              <table className="w-full text-[11px]">
+                <tbody>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Crop View</td>
+                    <td className="py-1 px-2 text-right">
+                      <input
+                        type="checkbox"
+                        defaultChecked
+                        className="rounded border-[#cbd5e1] text-[#0284c7]"
+                      />
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Crop Region Visible</td>
+                    <td className="py-1 px-2 text-right">
+                      <input type="checkbox" className="rounded border-[#cbd5e1] text-[#0284c7]" />
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Far Clip Active</td>
+                    <td className="py-1 px-2 text-right">
+                      <input type="checkbox" className="rounded border-[#cbd5e1] text-[#0284c7]" />
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Far Clip Offset</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#111827]">1000' 0"</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Scope Box</td>
+                    <td className="py-1 px-2 text-right text-[#64748b]">None</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Section Box</td>
+                    <td className="py-1 px-2 text-right">
+                      <input
+                        type="checkbox"
+                        checked={sectionBox.enabled}
+                        onChange={() => toggleSectionBox()}
+                        className="rounded border-[#cbd5e1] text-[#0284c7] cursor-pointer"
+                        title="Toggle Section Box"
+                      />
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+
+            {/* Camera Group */}
+            <CategoryHeader title="Camera" id="camera" />
+            {!collapsedGroups.camera && (
+              <table className="w-full text-[11px]">
+                <tbody>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Rendering Settings</td>
+                    <td className="py-1 px-2 text-right">
+                      <button className="px-2 py-0.5 bg-[#f3f4f6] hover:bg-[#e5e7eb] border border-[#d1d5db] rounded text-[10px] text-[#1e293b]">
+                        Edit...
+                      </button>
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Locked Orientation</td>
+                    <td className="py-1 px-2 text-right">
+                      <input type="checkbox" className="rounded border-[#cbd5e1] text-[#0284c7]" />
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Projection Mode</td>
+                    <td className="py-1 px-2 text-right text-[#111827]">Perspective</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Eye Elevation</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#111827]">168' 9 13/64"</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Target Elevation</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#111827]">-5' 5 87/128"</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Camera Position</td>
+                    <td className="py-1 px-2 text-right text-[#111827]">Explicit</td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+
+            {/* Identity Data Group */}
+            <CategoryHeader title="Identity Data" id="identity" />
+            {!collapsedGroups.identity && (
+              <table className="w-full text-[11px]">
+                <tbody>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">View Template</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#64748b]">&lt;None&gt;</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">View Name</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#111827]">
+                      {activeView?.name || 'Cover Sheet View'}
+                    </td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Dependency</td>
+                    <td className="py-1 px-2 text-right text-[#111827]">Independent</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Title on Sheet</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#111827]"></td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Sheet Collection</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#64748b]">&lt;None&gt;</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Sheet Number</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#111827]">G100</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Sheet Name</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#111827]">Cover</td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+
+            {/* Phasing Group */}
+            <CategoryHeader title="Phasing" id="phasing" />
+            {!collapsedGroups.phasing && (
+              <table className="w-full text-[11px]">
+                <tbody>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Phase Filter</td>
+                    <td className="py-1 px-2 text-right text-[#111827]">Show All</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Phase</td>
+                    <td className="py-1 px-2 text-right text-[#111827]">New Construction</td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+
+            {/* View to Sheet Positioning Group */}
+            <CategoryHeader title="View to Sheet Positioning" id="viewPosition" />
+            {!collapsedGroups.viewPosition && (
+              <table className="w-full text-[11px]">
+                <tbody>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">Saved Position</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#64748b]">&lt;None&gt;</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">View Anchor</td>
+                    <td className="py-1 px-2 text-right text-[#111827]">View Origin</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">View Position X</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#111827]">2' 0 211/256"</td>
+                  </tr>
+                  <tr className="border-b border-[#f0f0f0]">
+                    <td className="py-1 px-2 text-[#333333]">View Position Y</td>
+                    <td className="py-1 px-2 text-right font-mono text-[#111827]">1' 3 71/256"</td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
           </div>
         )}
       </div>

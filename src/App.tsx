@@ -71,7 +71,7 @@ export const App: React.FC = () => {
   }, [handleKeyStroke, handleDeleteKey, exportIfc]);
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#1e1e1e] text-[#cccccc] font-sans">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#f3f4f6] text-[#1e293b] font-sans">
       {/* 1. Revit Categorized Tabbed Ribbon */}
       <Ribbon />
 

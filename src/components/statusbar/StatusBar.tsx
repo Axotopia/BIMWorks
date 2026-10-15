@@ -39,14 +39,14 @@ export const StatusBar: React.FC = () => {
   const isTempActive = hiddenGuids.length > 0 || isolatedGuids.length > 0;
 
   return (
-    <div className="flex items-center justify-between px-3 py-1 bg-[#1e1e1e] border-t border-[#333333] select-none text-[11px] text-[#969696] z-20">
+    <div className="flex items-center justify-between px-3 py-1 bg-[#f0f0f0] border-t border-[#dcdcdc] select-none text-[11px] text-[#333333] z-20 font-sans">
       {/* Left: View Control Bar (Revit View Control Strip) */}
       <div className="flex items-center space-x-2">
         {/* Unit System Selector (Spec §11: Decimal-Feet Internals) */}
         <select
           value={displayUnit}
           onChange={(e) => setDisplayUnit(e.target.value as any)}
-          className="bg-[#2d2d2d] border border-[#3c3c3c] text-[#38bdf8] font-medium rounded px-1.5 py-0.5 text-[10px] cursor-pointer focus:outline-none focus:border-[#007acc]"
+          className="bg-[#ffffff] border border-[#cbd5e1] text-[#0284c7] font-medium rounded px-1.5 py-0.5 text-[10px] cursor-pointer focus:outline-none focus:border-[#007acc]"
           title="Display Units (Engine Representation: Decimal Feet)"
         >
           <option value="imperial_fractional">Fract (Ft-In)</option>
@@ -59,7 +59,7 @@ export const StatusBar: React.FC = () => {
         <select
           value={activeScale}
           onChange={(e) => setScale(e.target.value)}
-          className="bg-[#2d2d2d] border border-[#3c3c3c] text-white rounded px-1.5 py-0.5 text-[10px] cursor-pointer focus:outline-none focus:border-[#007acc]"
+          className="bg-[#ffffff] border border-[#cbd5e1] text-[#1e293b] font-medium rounded px-1.5 py-0.5 text-[10px] cursor-pointer focus:outline-none focus:border-[#007acc]"
         >
           <option value='1/8" = 1&apos;-0"'>1/8" = 1'-0"</option>
           <option value='1/4" = 1&apos;-0"'>1/4" = 1'-0"</option>
@@ -69,13 +69,13 @@ export const StatusBar: React.FC = () => {
         </select>
 
         {/* Detail Level */}
-        <div className="flex items-center space-x-0.5 bg-[#2d2d2d] border border-[#3c3c3c] rounded p-0.5">
+        <div className="flex items-center space-x-0.5 bg-[#ffffff] border border-[#cbd5e1] rounded p-0.5">
           {(['coarse', 'medium', 'fine'] as const).map((lvl) => (
             <button
               key={lvl}
               onClick={() => setDetailLevel(lvl)}
               className={`px-1.5 py-0.5 rounded capitalize text-[10px] ${
-                activeDetailLevel === lvl ? 'bg-[#094771] text-white font-semibold' : 'text-[#858585] hover:text-white'
+                activeDetailLevel === lvl ? 'bg-[#cce8ff] text-[#094771] font-bold' : 'text-[#64748b] hover:text-[#0f172a]'
               }`}
             >
               {lvl}
@@ -84,11 +84,11 @@ export const StatusBar: React.FC = () => {
         </div>
 
         {/* Visual Style */}
-        <div className="flex items-center space-x-0.5 bg-[#2d2d2d] border border-[#3c3c3c] rounded p-0.5">
+        <div className="flex items-center space-x-0.5 bg-[#ffffff] border border-[#cbd5e1] rounded p-0.5">
           <button
             onClick={() => setVisualStyle('hidden_line')}
             className={`px-1.5 py-0.5 rounded text-[10px] ${
-              activeVisualStyle === 'hidden_line' ? 'bg-[#094771] text-white font-semibold' : 'text-[#858585] hover:text-white'
+              activeVisualStyle === 'hidden_line' ? 'bg-[#cce8ff] text-[#094771] font-bold' : 'text-[#64748b] hover:text-[#0f172a]'
             }`}
             title="Hidden Line"
           >
@@ -97,7 +97,7 @@ export const StatusBar: React.FC = () => {
           <button
             onClick={() => setVisualStyle('consistent_colors')}
             className={`px-1.5 py-0.5 rounded text-[10px] ${
-              activeVisualStyle === 'consistent_colors' ? 'bg-[#094771] text-white font-semibold' : 'text-[#858585] hover:text-white'
+              activeVisualStyle === 'consistent_colors' ? 'bg-[#cce8ff] text-[#094771] font-bold' : 'text-[#64748b] hover:text-[#0f172a]'
             }`}
             title="Consistent Colors (Revit Default)"
           >
@@ -106,7 +106,7 @@ export const StatusBar: React.FC = () => {
           <button
             onClick={() => setVisualStyle('wireframe')}
             className={`px-1.5 py-0.5 rounded text-[10px] ${
-              activeVisualStyle === 'wireframe' ? 'bg-[#094771] text-white font-semibold' : 'text-[#858585] hover:text-white'
+              activeVisualStyle === 'wireframe' ? 'bg-[#cce8ff] text-[#094771] font-bold' : 'text-[#64748b] hover:text-[#0f172a]'
             }`}
             title="Wireframe"
           >
@@ -117,7 +117,7 @@ export const StatusBar: React.FC = () => {
         {/* View Range Modal Button */}
         <button
           onClick={() => setViewRangeModalOpen(true)}
-          className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-[#38bdf8] flex items-center space-x-1"
+          className="p-1 hover:bg-[#e2e8f0] rounded text-[#475569] hover:text-[#0284c7] flex items-center space-x-1"
           title="Edit View Range (Top, Cut Plane, Bottom, View Depth)"
         >
           <SlidersHorizontal size={13} />
@@ -130,8 +130,8 @@ export const StatusBar: React.FC = () => {
             onClick={() => (isTempActive ? resetTempVisibility() : selectedGuid && tempHideSelected())}
             className={`p-1 rounded flex items-center space-x-1 border ${
               isTempActive
-                ? 'bg-[#0284c7] text-white border-[#38bdf8] font-bold'
-                : 'border-transparent hover:bg-[#333333] text-[#cccccc]'
+                ? 'bg-[#0284c7] text-white border-[#0284c7] font-bold'
+                : 'border-transparent hover:bg-[#e2e8f0] text-[#475569]'
             }`}
             title="Temporary Hide/Isolate (HH, HI, HR)"
           >

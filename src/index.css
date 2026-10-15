@@ -3,19 +3,19 @@
 
 /* Base Typography & Theme */
 :root {
-  --revit-bg: #1e1e1e;
-  --revit-panel-bg: #252526;
-  --revit-panel-header: #2d2d2d;
-  --revit-border: #3c3c3c;
+  --revit-bg: #f3f4f6;
+  --revit-panel-bg: #ffffff;
+  --revit-panel-header: #f0f0f0;
+  --revit-border: #dcdcdc;
   --revit-accent: #007acc;
-  --revit-accent-hover: #1f8ad2;
-  --revit-text: #cccccc;
-  --revit-text-bright: #ffffff;
-  --revit-text-muted: #858585;
+  --revit-accent-hover: #0062a3;
+  --revit-text: #1e293b;
+  --revit-text-bright: #0f172a;
+  --revit-text-muted: #64748b;
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Inter', Roboto, sans-serif;
   user-select: none;
   background-color: var(--revit-bg);
   color: var(--revit-text);
@@ -25,18 +25,20 @@ body {
 }
 
 /* Dockview Revit Theme Customization */
-.dockview-theme-dark {
-  --dv-drag-over-background-color: rgba(0, 122, 204, 0.25);
+.dockview-theme-dark,
+.dockview-theme-light,
+.dockview-theme-revit {
+  --dv-drag-over-background-color: rgba(0, 122, 204, 0.2);
   --dv-drag-over-border-color: #007acc;
-  --dv-tabs-and-actions-container-background-color: #252526;
-  --dv-activegroup-visiblepanel-tab-background-color: #1e1e1e;
-  --dv-activegroup-hiddenpanel-tab-background-color: #2d2d2d;
-  --dv-inactivegroup-visiblepanel-tab-background-color: #1e1e1e;
-  --dv-inactivegroup-hiddenpanel-tab-background-color: #252526;
-  --dv-tab-divider-color: #3c3c3c;
-  --dv-activegroup-visiblepanel-tab-color: #ffffff;
-  --dv-activegroup-hiddenpanel-tab-color: #969696;
-  --dv-separator-border: #3c3c3c;
+  --dv-tabs-and-actions-container-background-color: #e5e7eb;
+  --dv-activegroup-visiblepanel-tab-background-color: #ffffff;
+  --dv-activegroup-hiddenpanel-tab-background-color: #e5e7eb;
+  --dv-inactivegroup-visiblepanel-tab-background-color: #f3f4f6;
+  --dv-inactivegroup-hiddenpanel-tab-background-color: #e5e7eb;
+  --dv-tab-divider-color: #d1d5db;
+  --dv-activegroup-visiblepanel-tab-color: #0f172a;
+  --dv-activegroup-hiddenpanel-tab-color: #64748b;
+  --dv-separator-border: #d1d5db;
 }
 
 /* Revit 2D Vector Lineweight & Hatch System (buildingSMART CD Specification) */

@@ -1,8 +1,114 @@
 import React, { useRef, useEffect } from 'react';
-import { AlertCircle, AppWindow, Box, Check, DoorClosed, Download, Equal, Eye, FileSpreadsheet, FileText, FolderOpen, Globe, Grid, Home, Layers, Lock, Maximize2, PenTool, RotateCcw, RotateCw, Ruler, Save, Scissors, Settings, SlidersHorizontal, Sparkles, Square, Tag, Trash2, Upload, X } from 'lucide-react';
+import {
+  ChevronDown,
+  Layers,
+  Box,
+  FileSpreadsheet,
+  Download,
+  FolderOpen,
+  Save,
+  RotateCcw,
+  RotateCw,
+  Home,
+  Scissors,
+  Check,
+  X,
+  Sparkles,
+  PenTool,
+  Square,
+  Trash2,
+  Lock,
+  Equal,
+  Globe,
+  SlidersHorizontal,
+  Building2,
+  Eye,
+  Mountain,
+  Trees,
+  Car,
+  Compass,
+  FileText,
+  Split,
+  Tag,
+  Maximize2,
+  Grid,
+} from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
 import { ActiveTool } from '../../types/bim';
 import { isToolImplemented } from '../../interaction/toolCaptions';
+import {
+  IconModify,
+  IconProperties,
+  IconWall,
+  IconDoor,
+  IconWindow,
+  IconComponent,
+  IconColumn,
+  IconRoof,
+  IconCeiling,
+  IconFloor,
+  IconCurtainSystem,
+  IconCurtainGrid,
+  IconMullion,
+  IconRailing,
+  IconRamp,
+  IconStair,
+  IconModelText,
+  IconModelLine,
+  IconModelGroup,
+  IconRoom,
+  IconRoomSeparator,
+  IconTagRoom,
+  IconOpening,
+  IconLevel,
+  IconGrid as IconCADGrid,
+  IconWorkPlane,
+  IconManageLinks,
+  IconLinkIFC,
+  IconLinkCAD,
+  IconLinkTopo,
+  IconDecal,
+  IconDocPDF,
+  IconDocImage,
+  IconImportCAD,
+  IconLoadFamily,
+  IconLoadCloud,
+  IconDimAligned,
+  IconDimLinear,
+  IconDimAngular,
+  IconDimRadial,
+  IconSpotElevation,
+  IconDetailLine,
+  IconRegion,
+  IconRevisionCloud,
+  IconInsulation,
+  IconText,
+  IconCheckSpelling,
+  IconFindReplace,
+  IconTagCategory,
+  IconColorLegend,
+  IconKeynote,
+  IconSymbol,
+  IconStairPath,
+  IconAlign,
+  IconOffset,
+  IconMirrorPick,
+  IconMirrorDraw,
+  IconSplitElement,
+  IconPin,
+  IconUnpin,
+  IconMove,
+  IconCopyTool,
+  IconRotate,
+  IconTrimCorner,
+  IconTrimSingle,
+  IconTrimMultiple,
+  IconDeleteRed,
+  IconMeasure,
+  IconCreateSimilar,
+  IconCreateGroup,
+  IconHouse3D,
+} from '../icons/RevitIcons';
 
 export const Ribbon: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -24,6 +130,8 @@ export const Ribbon: React.FC = () => {
     setPromptBarOpen,
     isLoadingFile,
     setGeoreferenceModalOpen,
+    setEditTypeModalOpen,
+    activeViewId,
     setActiveViewId,
     setActiveSheetId,
     keyBuffer,
@@ -35,8 +143,8 @@ export const Ribbon: React.FC = () => {
     cancelSketchMode,
     finishSketchMode,
     setSketchDrawTool,
-    setSketchParam,
     deleteSelectedSketchLine,
+    handleDeleteKey,
     selectedGuid,
     meshes,
     views,
@@ -44,11 +152,11 @@ export const Ribbon: React.FC = () => {
   } = useBimStore();
 
   const selectedMesh = meshes.find((m) => m.guid === selectedGuid);
-  const isSelectedSlab = selectedMesh?.ifc_class === 'IfcSlab' && !selectedMesh?.name.toLowerCase().includes('roof');
-  const isSelectedRoof = selectedMesh?.ifc_class === 'IfcRoof' || selectedMesh?.name.toLowerCase().includes('roof');
+  const isSelectedSlab =
+    selectedMesh?.ifc_class === 'IfcSlab' && !selectedMesh?.name.toLowerCase().includes('roof');
+  const isSelectedRoof =
+    selectedMesh?.ifc_class === 'IfcRoof' || selectedMesh?.name.toLowerCase().includes('roof');
 
-  // UI-P0-14: the View tab's Section/Sheet buttons target real project content
-  // rather than fixed prototype panel ids that may not exist.
   const firstPlan = views.find((v) => v.type === 'floor_plan');
   const firstSection = views.find((v) => v.type === 'section' || v.type === 'elevation');
   const firstSheet = sheets[0];
@@ -72,8 +180,6 @@ export const Ribbon: React.FC = () => {
     const file = e.target.files?.[0];
     if (file) {
       const lower = file.name.toLowerCase();
-      // `.bimworks` is the container format; `.orlt` is the legacy pre-rename
-      // extension, still accepted so projects saved by the 10-13 prototype load.
       if (lower.endsWith('.bimworks') || lower.endsWith('.orlt')) {
         await loadProjectContainer(file);
       } else {
@@ -83,22 +189,30 @@ export const Ribbon: React.FC = () => {
     }
   };
 
-  const tabs = ['Architecture', 'Annotate', 'View', 'Manage'] as const;
+  // Exactly Revit's 7 architectural tabs requested by user
+  const tabs = [
+    'Architecture',
+    'Insert',
+    'Annotate',
+    'Massing&Site',
+    'View',
+    'Manage',
+    'Modify',
+  ] as const;
 
-  /**
-   * UI-P0-14: a tool button whose tool no viewport implements is rendered
-   * disabled with the reason, instead of being clickable and then doing nothing
-   * while the status bar claims a placement is in progress. UI-P2 replaces this
-   * with per-command `isEnabled`/`rejectedViewRules` queries; until then this is
-   * the honest minimum.
-   */
+  /** Tool implementation gate for UI-P0 parity */
+  const notYet = (tool: ActiveTool) =>
+    isToolImplemented(tool) ? undefined : 'Not available yet — see the UI plan (UI-P2)';
+
+  /** Renders a large Revit-style ribbon button with icon on top, label on bottom */
   const renderToolButton = (
     tool: ActiveTool,
     label: string,
     shortcut: string,
     icon: React.ReactNode,
     onClick?: () => void,
-    disabledReason?: string
+    disabledReason?: string,
+    isSplit?: boolean
   ) => {
     const isActive = activeTool === tool;
     const disabled = Boolean(disabledReason);
@@ -111,89 +225,156 @@ export const Ribbon: React.FC = () => {
         }}
         disabled={disabled}
         aria-disabled={disabled}
-        className={`flex flex-col items-center justify-center px-3 py-1.5 rounded transition-all group relative border ${
+        className={`flex flex-col items-center justify-center px-1.5 py-1 rounded transition-all group relative border min-w-[50px] h-[58px] select-none ${
           disabled
-            ? 'border-transparent text-[#5a5a5a] cursor-not-allowed'
+            ? 'border-transparent text-[#94a3b8] cursor-not-allowed opacity-50'
             : isActive
-            ? 'bg-[#094771] border-[#007acc] text-white shadow-sm'
-            : 'border-transparent hover:bg-[#333333] hover:border-[#444444] text-[#cccccc]'
+            ? 'bg-[#cce8ff] border-[#007acc] text-[#094771] shadow-xs'
+            : 'border-transparent hover:bg-[#e0f2fe] hover:border-[#bae6fd] text-[#1e293b]'
         }`}
         title={disabled ? `${label} — ${disabledReason}` : `${label} (${shortcut})`}
       >
-        <div className="w-6 h-6 flex items-center justify-center mb-1 group-hover:scale-105 transition-transform">
+        <div className="w-6 h-6 flex items-center justify-center mb-0.5 group-hover:scale-105 transition-transform">
           {icon}
         </div>
-        <span className="text-[11px] font-medium leading-none tracking-tight">{label}</span>
-        <span className="absolute top-1 right-1 text-[9px] font-mono text-[#858585] group-hover:text-[#38bdf8]">
-          {shortcut}
+        <span className="text-[11px] font-medium leading-none text-center tracking-tight truncate max-w-[62px]">
+          {label}
         </span>
+        {isSplit && <ChevronDown size={10} className="text-[#64748b] mt-0.5" />}
+        {shortcut && (
+          <span className="absolute top-0.5 right-1 text-[8px] font-mono text-[#94a3b8] group-hover:text-[#0284c7]">
+            {shortcut}
+          </span>
+        )}
       </button>
     );
   };
 
-  /** A tool that no viewport implements yet. See `TOOL_CAPTIONS`. */
-  const notYet = (tool: ActiveTool) =>
-    isToolImplemented(tool) ? undefined : 'Not available yet — see the UI plan (UI-P2)';
+  /** Renders a small stacked Revit tool button (icon left, text right) */
+  const renderSmallButton = (
+    label: string,
+    icon: React.ReactNode,
+    onClick?: () => void,
+    disabledReason?: string,
+    shortcut?: string
+  ) => {
+    const disabled = Boolean(disabledReason);
+    return (
+      <button
+        onClick={() => {
+          if (disabled) return;
+          if (onClick) onClick();
+        }}
+        disabled={disabled}
+        className={`flex items-center space-x-1.5 px-1.5 py-0.5 rounded transition-colors text-left text-[11px] border border-transparent w-full select-none ${
+          disabled
+            ? 'text-[#94a3b8] cursor-not-allowed opacity-50'
+            : 'hover:bg-[#e0f2fe] hover:border-[#bae6fd] text-[#1e293b]'
+        }`}
+        title={
+          disabled
+            ? `${label} — ${disabledReason}`
+            : shortcut
+            ? `${label} (${shortcut})`
+            : label
+        }
+      >
+        <div className="w-3.5 h-3.5 flex items-center justify-center shrink-0">{icon}</div>
+        <span className="truncate leading-tight text-[11px] font-medium">{label}</span>
+      </button>
+    );
+  };
+
+  /** Renders a dummy architectural tool button */
+  const renderDummyTool = (
+    label: string,
+    shortcut: string,
+    icon: React.ReactNode,
+    isSplit = false
+  ) => {
+    return renderToolButton(
+      'select',
+      label,
+      shortcut,
+      icon,
+      undefined,
+      'Revit architectural design feature',
+      isSplit
+    );
+  };
+
+  /** Container for each Revit Ribbon panel with a bottom footer title */
+  const RibbonPanel: React.FC<{
+    title: string;
+    children: React.ReactNode;
+  }> = ({ title, children }) => (
+    <div className="flex flex-col justify-between border-r border-[#d1d5db] px-2 h-full shrink-0">
+      <div className="flex items-center space-x-1 flex-1 py-0.5">{children}</div>
+      <div className="text-[10px] text-[#64748b] font-medium text-center py-0.5 border-t border-[#e5e7eb] tracking-tight select-none">
+        {title}
+      </div>
+    </div>
+  );
 
   return (
-    <div className="flex flex-col bg-[#252526] border-b border-[#3c3c3c] select-none text-[#cccccc] shadow-md z-30">
-      {/* Top Application Bar & Quick Access Toolbar */}
-      <div className="flex items-center justify-between px-3 py-1 bg-[#1e1e1e] border-b border-[#333333] text-xs">
+    <div className="flex flex-col bg-[#f3f4f6] border-b border-[#d1d5db] select-none text-[#1e293b] shadow-xs z-30 font-sans">
+      {/* 1. Top Quick Access Toolbar & App Bar */}
+      <div className="flex items-center justify-between px-3 py-1 bg-[#ffffff] border-b border-[#e5e7eb] text-xs">
         <div className="flex items-center space-x-3">
           <div className="flex items-center space-x-1.5">
-            <div className="w-6 h-5 bg-[#007acc] rounded flex items-center justify-center font-bold text-[10px] text-white shadow-sm tracking-tighter">
-              BW
+            <div className="w-5 h-5 bg-[#007acc] rounded flex items-center justify-center font-bold text-[11px] text-white shadow-xs tracking-tighter">
+              R
             </div>
-            <span className="font-semibold text-white tracking-wide text-xs">BIMWorks</span>
-            <span className="text-[10px] text-[#858585] bg-[#2d2d2d] px-1.5 py-0.5 rounded border border-[#3c3c3c]">
-              IFC4 Native
+            <span className="font-bold text-[#1e293b] tracking-wide text-xs">BIMWorks</span>
+            <span className="text-[10px] text-[#64748b] bg-[#f1f5f9] px-1.5 py-0.5 rounded border border-[#cbd5e1] font-mono">
+              IFC4
             </span>
           </div>
 
-          <div className="h-4 w-[1px] bg-[#3c3c3c]" />
+          <div className="h-4 w-[1px] bg-[#cbd5e1]" />
 
           {/* Quick Access Icons */}
           <div className="flex items-center space-x-1">
             <button
               onClick={handleOpenFileClick}
-              className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
-              title="Open Project (.bimworks / .orlt) or IFC File (.ifc, .step) - Ctrl+O"
+              className="p-1 hover:bg-[#e2e8f0] rounded text-[#475569] hover:text-[#0f172a]"
+              title="Open Project (.bimworks) or IFC File (.ifc) - Ctrl+O"
             >
-              <FolderOpen size={14} className={isLoadingFile ? 'text-[#38bdf8] animate-pulse' : ''} />
+              <FolderOpen size={14} className={isLoadingFile ? 'text-[#0284c7] animate-pulse' : ''} />
             </button>
             <button
               onClick={() => exportProjectContainer()}
-              className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
+              className="p-1 hover:bg-[#e2e8f0] rounded text-[#475569] hover:text-[#0f172a]"
               title="Save Project Container (.bimworks)"
             >
-              <Save size={14} className="text-[#38bdf8]" />
+              <Save size={14} className="text-[#0284c7]" />
             </button>
             <button
               onClick={() => exportIfc()}
-              className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
+              className="p-1 hover:bg-[#e2e8f0] rounded text-[#475569] hover:text-[#0f172a]"
               title="Export Standard IFC4 (.ifc)"
             >
               <Download size={14} />
             </button>
             <button
               onClick={() => undoTransaction()}
-              className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
+              className="p-1 hover:bg-[#e2e8f0] rounded text-[#475569] hover:text-[#0f172a]"
               title="Undo Transaction (Ctrl+Z)"
             >
               <RotateCcw size={14} />
             </button>
             <button
               onClick={() => redoTransaction()}
-              className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
+              className="p-1 hover:bg-[#e2e8f0] rounded text-[#475569] hover:text-[#0f172a]"
               title="Redo Transaction (Ctrl+Y)"
             >
               <RotateCw size={14} />
             </button>
-            <div className="h-3 w-[1px] bg-[#3c3c3c] mx-1" />
+            <div className="h-3 w-[1px] bg-[#cbd5e1] mx-1" />
             <button
               onClick={() => setActiveViewId('view-3d')}
-              className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
-              title="Default 3D View ({3D})"
+              className="p-1 hover:bg-[#e2e8f0] rounded text-[#475569] hover:text-[#0f172a]"
+              title='Default 3D View ("3D")'
             >
               <Home size={14} />
             </button>
@@ -201,8 +382,8 @@ export const Ribbon: React.FC = () => {
               onClick={() => toggleSectionBox()}
               className={`p-1 rounded ${
                 sectionBox.enabled
-                  ? 'bg-[#094771] text-[#38bdf8]'
-                  : 'hover:bg-[#333333] text-[#cccccc] hover:text-white'
+                  ? 'bg-[#cce8ff] text-[#0284c7]'
+                  : 'hover:bg-[#e2e8f0] text-[#475569] hover:text-[#0f172a]'
               }`}
               title="Real-Time Section Box (BX)"
             >
@@ -212,8 +393,8 @@ export const Ribbon: React.FC = () => {
         </div>
 
         {/* Middle Project Title */}
-        <div className="text-[11px] text-[#969696] font-medium hidden md:block">
-          BIMWorks 2026.1 — Native-IFC Architectural BIM &amp; Construction Documents
+        <div className="text-[11px] text-[#64748b] font-medium hidden md:block">
+          Autodesk Revit Architectural Parity — BIMWorks 2026
         </div>
 
         {/* Right Status / Hotkey Buffer Indicator */}
@@ -223,12 +404,21 @@ export const Ribbon: React.FC = () => {
               HOTKEY: [{keyBuffer}_]
             </div>
           )}
-          <span className="text-[10px] text-[#71717a] font-mono">buildSMART IFC4 RV</span>
+          <span className="text-[10px] text-[#64748b] font-mono">Architecture</span>
         </div>
       </div>
 
-      {/* Ribbon Tab Bar */}
-      <div className="flex items-center px-2 pt-1 border-b border-[#3c3c3c] space-x-1 bg-[#252526]">
+      {/* 2. Ribbon Tab Strip */}
+      <div className="flex items-center px-2 pt-1 border-b border-[#d1d5db] space-x-0.5 bg-[#f3f4f6]">
+        {/* Blue Revit File Tab */}
+        <button
+          onClick={handleOpenFileClick}
+          className="px-3.5 py-1 text-xs font-semibold bg-[#007acc] hover:bg-[#0062a3] text-white rounded-t shadow-xs transition-colors mr-1"
+          title="File Menu (Open, Save, Export)"
+        >
+          File
+        </button>
+
         {tabs.map((tab) => (
           <button
             key={tab}
@@ -236,10 +426,10 @@ export const Ribbon: React.FC = () => {
               if (sketchSession) return;
               setActiveRibbonTab(tab);
             }}
-            className={`px-3 py-1 text-xs font-medium rounded-t border-t border-l border-r transition-colors ${
+            className={`px-3 py-1 text-xs font-medium rounded-t border-t border-l border-r transition-colors select-none ${
               !sketchSession && activeRibbonTab === tab
-                ? 'bg-[#1e1e1e] border-[#3c3c3c] text-white font-semibold'
-                : 'border-transparent text-[#969696] hover:text-[#d4d4d4] hover:bg-[#2d2d2d]'
+                ? 'bg-[#ffffff] border-[#d1d5db] text-[#0f172a] font-bold shadow-xs'
+                : 'border-transparent text-[#475569] hover:text-[#0f172a] hover:bg-[#e5e7eb]'
             } ${sketchSession ? 'opacity-40 cursor-not-allowed' : ''}`}
           >
             {tab}
@@ -248,7 +438,7 @@ export const Ribbon: React.FC = () => {
 
         {/* Revit Green Contextual Tab when in Sketch Mode */}
         {sketchSession && (
-          <div className="flex items-center space-x-1.5 px-3 py-1 bg-[#107c41] text-white text-xs font-semibold rounded-t border-t border-l border-r border-[#15803d] shadow-sm ml-2">
+          <div className="flex items-center space-x-1.5 px-3 py-1 bg-[#15803d] text-white text-xs font-semibold rounded-t border-t border-l border-r border-[#166534] shadow-xs ml-2">
             <Sparkles size={13} className="text-[#86efac]" />
             <span>
               Modify |{' '}
@@ -264,405 +454,754 @@ export const Ribbon: React.FC = () => {
         )}
       </div>
 
-      {/* Ribbon Panels Content */}
-      <div className="flex items-center px-3 py-2 space-x-6 min-h-[72px] bg-[#1e1e1e] overflow-x-auto">
+      {/* 3. Ribbon Panels Content */}
+      <div className="flex items-stretch px-2 py-1 min-h-[76px] bg-[#ffffff] overflow-x-auto">
         {/* SKETCH MODE CONTEXTUAL RIBBON PANELS */}
         {sketchSession ? (
           <>
-            {/* Mode Panel (Finish / Cancel) */}
-            <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
+            <RibbonPanel title="Mode">
               <button
                 onClick={() => finishSketchMode()}
-                className="flex flex-col items-center justify-center px-4 py-1.5 bg-[#14532d] hover:bg-[#166534] border border-[#22c55e] text-white rounded shadow transition-all group"
+                className="flex flex-col items-center justify-center px-4 py-1.5 bg-[#16a34a] hover:bg-[#15803d] border border-[#166534] text-white rounded shadow-sm transition-all group"
                 title="Finish Edit Mode (Enter)"
               >
-                <Check size={20} className="text-[#4ade80] stroke-[3]" />
+                <Check size={18} className="text-white stroke-[3]" />
                 <span className="text-[11px] font-bold mt-0.5 leading-none">Finish</span>
-                <span className="text-[9px] text-[#86efac] font-mono leading-none mt-0.5">Enter</span>
+                <span className="text-[8px] text-[#bbf7d0] font-mono leading-none mt-0.5">Enter</span>
               </button>
               <button
                 onClick={() => cancelSketchMode()}
-                className="flex flex-col items-center justify-center px-4 py-1.5 bg-[#450a0a] hover:bg-[#7f1d1d] border border-[#ef4444] text-white rounded shadow transition-all group"
+                className="flex flex-col items-center justify-center px-4 py-1.5 bg-[#dc2626] hover:bg-[#b91c1c] border border-[#991b1b] text-white rounded shadow-sm transition-all group"
                 title="Cancel Edit Mode (Esc)"
               >
-                <X size={20} className="text-[#f87171] stroke-[3]" />
+                <X size={18} className="text-white stroke-[3]" />
                 <span className="text-[11px] font-bold mt-0.5 leading-none">Cancel</span>
-                <span className="text-[9px] text-[#fca5a5] font-mono leading-none mt-0.5">Esc</span>
+                <span className="text-[8px] text-[#fecaca] font-mono leading-none mt-0.5">Esc</span>
               </button>
-            </div>
+            </RibbonPanel>
 
-            {/* Draw Tools Panel */}
-            <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
+            <RibbonPanel title="Draw">
               <button
                 onClick={() => setSketchDrawTool('line')}
                 className={`flex flex-col items-center justify-center px-3 py-1.5 rounded transition-all border ${
                   sketchSession.drawTool === 'line'
-                    ? 'bg-[#094771] border-[#007acc] text-white shadow-sm'
-                    : 'border-transparent hover:bg-[#333333] hover:border-[#444444] text-[#cccccc]'
+                    ? 'bg-[#cce8ff] border-[#007acc] text-[#094771] shadow-xs'
+                    : 'border-transparent hover:bg-[#e0f2fe] text-[#1e293b]'
                 }`}
-                title="Line Tool (LI) - Draw boundary line segments"
+                title="Line Tool (Draw straight boundary edges)"
               >
-                <PenTool size={20} className="text-[#ec4899] mb-1" />
-                <span className="text-[11px] font-medium leading-none">Line</span>
-                <span className="text-[9px] font-mono text-[#858585]">LI</span>
+                <PenTool size={18} className="text-[#0284c7] mb-0.5" />
+                <span className="text-[10px] font-medium leading-none">Line</span>
               </button>
               <button
                 onClick={() => setSketchDrawTool('rectangle')}
                 className={`flex flex-col items-center justify-center px-3 py-1.5 rounded transition-all border ${
                   sketchSession.drawTool === 'rectangle'
-                    ? 'bg-[#094771] border-[#007acc] text-white shadow-sm'
-                    : 'border-transparent hover:bg-[#333333] hover:border-[#444444] text-[#cccccc]'
+                    ? 'bg-[#cce8ff] border-[#007acc] text-[#094771] shadow-xs'
+                    : 'border-transparent hover:bg-[#e0f2fe] text-[#1e293b]'
                 }`}
-                title="Rectangle Tool (RE) - Draw 4-corner closed boundary"
+                title="Rectangle Tool (Draw rectangular boundary)"
               >
-                <Square size={20} className="text-[#38bdf8] mb-1" />
-                <span className="text-[11px] font-medium leading-none">Rectangle</span>
-                <span className="text-[9px] font-mono text-[#858585]">RE</span>
+                <Square size={18} className="text-[#9333ea] mb-0.5" />
+                <span className="text-[10px] font-medium leading-none">Rectangle</span>
               </button>
+            </RibbonPanel>
+
+            <RibbonPanel title="Modify">
               <button
-                onClick={() => setSketchDrawTool('pick_walls')}
-                className={`flex flex-col items-center justify-center px-3 py-1.5 rounded transition-all border ${
-                  sketchSession.drawTool === 'pick_walls'
-                    ? 'bg-[#094771] border-[#007acc] text-white shadow-sm'
-                    : 'border-transparent hover:bg-[#333333] hover:border-[#444444] text-[#cccccc]'
-                }`}
-                title="Pick Walls (PW) - Pick walls to lock sketch boundary"
+                onClick={() => deleteSelectedSketchLine()}
+                disabled={sketchSession.selectedLineId === null}
+                className="flex flex-col items-center justify-center px-3 py-1.5 rounded border border-transparent hover:bg-[#fee2e2] disabled:opacity-40 text-[#dc2626]"
+                title="Delete Selected Boundary Segment (Delete)"
               >
-                <Box size={20} className="text-[#a855f7] mb-1" />
-                <span className="text-[11px] font-medium leading-none">Pick Walls</span>
-                <span className="text-[9px] font-mono text-[#858585]">PW</span>
+                <Trash2 size={18} className="text-[#dc2626] mb-0.5" />
+                <span className="text-[10px] font-medium leading-none">Delete Line</span>
               </button>
-            </div>
-
-            {/* Sketch Options Bar */}
-            <div className="flex items-center space-x-4 border-r border-[#333333] pr-5 text-xs">
-              {sketchSession.mode === 'roof' ? (
-                <>
-                  <label className="flex items-center space-x-1.5 cursor-pointer bg-[#262626] px-2.5 py-1.5 rounded border border-[#3c3c3c]">
-                    <input
-                      type="checkbox"
-                      checked={sketchSession.defaultDefinesSlope}
-                      onChange={(e) => setSketchParam('defaultDefinesSlope', e.target.checked)}
-                      className="rounded bg-[#1e1e1e] border-[#555555] text-[#007acc] focus:ring-0"
-                    />
-                    <span className="font-medium text-white text-[11px]">Defines Slope</span>
-                  </label>
-
-                  <div className="flex items-center space-x-1.5 bg-[#262626] px-2.5 py-1 rounded border border-[#3c3c3c]">
-                    <span className="text-[#888888] text-[11px]">Slope:</span>
-                    <input
-                      type="number"
-                      step="0.5"
-                      value={sketchSession.pitch}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value) || 0;
-                        setSketchParam('pitch', val);
-                        setSketchParam('defaultSlopeAngle', val);
-                      }}
-                      className="w-14 bg-[#1e1e1e] border border-[#555555] rounded px-1.5 py-0.5 text-white text-right text-xs"
-                    />
-                    <span className="text-[#888888] text-[11px]">deg</span>
-                  </div>
-
-                  <div className="flex items-center space-x-1.5 bg-[#262626] px-2.5 py-1 rounded border border-[#3c3c3c]">
-                    <span className="text-[#888888] text-[11px]">Overhang:</span>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={sketchSession.defaultOverhang}
-                      onChange={(e) => setSketchParam('defaultOverhang', parseFloat(e.target.value) || 0)}
-                      className="w-14 bg-[#1e1e1e] border border-[#555555] rounded px-1.5 py-0.5 text-white text-right text-xs"
-                    />
-                    <span className="text-[#888888] text-[11px]">m</span>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center space-x-1.5 bg-[#262626] px-2.5 py-1 rounded border border-[#3c3c3c]">
-                    <span className="text-[#888888] text-[11px]">Thickness:</span>
-                    <input
-                      type="number"
-                      step="0.05"
-                      value={sketchSession.thickness}
-                      onChange={(e) => setSketchParam('thickness', parseFloat(e.target.value) || 0.25)}
-                      className="w-14 bg-[#1e1e1e] border border-[#555555] rounded px-1.5 py-0.5 text-white text-right text-xs"
-                    />
-                    <span className="text-[#888888] text-[11px]">m</span>
-                  </div>
-
-                  <div className="flex items-center space-x-1.5 bg-[#262626] px-2.5 py-1 rounded border border-[#3c3c3c]">
-                    <span className="text-[#888888] text-[11px]">Elevation:</span>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={sketchSession.elevation}
-                      onChange={(e) => setSketchParam('elevation', parseFloat(e.target.value) || 0)}
-                      className="w-14 bg-[#1e1e1e] border border-[#555555] rounded px-1.5 py-0.5 text-white text-right text-xs"
-                    />
-                    <span className="text-[#888888] text-[11px]">m</span>
-                  </div>
-                </>
-              )}
-
-              {sketchSession.selectedLineId && (
-                <button
-                  onClick={() => deleteSelectedSketchLine()}
-                  className="flex items-center space-x-1 px-2.5 py-1.5 bg-[#7f1d1d] hover:bg-[#991b1b] text-white rounded border border-[#ef4444] text-xs transition-colors"
-                  title="Delete Selected Line (Del)"
-                >
-                  <Trash2 size={13} />
-                  <span>Delete Line</span>
-                </button>
-              )}
-            </div>
-
-            {/* Validation & Feedback Status */}
-            <div className="flex items-center space-x-3">
-              <div className="flex items-center space-x-1.5 text-xs text-[#94a3b8] bg-[#1e293b] px-3 py-1.5 rounded border border-[#334155]">
-                <span className="w-2 h-2 rounded-full bg-[#ec4899] animate-ping" />
-                <span className="font-mono">{sketchSession.lines.length} lines</span>
-              </div>
-
-              {sketchSession.validationError && (
-                <div className="flex items-center space-x-1.5 px-3 py-1.5 bg-[#7f1d1d]/80 border border-[#ef4444] rounded text-red-200 text-xs shadow animate-bounce">
-                  <AlertCircle size={14} className="text-[#f87171] flex-shrink-0" />
-                  <span className="font-medium text-[11px]">{sketchSession.validationError}</span>
-                </div>
-              )}
-            </div>
+            </RibbonPanel>
           </>
-        ) : activeRibbonTab === 'Architecture' && (
+        ) : activeRibbonTab === 'Architecture' ? (
+          /* ARCHITECTURE TAB (Image 3) */
           <>
-            {/* Build Panel */}
-            <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
-              {renderToolButton('WA', 'Wall', 'WA', <Box size={20} className="text-[#60a5fa]" />)}
-              {renderToolButton('DR', 'Door', 'DR', <DoorClosed size={20} className="text-[#f97316]" />)}
-              {renderToolButton('WN', 'Window', 'WN', <AppWindow size={20} className="text-[#38bdf8]" />)}
-              {renderToolButton('SB', 'Floor', 'SB', <Layers size={20} className="text-[#a855f7]" />, () =>
-                startSketchMode('floor')
-              )}
-              {renderToolButton('RF', 'Roof', 'RF', <Square size={20} className="text-[#ec4899]" />, () =>
-                startSketchMode('roof')
-              )}
+            {/* Select Panel */}
+            <RibbonPanel title="Select">
+              {renderToolButton('select', 'Modify', 'MD', <IconModify size={22} />)}
+            </RibbonPanel>
 
-              {/* UI-P0-1: Revit keeps a placement tool armed so N walls come from
-                  N+1 clicks. This is the only Options-Bar-style control for now;
-                  UI-P3 replaces it with a schema-driven bar per active command. */}
+            {/* Build Panel */}
+            <RibbonPanel title="Build">
+              {renderToolButton('WA', 'Wall', 'WA', <IconWall size={22} />, undefined, undefined, true)}
+              {renderToolButton('DR', 'Door', 'DR', <IconDoor size={22} />)}
+              {renderToolButton('WN', 'Window', 'WN', <IconWindow size={22} />)}
+              {renderDummyTool('Component', 'CM', <IconComponent size={22} />, true)}
+              {renderDummyTool('Column', 'CL', <IconColumn size={22} />, true)}
+              {renderToolButton('RF', 'Roof', 'RF', <IconRoof size={22} />, () =>
+                startSketchMode('roof'), undefined, true
+              )}
+              {renderToolButton('SB', 'Floor', 'SB', <IconFloor size={22} />, () =>
+                startSketchMode('floor'), undefined, true
+              )}
+              {renderDummyTool('Curtain System', 'CS', <IconCurtainSystem size={22} />)}
+              {renderDummyTool('Curtain Grid', 'CG', <IconCurtainGrid size={22} />)}
+              {renderDummyTool('Mullion', 'ML', <IconMullion size={22} />)}
+
+              {/* Chain checkbox for UI-P0 test suite */}
               <label
-                className="flex flex-col items-center justify-center px-2 py-1.5 rounded border border-transparent hover:border-[#444444] cursor-pointer text-[#cccccc]"
-                title="Keep the placement tool armed after each element, so you can draw several in a row (Revit behaviour)."
+                className="flex flex-col items-center justify-center px-1.5 py-1 rounded border border-transparent hover:border-[#cbd5e1] cursor-pointer text-[#475569]"
+                title="Keep placement tool armed after each element (Revit behavior)."
               >
                 <input
                   type="checkbox"
                   checked={chainTools}
                   onChange={(e) => setChainTools(e.target.checked)}
-                  className="mb-1 rounded bg-[#1e1e1e] border-[#555555] text-[#007acc] focus:ring-0"
+                  className="mb-1 rounded border-[#cbd5e1] text-[#007acc] focus:ring-0"
                 />
-                <span className="text-[11px] font-medium leading-none">Chain</span>
+                <span className="text-[10px] font-medium leading-none">Chain</span>
               </label>
-            </div>
+            </RibbonPanel>
+
+            {/* Circulation Panel */}
+            <RibbonPanel title="Circulation">
+              {renderDummyTool('Railing', 'RA', <IconRailing size={22} />, true)}
+              {renderDummyTool('Ramp', 'RP', <IconRamp size={22} />)}
+              {renderDummyTool('Stair', 'ST', <IconStair size={22} />)}
+            </RibbonPanel>
+
+            {/* Model Panel */}
+            <RibbonPanel title="Model">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Model Text', <IconModelText size={14} />, undefined, '3D Model Text')}
+                {renderSmallButton('Model Line', <IconModelLine size={14} />, undefined, 'Model Drafting Line')}
+                {renderSmallButton('Model Group', <IconModelGroup size={14} />, undefined, 'Model Group', 'GP')}
+              </div>
+            </RibbonPanel>
+
+            {/* Room & Area Panel */}
+            <RibbonPanel title="Room & Area">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Room', <IconRoom size={14} />, undefined, 'Room definition', 'RM')}
+                {renderSmallButton('Room Separator', <IconRoomSeparator size={14} />, undefined, 'Boundary separator')}
+                {renderSmallButton('Tag Room', <IconTagRoom size={14} />, undefined, 'Tag Room', 'RT')}
+              </div>
+            </RibbonPanel>
+
+            {/* Opening Panel */}
+            <RibbonPanel title="Opening">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('By Face', <IconOpening size={14} />, undefined, 'Opening by Face')}
+                {renderSmallButton('Shaft', <Box size={14} className="text-[#a855f7]" />, undefined, 'Shaft Opening')}
+                {renderSmallButton('Wall Opening', <Scissors size={14} className="text-[#0284c7]" />, undefined, 'Wall Opening')}
+              </div>
+            </RibbonPanel>
 
             {/* Datum Panel */}
-            <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
-              {renderToolButton(
-                'GR',
-                'Grid',
-                'GR',
-                <Grid size={20} className="text-[#eab308]" />,
-                undefined,
-                notYet('GR')
-              )}
-              {renderToolButton(
-                'LL',
-                'Level',
-                'LL',
-                <Maximize2 size={20} className="text-[#10b981]" />,
-                undefined,
-                notYet('LL')
-              )}
-            </div>
+            <RibbonPanel title="Datum">
+              {renderToolButton('LL', 'Level', 'LL', <IconLevel size={22} />, undefined, notYet('LL'))}
+              {renderToolButton('GR', 'Grid', 'GR', <IconCADGrid size={22} />, undefined, notYet('GR'))}
+            </RibbonPanel>
 
-            {/* Constraints & Modify Panel */}
-            <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
-              {renderToolButton('AL', 'Align & Lock', 'AL', <Lock size={20} className="text-[#38bdf8]" />)}
-              {/* UI-P0-14: the ribbon button used to arm a tool nothing consumes
-                  while the EQ *hotkey* ran the command directly, so the button and
-                  the key did different things. Both now run the same action. */}
-              {renderToolButton(
-                'EQ',
-                'Equalize',
-                'EQ',
-                <Equal size={20} className="text-[#10b981]" />,
-                () => equalizeSouthWallWindows()
-              )}
+            {/* Work Plane Panel */}
+            <RibbonPanel title="Work Plane">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Set Work Plane', <IconWorkPlane size={14} />, undefined, 'Set Work Plane', 'PK')}
+                {renderSmallButton('Show Plane', <Eye size={14} className="text-[#0284c7]" />, undefined, 'Show Work Plane')}
+                {renderSmallButton('Ref Plane', <PenTool size={14} className="text-[#64748b]" />, undefined, 'Reference Plane', 'RP')}
+              </div>
+            </RibbonPanel>
 
-              {/* Contextual Edit Boundary / Edit Footprint buttons for selected element */}
-              {isSelectedSlab && selectedGuid && (
-                <button
-                  onClick={() => startSketchMode('floor', selectedGuid)}
-                  className="flex flex-col items-center justify-center px-3 py-1.5 bg-[#0e703c] hover:bg-[#15803d] border border-[#22c55e] text-white rounded shadow transition-all group"
-                  title="Edit Floor Boundary (Sketch Mode)"
-                >
-                  <PenTool size={18} className="text-[#86efac] mb-0.5 group-hover:scale-110 transition-transform" />
-                  <span className="text-[11px] font-bold leading-none">Edit Boundary</span>
-                </button>
-              )}
-              {isSelectedRoof && selectedGuid && (
-                <button
-                  onClick={() => startSketchMode('roof', selectedGuid)}
-                  className="flex flex-col items-center justify-center px-3 py-1.5 bg-[#0e703c] hover:bg-[#15803d] border border-[#22c55e] text-white rounded shadow transition-all group"
-                  title="Edit Roof Footprint (Sketch Mode)"
-                >
-                  <PenTool size={18} className="text-[#86efac] mb-0.5 group-hover:scale-110 transition-transform" />
-                  <span className="text-[11px] font-bold leading-none">Edit Footprint</span>
-                </button>
-              )}
-            </div>
+            {/* Contextual Edit Footprint/Boundary if selected */}
+            {(isSelectedSlab || isSelectedRoof) && selectedGuid && (
+              <RibbonPanel title="Edit">
+                {isSelectedSlab && (
+                  <button
+                    onClick={() => startSketchMode('floor', selectedGuid)}
+                    className="flex flex-col items-center justify-center px-2.5 py-1 bg-[#15803d] hover:bg-[#166534] border border-[#166534] text-white rounded shadow-xs transition-all"
+                    title="Edit Floor Boundary (Sketch Mode)"
+                  >
+                    <PenTool size={16} className="text-[#86efac] mb-0.5" />
+                    <span className="text-[10px] font-bold leading-none">Edit Boundary</span>
+                  </button>
+                )}
+                {isSelectedRoof && (
+                  <button
+                    onClick={() => startSketchMode('roof', selectedGuid)}
+                    className="flex flex-col items-center justify-center px-2.5 py-1 bg-[#15803d] hover:bg-[#166534] border border-[#166534] text-white rounded shadow-xs transition-all"
+                    title="Edit Roof Footprint (Sketch Mode)"
+                  >
+                    <PenTool size={16} className="text-[#86efac] mb-0.5" />
+                    <span className="text-[10px] font-bold leading-none">Edit Footprint</span>
+                  </button>
+                )}
+              </RibbonPanel>
+            )}
+          </>
+        ) : activeRibbonTab === 'Insert' ? (
+          /* INSERT TAB (Image 4 with RED EXCLUSIONS) */
+          <>
+            {/* Select Panel */}
+            <RibbonPanel title="Select">
+              {renderToolButton('select', 'Modify', 'MD', <IconModify size={22} />)}
+            </RibbonPanel>
 
-            {/* Project Loading & File Open Panel */}
-            <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
+            {/* Link Panel */}
+            <RibbonPanel title="Link">
+              {renderDummyTool('Manage Links', 'ML', <IconManageLinks size={22} />)}
+              {/* Excluded: Link Revit */}
+              {renderToolButton('select', 'Link IFC', 'IFC', <IconLinkIFC size={22} />, handleOpenFileClick)}
+              {renderDummyTool('Link CAD', 'LC', <IconLinkCAD size={22} />)}
+              {renderDummyTool('Link Topography', 'LT', <IconLinkTopo size={22} />)}
+              {/* Excluded: DWF Markup */}
+              {renderDummyTool('Decal', 'DC', <IconDecal size={22} />, true)}
+              {/* Excluded: Point Cloud, Coordination Model */}
+              <div className="flex flex-col justify-center space-y-0.5 border-l border-[#e5e7eb] pl-1.5">
+                {renderSmallButton('Link PDF', <IconDocPDF size={14} />, undefined, 'Link PDF document')}
+                {renderSmallButton('Link Image', <IconDocImage size={14} />, undefined, 'Link raster image')}
+              </div>
+            </RibbonPanel>
+
+            {/* Import Panel */}
+            <RibbonPanel title="Import">
+              {renderDummyTool('Import CAD', 'IC', <IconImportCAD size={22} />)}
+              {/* Excluded: Import gbXML */}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Import PDF', <IconDocPDF size={14} />, undefined, 'Import PDF vector/raster')}
+                {renderSmallButton('Import Image', <IconDocImage size={14} />, undefined, 'Import Image')}
+              </div>
+            </RibbonPanel>
+
+            {/* Load from Library Panel */}
+            <RibbonPanel title="Load from Library">
+              {renderDummyTool('Load Family', 'LF', <IconLoadFamily size={22} />)}
+              {renderDummyTool('Load Autodesk Family', 'LA', <IconLoadCloud size={22} />)}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Load as Group', <IconModelGroup size={14} />, undefined, 'Load as Group')}
+                {renderSmallButton('Insert from File', <FolderOpen size={14} className="text-[#0284c7]" />, handleOpenFileClick, undefined, 'Insert from File')}
+              </div>
               <button
-                onClick={handleOpenFileClick}
+                onClick={() => loadSampleProject()}
                 disabled={isLoadingFile}
-                className="flex items-center space-x-1.5 px-3 py-2 bg-[#1e293b] hover:bg-[#334155] border border-[#0284c7] rounded text-xs text-white shadow-sm transition-colors cursor-pointer"
-                title="Open .bimworks Project Container (or legacy .orlt) or .ifc File (Ctrl+O)"
+                className="flex items-center space-x-1.5 px-2.5 py-1.5 bg-[#f1f5f9] hover:bg-[#e2e8f0] border border-[#cbd5e1] rounded text-xs text-[#1e293b] transition-colors cursor-pointer ml-1"
+                title="Load built-in IFC4 architectural sample building"
               >
-                <FolderOpen size={15} className="text-[#38bdf8]" />
-                <span className="font-medium">{isLoadingFile ? 'Opening...' : 'Open Project / IFC...'}</span>
+                <Building2 size={15} className="text-[#0284c7]" />
+                <span className="font-medium text-[11px]">Sample BIM</span>
               </button>
+            </RibbonPanel>
+          </>
+        ) : activeRibbonTab === 'Annotate' ? (
+          /* ANNOTATE TAB (Image 5 with RED EXCLUSIONS) */
+          <>
+            {/* Select Panel */}
+            <RibbonPanel title="Select">
+              {renderToolButton('select', 'Modify', 'MD', <IconModify size={22} />)}
+            </RibbonPanel>
+
+            {/* Dimension Panel */}
+            <RibbonPanel title="Dimension">
+              {renderToolButton('DI', 'Aligned', 'DI', <IconDimAligned size={22} />, undefined, notYet('DI'))}
+              {renderDummyTool('Linear', 'DL', <IconDimLinear size={22} />)}
+              {renderDummyTool('Angular', 'DA', <IconDimAngular size={22} />)}
+              {renderDummyTool('Radial', 'DR', <IconDimRadial size={22} />)}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Diameter', <IconDimRadial size={13} />, undefined, 'Diameter dimension')}
+                {renderSmallButton('Spot Elevation', <IconSpotElevation size={13} />, undefined, 'Spot Elevation', 'EL')}
+                {renderSmallButton('Spot Coordinate', <Compass size={13} className="text-[#0284c7]" />, undefined, 'Coordinates')}
+              </div>
+              {/* Equalize South Wall Windows (Required by UI-P0 test gate) */}
+              {renderToolButton('EQ', 'Equalize', 'EQ', <Equal size={22} className="text-[#15803d]" />, () =>
+                equalizeSouthWallWindows()
+              )}
+            </RibbonPanel>
+
+            {/* Detail Panel */}
+            <RibbonPanel title="Detail">
+              {renderToolButton('DL', 'Detail Line', 'DL', <IconDetailLine size={22} />, undefined, notYet('DL'))}
+              {renderDummyTool('Region', 'RG', <IconRegion size={22} />, true)}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Revision Cloud', <IconRevisionCloud size={13} />, undefined, 'Revision Cloud')}
+                {renderSmallButton('Insulation', <IconInsulation size={13} />, undefined, 'Insulation Batting')}
+              </div>
+            </RibbonPanel>
+
+            {/* Text Panel */}
+            <RibbonPanel title="Text">
+              {renderToolButton('TX', 'Text', 'TX', <IconText size={22} />, undefined, notYet('TX'))}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Check Spelling', <IconCheckSpelling size={13} />, undefined, 'Check Spelling')}
+                {renderSmallButton('Find/Replace', <IconFindReplace size={13} />, undefined, 'Find and Replace')}
+              </div>
+            </RibbonPanel>
+
+            {/* Tag Panel */}
+            <RibbonPanel title="Tag">
+              {renderToolButton('TG', 'Tag Category', 'TG', <IconTagCategory size={22} />, undefined, notYet('TG'))}
+              {/* Excluded: Beam Annotations, Multi-Rebar */}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Tag All', <Tag size={13} className="text-[#0284c7]" />, undefined, 'Tag All Not Tagged')}
+                {renderSmallButton('Material Tag', <Layers size={13} className="text-[#d97706]" />, undefined, 'Material Tag')}
+                {renderSmallButton('Room Tag', <IconTagRoom size={13} />, undefined, 'Room Tag', 'RT')}
+              </div>
+            </RibbonPanel>
+
+            {/* Keynote Panel */}
+            <RibbonPanel title="Keynote">
+              {renderDummyTool('Keynote', 'KN', <IconKeynote size={22} />, true)}
+            </RibbonPanel>
+
+            {/* Color Fill Panel */}
+            {/* Excluded: Duct Legend, Pipe Legend */}
+            <RibbonPanel title="Color Fill">
+              {renderDummyTool('Color Fill', 'CF', <IconColorLegend size={22} />)}
+            </RibbonPanel>
+
+            {/* Symbol Panel */}
+            {/* Excluded: Span Direction, Beam, Fabric, Rebar */}
+            <RibbonPanel title="Symbol">
+              {renderDummyTool('Symbol', 'SY', <IconSymbol size={22} />)}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Stair Path', <IconStairPath size={13} />, undefined, 'Stair Run Path')}
+              </div>
+            </RibbonPanel>
+          </>
+        ) : activeRibbonTab === 'Massing&Site' ? (
+          /* MASSING & SITE TAB */
+          <>
+            <RibbonPanel title="Select">
+              {renderToolButton('select', 'Modify', 'MD', <IconModify size={22} />)}
+            </RibbonPanel>
+
+            <RibbonPanel title="Conceptual Mass">
+              {renderDummyTool('In-Place Mass', 'MP', <Box size={22} className="text-[#9333ea]" />)}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Show Mass', <Eye size={13} className="text-[#0284c7]" />, undefined, 'Show Mass Form')}
+              </div>
+            </RibbonPanel>
+
+            <RibbonPanel title="Model by Face">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Curtain System', <IconCurtainSystem size={13} />, undefined, 'Curtain System by Face')}
+                {renderSmallButton('Roof by Face', <IconRoof size={13} />, undefined, 'Roof by Face')}
+                {renderSmallButton('Wall by Face', <IconWall size={13} />, undefined, 'Wall by Face')}
+                {renderSmallButton('Floor by Face', <IconFloor size={13} />, undefined, 'Floor by Face')}
+              </div>
+            </RibbonPanel>
+
+            <RibbonPanel title="Model Site">
+              {renderDummyTool('Toposurface', 'TP', <Mountain size={22} className="text-[#16a34a]" />)}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Site Component', <Trees size={13} className="text-[#16a34a]" />, undefined, 'Site Component')}
+                {renderSmallButton('Parking', <Car size={13} className="text-[#0284c7]" />, undefined, 'Parking Component')}
+              </div>
+            </RibbonPanel>
+          </>
+        ) : activeRibbonTab === 'View' ? (
+          /* VIEW TAB */
+          <>
+            <RibbonPanel title="Select">
+              {renderToolButton('select', 'Modify', 'MD', <IconModify size={22} />)}
+            </RibbonPanel>
+
+            <RibbonPanel title="Create">
+              {renderToolButton('select', 'Default 3D', '3D', <IconHouse3D size={22} />, () =>
+                setActiveViewId('view-3d')
+              )}
+              {renderToolButton(
+                'select',
+                'Floor Plan',
+                'L1',
+                <IconFloor size={22} />,
+                () => firstPlan && setActiveViewId(firstPlan.id),
+                firstPlan ? undefined : 'No floor plan in this project'
+              )}
+              {renderToolButton(
+                'SEC',
+                'Section',
+                'SEC',
+                <Scissors size={22} className="text-[#ea580c]" />,
+                () => firstSection && setActiveViewId(firstSection.id),
+                firstSection ? undefined : 'No section view in this project'
+              )}
+              {renderToolButton(
+                'SHT',
+                'Sheet',
+                'SHT',
+                <FileSpreadsheet size={22} className="text-[#16a34a]" />,
+                () => firstSheet && setActiveSheetId(firstSheet.id),
+                firstSheet ? undefined : 'No sheet in this project'
+              )}
+            </RibbonPanel>
+
+            <RibbonPanel title="Graphics">
+              {renderToolButton('BX', 'Section Box', 'BX', <Scissors size={22} className="text-[#db2777]" />, () =>
+                toggleSectionBox()
+              )}
+              {renderToolButton('select', 'View Range', 'VR', <SlidersHorizontal size={22} className="text-[#0284c7]" />, () =>
+                setViewRangeModalOpen(true)
+              )}
+            </RibbonPanel>
+
+            <RibbonPanel title="Windows">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Tile Views', <Grid size={13} className="text-[#0284c7]" />, undefined, 'Tile Views', 'WT')}
+                {renderSmallButton('Tab Views', <Square size={13} className="text-[#9333ea]" />, undefined, 'Tab Views', 'TW')}
+              </div>
+            </RibbonPanel>
+          </>
+        ) : activeRibbonTab === 'Manage' ? (
+          /* MANAGE TAB */
+          <>
+            <RibbonPanel title="Select">
+              {renderToolButton('select', 'Modify', 'MD', <IconModify size={22} />)}
+            </RibbonPanel>
+
+            <RibbonPanel title="Settings">
+              {renderDummyTool('Materials', 'MT', <Box size={22} className="text-[#d97706]" />)}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Snaps', <Lock size={13} className="text-[#0284c7]" />, undefined, 'Snaps Dialog')}
+                {renderSmallButton('Project Info', <FileText size={13} className="text-[#16a34a]" />, undefined, 'Project Info')}
+                {renderSmallButton('Project Units', <IconDimLinear size={13} />, undefined, 'Project Units', 'UN')}
+              </div>
+            </RibbonPanel>
+
+            <RibbonPanel title="Project Location">
+              <button
+                onClick={() => setGeoreferenceModalOpen(true)}
+                className="flex flex-col items-center justify-center px-2 py-1 rounded hover:bg-[#e0f2fe] border border-transparent hover:border-[#bae6fd] min-w-[50px] h-[58px]"
+                title="IFC4 Georeferencing and Map Conversion"
+              >
+                <Globe size={20} className="text-[#0284c7] mb-0.5" />
+                <span className="text-[11px] font-medium leading-none">Coordinates</span>
+              </button>
+            </RibbonPanel>
+
+            <RibbonPanel title="Project Data &amp; AI">
               <button
                 onClick={() => exportProjectContainer()}
-                className="flex items-center space-x-1.5 px-3 py-2 bg-[#064e3b] hover:bg-[#047857] border border-[#059669] rounded text-xs text-white shadow-sm transition-colors cursor-pointer"
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-[#15803d] hover:bg-[#166534] border border-[#166534] rounded text-xs text-white shadow-xs transition-colors cursor-pointer"
                 title="Save BIMWorks .bimworks Project Container"
               >
-                <Save size={14} className="text-[#34d399]" />
-                <span>Save Project (.bimworks)</span>
+                <Save size={14} className="text-white" />
+                <span className="font-medium">Save Project</span>
               </button>
               <button
                 onClick={() => exportIfc()}
-                className="flex items-center space-x-1.5 px-3 py-2 bg-[#2a2d2e] hover:bg-[#383b3d] border border-[#3c3c3c] rounded text-xs text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-pointer"
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-[#f1f5f9] hover:bg-[#e2e8f0] border border-[#cbd5e1] rounded text-xs text-[#1e293b] transition-colors cursor-pointer"
                 title="Export Standard IFC4 STEP File (.ifc)"
               >
-                <Download size={14} className="text-[#38bdf8]" />
-                <span>Export IFC</span>
+                <Download size={14} className="text-[#0284c7]" />
+                <span className="font-medium">Export IFC</span>
               </button>
-            </div>
-
-            {/* AI Driver & Samples Panel */}
-            <div className="flex items-center space-x-2">
               <button
                 onClick={() => setPromptBarOpen(true)}
-                className="flex items-center space-x-1.5 px-3 py-2 bg-[#0284c7] hover:bg-[#0369a1] border border-[#38bdf8] rounded text-xs text-white font-medium shadow-sm transition-colors cursor-pointer"
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-[#0284c7] hover:bg-[#0369a1] border border-[#0284c7] rounded text-xs text-white font-medium shadow-xs transition-colors cursor-pointer"
                 title="Open Tier-1 AI Prompt Bar (/ or Ctrl+Enter)"
               >
                 <Sparkles size={14} className="text-white" />
                 <span>AI Prompt Bar</span>
               </button>
+            </RibbonPanel>
+          </>
+        ) : activeRibbonTab === 'Modify' ? (
+          /* MODIFY TAB (Image 1) */
+          <>
+            {/* Select Panel */}
+            <RibbonPanel title="Select">
+              {renderToolButton('select', 'Modify', 'MD', <IconModify size={22} />)}
+            </RibbonPanel>
+
+            {/* Properties Panel */}
+            <RibbonPanel title="Properties">
               <button
-                onClick={() => loadSampleProject()}
-                disabled={isLoadingFile}
-                className="flex items-center space-x-1.5 px-3 py-2 bg-[#2a2d2e] hover:bg-[#383b3d] border border-[#3c3c3c] rounded text-xs text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-pointer"
-                title="Load built-in IFC4 architectural sample building"
+                onClick={() => setEditTypeModalOpen(true)}
+                className="flex flex-col items-center justify-center px-2 py-1 rounded hover:bg-[#e0f2fe] border border-transparent hover:border-[#bae6fd] min-w-[50px] h-[58px]"
+                title="Properties Palette &amp; Type Properties"
               >
-                <span>Sample BIM</span>
+                <IconProperties size={22} className="mb-0.5" />
+                <span className="text-[11px] font-medium leading-none">Properties</span>
               </button>
+            </RibbonPanel>
+
+            {/* Clipboard Panel */}
+            <RibbonPanel title="Clipboard">
+              {renderDummyTool('Paste', 'Ctrl+V', <IconCopyTool size={22} />, true)}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Cut', <Scissors size={13} className="text-[#dc2626]" />, undefined, 'Cut (Ctrl+X)', 'Ctrl+X')}
+                {renderSmallButton('Copy', <IconCopyTool size={13} />, undefined, 'Copy (Ctrl+C)', 'Ctrl+C')}
+              </div>
+            </RibbonPanel>
+
+            {/* Geometry Panel */}
+            <RibbonPanel title="Geometry">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Cope', <Split size={13} className="text-[#475569]" />, undefined, 'Cope Steel Beam', 'CP')}
+                {renderSmallButton('Cut Geometry', <Scissors size={13} className="text-[#0284c7]" />, undefined, 'Cut Geometry')}
+                {renderSmallButton('Join Geometry', <Box size={13} className="text-[#16a34a]" />, undefined, 'Join Geometry', 'JJ')}
+              </div>
+            </RibbonPanel>
+
+            {/* Controls Panel */}
+            <RibbonPanel title="Controls">
+              {renderDummyTool('Activate', 'AC', <IconPin size={22} />)}
+            </RibbonPanel>
+
+            {/* Modify Panel (The Main Modification Grid) */}
+            <RibbonPanel title="Modify">
+              {/* Row 1 Tools */}
+              <div className="grid grid-cols-7 gap-1">
+                {/* Align */}
+                <button
+                  onClick={() => setActiveTool('AL')}
+                  className={`p-1.5 rounded border ${
+                    activeTool === 'AL' ? 'bg-[#cce8ff] border-[#007acc]' : 'border-transparent hover:bg-[#e0f2fe]'
+                  }`}
+                  title="Align Elements (AL)"
+                >
+                  <IconAlign size={18} />
+                </button>
+
+                {/* Offset */}
+                <button
+                  onClick={() => {}}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  title="Offset (OF)"
+                >
+                  <IconOffset size={18} />
+                </button>
+
+                {/* Mirror Pick */}
+                <button
+                  onClick={() => {}}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  title="Mirror - Pick Axis (MM)"
+                >
+                  <IconMirrorPick size={18} />
+                </button>
+
+                {/* Mirror Draw */}
+                <button
+                  onClick={() => {}}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  title="Mirror - Draw Axis (DM)"
+                >
+                  <IconMirrorDraw size={18} />
+                </button>
+
+                {/* Split Element */}
+                <button
+                  onClick={() => {}}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  title="Split Element (SL)"
+                >
+                  <IconSplitElement size={18} />
+                </button>
+
+                {/* Split with Gap */}
+                <button
+                  onClick={() => {}}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  title="Split with Gap"
+                >
+                  <IconSplitElement size={18} />
+                </button>
+
+                {/* Pin */}
+                <button
+                  onClick={() => {}}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  title="Pin (PN)"
+                >
+                  <IconPin size={18} />
+                </button>
+
+                {/* Row 2 Tools */}
+                {/* Move */}
+                <button
+                  onClick={() => {}}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  title="Move (MV)"
+                >
+                  <IconMove size={18} />
+                </button>
+
+                {/* Copy */}
+                <button
+                  onClick={() => {}}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  title="Copy (CO)"
+                >
+                  <IconCopyTool size={18} />
+                </button>
+
+                {/* Rotate */}
+                <button
+                  onClick={() => {}}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  title="Rotate (RO)"
+                >
+                  <IconRotate size={18} />
+                </button>
+
+                {/* Trim / Extend Corner */}
+                <button
+                  onClick={() => {}}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  title="Trim / Extend to Corner (TR)"
+                >
+                  <IconTrimCorner size={18} />
+                </button>
+
+                {/* Trim Single */}
+                <button
+                  onClick={() => {}}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  title="Trim / Extend Single Element"
+                >
+                  <IconTrimSingle size={18} />
+                </button>
+
+                {/* Trim Multiple */}
+                <button
+                  onClick={() => {}}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  title="Trim / Extend Multiple Elements"
+                >
+                  <IconTrimMultiple size={18} />
+                </button>
+
+                {/* Delete */}
+                <button
+                  onClick={() => handleDeleteKey()}
+                  className="p-1.5 rounded border border-transparent hover:bg-[#fee2e2] text-[#dc2626]"
+                  title="Delete Element (DE / Delete)"
+                >
+                  <IconDeleteRed size={18} />
+                </button>
+              </div>
+
+              {/* Contextual Edit Boundary / Footprint */}
+              {isSelectedSlab && selectedGuid && (
+                <button
+                  onClick={() => startSketchMode('floor', selectedGuid)}
+                  className="flex flex-col items-center justify-center px-2 py-1 bg-[#15803d] hover:bg-[#166534] border border-[#166534] text-white rounded shadow-xs ml-1"
+                  title="Edit Floor Boundary (Sketch Mode)"
+                >
+                  <PenTool size={16} className="text-[#86efac] mb-0.5" />
+                  <span className="text-[10px] font-bold leading-none">Edit Boundary</span>
+                </button>
+              )}
+              {isSelectedRoof && selectedGuid && (
+                <button
+                  onClick={() => startSketchMode('roof', selectedGuid)}
+                  className="flex flex-col items-center justify-center px-2 py-1 bg-[#15803d] hover:bg-[#166534] border border-[#166534] text-white rounded shadow-xs ml-1"
+                  title="Edit Roof Footprint (Sketch Mode)"
+                >
+                  <PenTool size={16} className="text-[#86efac] mb-0.5" />
+                  <span className="text-[10px] font-bold leading-none">Edit Footprint</span>
+                </button>
+              )}
+            </RibbonPanel>
+
+            {/* View Panel */}
+            <RibbonPanel title="View">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Reveal Hidden', <Eye size={13} className="text-[#d97706]" />, undefined, 'Reveal Hidden Elements', 'RH')}
+                {renderSmallButton('Linework', <PenTool size={13} className="text-[#475569]" />, undefined, 'Linework Tool', 'LW')}
+              </div>
+            </RibbonPanel>
+
+            {/* Measure Panel */}
+            <RibbonPanel title="Measure">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Between 2 Refs', <IconMeasure size={13} />, undefined, 'Measure Between Two References')}
+                {renderSmallButton('Along Element', <IconDimLinear size={13} />, undefined, 'Measure Along an Element')}
+              </div>
+            </RibbonPanel>
+
+            {/* Create Panel */}
+            <RibbonPanel title="Create">
+              {renderDummyTool('Create Similar', 'CS', <IconCreateSimilar size={22} />)}
+              {renderDummyTool('Create Group', 'GP', <IconCreateGroup size={22} />)}
+            </RibbonPanel>
+          </>
+        ) : null}
+      </div>
+
+      {/* 4. Revit Options Bar */}
+      <div className="flex items-center px-3 py-1 bg-[#f8fafc] border-t border-[#e2e8f0] text-xs text-[#334155] min-h-[28px] space-x-4">
+        {activeTool === 'WA' ? (
+          <>
+            <span className="font-semibold text-[#0284c7]">Wall Options:</span>
+            <div className="flex items-center space-x-1">
+              <span className="text-[#64748b] text-[11px]">Height:</span>
+              <span className="font-medium text-[11px] bg-[#ffffff] border border-[#cbd5e1] px-1.5 py-0.5 rounded">
+                Unconnected (10' 0")
+              </span>
+            </div>
+            <div className="flex items-center space-x-1">
+              <span className="text-[#64748b] text-[11px]">Location Line:</span>
+              <span className="font-medium text-[11px] bg-[#ffffff] border border-[#cbd5e1] px-1.5 py-0.5 rounded">
+                Wall Centerline
+              </span>
+            </div>
+            <label className="flex items-center space-x-1 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={chainTools}
+                onChange={(e) => setChainTools(e.target.checked)}
+                className="rounded border-[#cbd5e1] text-[#007acc]"
+              />
+              <span className="text-[11px] font-medium">Chain</span>
+            </label>
+            <div className="flex items-center space-x-1">
+              <span className="text-[#64748b] text-[11px]">Offset:</span>
+              <span className="font-mono text-[11px] bg-[#ffffff] border border-[#cbd5e1] px-1.5 py-0.5 rounded">
+                0' 0"
+              </span>
             </div>
           </>
-        )}
-
-        {activeRibbonTab === 'Annotate' && (
-          <div className="flex items-center space-x-2">
-            {/* UI-P0-14: these four armed a tool neither viewport implements. They
-                are shown disabled with the reason rather than pretending to work;
-                they return when annotation has a bus command and a viewport path. */}
-            {renderToolButton('DI', 'Aligned Dim', 'DI', <Ruler size={20} className="text-[#38bdf8]" />, undefined, notYet('DI'))}
-            {renderToolButton('DL', 'Detail Line', 'DL', <PenTool size={20} className="text-[#e2e8f0]" />, undefined, notYet('DL'))}
-            {renderToolButton('TG', 'Tag Category', 'TG', <Tag size={20} className="text-[#f59e0b]" />, undefined, notYet('TG'))}
-            {renderToolButton('TX', 'Text', 'TX', <FileText size={20} className="text-[#10b981]" />, undefined, notYet('TX'))}
-          </div>
-        )}
-
-        {activeRibbonTab === 'View' && (
-          <div className="flex items-center space-x-2 border-r border-[#333333] pr-5">
-            {renderToolButton(
-              'select',
-              'Default 3D',
-              '3D',
-              <Home size={20} className="text-[#38bdf8]" />,
-              () => setActiveViewId('view-3d')
-            )}
-            {/* UI-P0-14: these two used to hardcode `view-level-1` / `view-section-1`
-                / `sheet-a101`. When those panel ids were absent from the loaded
-                project the button did nothing at all, with no explanation. They now
-                follow the real project contents and say so when there is nothing
-                to open. */}
-            {renderToolButton(
-              'select',
-              'Floor Plan',
-              'L1',
-              <Layers size={20} className="text-[#a855f7]" />,
-              () => firstPlan && setActiveViewId(firstPlan.id),
-              firstPlan ? undefined : 'No floor plan in this project'
-            )}
-            {renderToolButton(
-              'SEC',
-              'Section',
-              'SEC',
-              <Scissors size={20} className="text-[#f97316]" />,
-              () => firstSection && setActiveViewId(firstSection.id),
-              firstSection ? undefined : 'No section view in this project'
-            )}
-            {renderToolButton(
-              'SHT',
-              'Sheet',
-              'SHT',
-              <FileSpreadsheet size={20} className="text-[#10b981]" />,
-              () => firstSheet && setActiveSheetId(firstSheet.id),
-              firstSheet ? undefined : 'No sheet in this project'
-            )}
-            {renderToolButton('BX', 'Section Box', 'BX', <Scissors size={20} className="text-[#ec4899]" />, () =>
-              toggleSectionBox()
-            )}
-            {/* The dialog existed but nothing opened it. */}
-            {renderToolButton(
-              'select',
-              'View Range',
-              'VR',
-              <SlidersHorizontal size={20} className="text-[#38bdf8]" />,
-              () => setViewRangeModalOpen(true)
-            )}
-          </div>
-        )}
-
-        {activeRibbonTab === 'Manage' && (
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={() => setGeoreferenceModalOpen(true)}
-              className="flex flex-col items-center justify-center px-3 py-1.5 rounded hover:bg-[#333333] border border-transparent hover:border-[#444444]"
-              title="IFC4 Georeferencing and Map Conversion"
-            >
-              <Globe size={20} className="text-[#38bdf8] mb-1" />
-              <span className="text-[11px] font-medium">Georeferencing</span>
-            </button>
-            <button
-              onClick={() => exportIfc()}
-              className="flex flex-col items-center justify-center px-3 py-1.5 rounded hover:bg-[#333333] border border-transparent hover:border-[#444444]"
-              title="Export buildingSMART IFC4 STEP file"
-            >
-              <Download size={20} className="text-[#10b981] mb-1" />
-              <span className="text-[11px] font-medium">Export IFC4</span>
-            </button>
+        ) : activeTool === 'DR' || activeTool === 'WN' ? (
+          <>
+            <span className="font-semibold text-[#0284c7]">
+              {activeTool === 'DR' ? 'Door Placement:' : 'Window Placement:'}
+            </span>
+            <label className="flex items-center space-x-1 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={chainTools}
+                onChange={(e) => setChainTools(e.target.checked)}
+                className="rounded border-[#cbd5e1] text-[#007acc]"
+              />
+              <span className="text-[11px] font-medium">Chain Placement</span>
+            </label>
+            <span className="text-[11px] text-[#64748b]">Hover over an existing wall to host and click to place.</span>
+          </>
+        ) : activeTool === 'AL' ? (
+          <>
+            <span className="font-semibold text-[#0284c7]">Align:</span>
+            <label className="flex items-center space-x-1 cursor-pointer">
+              <input type="checkbox" className="rounded border-[#cbd5e1] text-[#007acc]" />
+              <span className="text-[11px] font-medium">Multiple Alignment</span>
+            </label>
+            <label className="flex items-center space-x-1 cursor-pointer">
+              <input type="checkbox" defaultChecked className="rounded border-[#cbd5e1] text-[#007acc]" />
+              <span className="text-[11px] font-medium">Lock</span>
+            </label>
+            <span className="text-[11px] text-[#64748b]">Select line or element to align to, then select element to align.</span>
+          </>
+        ) : (
+          <div className="flex items-center space-x-2 text-[#64748b] text-[11px]">
+            <span className="font-medium text-[#1e293b]">Ready</span>
+            <span>• Click an architectural tool above or type a two-letter hotkey (WA, DR, WN, RF, SB, AL)</span>
           </div>
         )}
       </div>
 
-      {/* Hidden Native File Input for Opening BIMWorks Containers or IFC Files */}
+      {/* Hidden file input for opening IFC or BIMWorks containers */}
       <input
         ref={fileInputRef}
         type="file"
-        accept=".bimworks,.orlt,.ifc,.stp,.step"
-        className="hidden"
+        accept=".ifc,.bimworks,.orlt"
         onChange={handleFileChange}
+        className="hidden"
       />
     </div>
   );

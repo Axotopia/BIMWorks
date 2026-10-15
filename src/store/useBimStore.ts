@@ -430,7 +430,7 @@ function extractPolygonFromLines(lines: SketchLine[]): { polygon: [number, numbe
 
 interface BimStoreState {
   // Navigation & Tools
-  activeRibbonTab: 'Architecture' | 'Annotate' | 'View' | 'Manage' | 'Modify';
+  activeRibbonTab: 'Architecture' | 'Insert' | 'Annotate' | 'Massing&Site' | 'View' | 'Manage' | 'Modify';
   activeTool: ActiveTool;
   keyBuffer: string;
   keyBufferTimeout: any;

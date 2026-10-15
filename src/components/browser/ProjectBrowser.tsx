@@ -63,33 +63,33 @@ export const ProjectBrowser: React.FC = () => {
   };
 
   return (
-    <div className="h-full w-full bg-[#252526] text-[#cccccc] flex flex-col border-r border-[#3c3c3c] select-none text-xs overflow-hidden">
+    <div className="h-full w-full bg-[#ffffff] text-[#1e293b] flex flex-col border-r border-[#dcdcdc] select-none text-xs overflow-hidden font-sans">
       {/* Palette Title */}
-      <div className="flex items-center justify-between px-3 py-2 bg-[#2d2d2d] border-b border-[#3c3c3c] font-semibold text-[#e1e1e1]">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#f0f0f0] border-b border-[#dcdcdc] font-semibold text-[#202020]">
         <span>Project Browser - Architecture</span>
       </div>
 
       {/* Tree Content */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-1 font-mono text-[11px]">
+      <div className="flex-1 overflow-y-auto p-2 space-y-1 text-[11px]">
         {/* Views (All) */}
         <div>
           <div
             onClick={() => toggleSection('views')}
-            className="flex items-center space-x-1 py-1 px-1.5 hover:bg-[#333333] rounded cursor-pointer font-bold text-[#e1e1e1]"
+            className="flex items-center space-x-1 py-1 px-1.5 hover:bg-[#f1f5f9] rounded cursor-pointer font-bold text-[#1e293b]"
           >
-            {expandedSections.views ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            {expandedSections.views ? <ChevronDown size={14} className="text-[#64748b]" /> : <ChevronRight size={14} className="text-[#64748b]" />}
             <span>Views (all)</span>
           </div>
 
           {expandedSections.views && (
-            <div className="pl-4 space-y-1 mt-0.5 border-l border-[#3a3a3a] ml-2">
+            <div className="pl-4 space-y-1 mt-0.5 border-l border-[#e2e8f0] ml-2">
               {/* Floor Plans */}
               <div>
                 <div
                   onClick={() => toggleSection('floorPlans')}
-                  className="flex items-center space-x-1 py-0.5 px-1 hover:bg-[#333333] rounded cursor-pointer text-[#a1a1aa]"
+                  className="flex items-center space-x-1 py-0.5 px-1 hover:bg-[#f1f5f9] rounded cursor-pointer text-[#475569] font-medium"
                 >
-                  {expandedSections.floorPlans ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  {expandedSections.floorPlans ? <ChevronDown size={12} className="text-[#64748b]" /> : <ChevronRight size={12} className="text-[#64748b]" />}
                   <span>Floor Plans</span>
                 </div>
                 {expandedSections.floorPlans && (
@@ -105,11 +105,11 @@ export const ProjectBrowser: React.FC = () => {
                           onClick={() => setActiveViewId(v.id)}
                           className={`flex items-center space-x-1.5 py-1 px-1.5 rounded cursor-pointer ${
                             activeViewId === v.id
-                              ? 'bg-[#094771] text-white font-semibold'
-                              : 'hover:bg-[#2d2d2d] text-[#d4d4d4]'
+                              ? 'bg-[#cce8ff] border border-[#007acc] text-[#094771] font-semibold'
+                              : 'hover:bg-[#f1f5f9] text-[#334155]'
                           }`}
                         >
-                          <Layers size={13} className="text-[#a855f7]" />
+                          <Layers size={13} className="text-[#0284c7]" />
                           <span>{v.name}</span>
                         </div>
                       ))}
@@ -121,9 +121,9 @@ export const ProjectBrowser: React.FC = () => {
               <div>
                 <div
                   onClick={() => toggleSection('threeD')}
-                  className="flex items-center space-x-1 py-0.5 px-1 hover:bg-[#333333] rounded cursor-pointer text-[#a1a1aa]"
+                  className="flex items-center space-x-1 py-0.5 px-1 hover:bg-[#f1f5f9] rounded cursor-pointer text-[#475569] font-medium"
                 >
-                  {expandedSections.threeD ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  {expandedSections.threeD ? <ChevronDown size={12} className="text-[#64748b]" /> : <ChevronRight size={12} className="text-[#64748b]" />}
                   <span>3D Views</span>
                 </div>
                 {expandedSections.threeD && (
@@ -137,11 +137,11 @@ export const ProjectBrowser: React.FC = () => {
                           onClick={() => setActiveViewId(v.id)}
                           className={`flex items-center space-x-1.5 py-1 px-1.5 rounded cursor-pointer ${
                             activeViewId === v.id
-                              ? 'bg-[#094771] text-white font-semibold'
-                              : 'hover:bg-[#2d2d2d] text-[#d4d4d4]'
+                              ? 'bg-[#cce8ff] border border-[#007acc] text-[#094771] font-semibold'
+                              : 'hover:bg-[#f1f5f9] text-[#334155]'
                           }`}
                         >
-                          <Box size={13} className="text-[#38bdf8]" />
+                          <Box size={13} className="text-[#0284c7]" />
                           <span>{v.name}</span>
                         </div>
                       ))}
@@ -153,9 +153,9 @@ export const ProjectBrowser: React.FC = () => {
               <div>
                 <div
                   onClick={() => toggleSection('sections')}
-                  className="flex items-center space-x-1 py-0.5 px-1 hover:bg-[#333333] rounded cursor-pointer text-[#a1a1aa]"
+                  className="flex items-center space-x-1 py-0.5 px-1 hover:bg-[#f1f5f9] rounded cursor-pointer text-[#475569] font-medium"
                 >
-                  {expandedSections.sections ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  {expandedSections.sections ? <ChevronDown size={12} className="text-[#64748b]" /> : <ChevronRight size={12} className="text-[#64748b]" />}
                   <span>Sections</span>
                 </div>
                 {expandedSections.sections && (
@@ -171,11 +171,11 @@ export const ProjectBrowser: React.FC = () => {
                           onClick={() => setActiveViewId(v.id)}
                           className={`flex items-center space-x-1.5 py-1 px-1.5 rounded cursor-pointer ${
                             activeViewId === v.id
-                              ? 'bg-[#094771] text-white font-semibold'
-                              : 'hover:bg-[#2d2d2d] text-[#d4d4d4]'
+                              ? 'bg-[#cce8ff] border border-[#007acc] text-[#094771] font-semibold'
+                              : 'hover:bg-[#f1f5f9] text-[#334155]'
                           }`}
                         >
-                          <Eye size={13} className="text-[#f97316]" />
+                          <Eye size={13} className="text-[#ea580c]" />
                           <span>{v.name}</span>
                         </div>
                       ))}
@@ -190,14 +190,14 @@ export const ProjectBrowser: React.FC = () => {
         <div>
           <div
             onClick={() => toggleSection('sheets')}
-            className="flex items-center space-x-1 py-1 px-1.5 hover:bg-[#333333] rounded cursor-pointer font-bold text-[#e1e1e1]"
+            className="flex items-center space-x-1 py-1 px-1.5 hover:bg-[#f1f5f9] rounded cursor-pointer font-bold text-[#1e293b]"
           >
-            {expandedSections.sheets ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            {expandedSections.sheets ? <ChevronDown size={14} className="text-[#64748b]" /> : <ChevronRight size={14} className="text-[#64748b]" />}
             <span>Sheets (all)</span>
           </div>
 
           {expandedSections.sheets && (
-            <div className="pl-4 space-y-0.5 mt-0.5 border-l border-[#3a3a3a] ml-2">
+            <div className="pl-4 space-y-0.5 mt-0.5 border-l border-[#e2e8f0] ml-2">
               {sheets.map((s) => (
                 <div
                   key={s.id}
@@ -205,11 +205,11 @@ export const ProjectBrowser: React.FC = () => {
                   onClick={() => setActiveSheetId(s.id)}
                   className={`flex items-center space-x-1.5 py-1 px-1.5 rounded cursor-pointer ${
                     activeSheetId === s.id
-                      ? 'bg-[#094771] text-white font-semibold'
-                      : 'hover:bg-[#2d2d2d] text-[#d4d4d4]'
+                      ? 'bg-[#cce8ff] border border-[#007acc] text-[#094771] font-semibold'
+                      : 'hover:bg-[#f1f5f9] text-[#334155]'
                   }`}
                 >
-                  <FileSpreadsheet size={13} className="text-[#10b981]" />
+                  <FileSpreadsheet size={13} className="text-[#16a34a]" />
                   <span>
                     {s.sheetNumber} - {s.sheetTitle}
                   </span>
@@ -223,16 +223,16 @@ export const ProjectBrowser: React.FC = () => {
         <div>
           <div
             onClick={() => toggleSection('families')}
-            className="flex items-center space-x-1 py-1 px-1.5 hover:bg-[#333333] rounded cursor-pointer font-bold text-[#e1e1e1]"
+            className="flex items-center space-x-1 py-1 px-1.5 hover:bg-[#f1f5f9] rounded cursor-pointer font-bold text-[#1e293b]"
           >
-            {expandedSections.families ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            {expandedSections.families ? <ChevronDown size={14} className="text-[#64748b]" /> : <ChevronRight size={14} className="text-[#64748b]" />}
             <span>Families &amp; IFC Types</span>
           </div>
 
           {expandedSections.families && (
-            <div className="pl-4 space-y-1 mt-0.5 border-l border-[#3a3a3a] ml-2 text-[10px] text-[#9ca3af]">
+            <div className="pl-4 space-y-1 mt-0.5 border-l border-[#e2e8f0] ml-2 text-[10px] text-[#475569]">
               {ifcClassEntries.length === 0 && (
-                <div className="py-0.5 italic text-[#6b7280]">No elements loaded</div>
+                <div className="py-0.5 italic text-[#94a3b8]">No elements loaded</div>
               )}
               {ifcClassEntries.map(([ifcClass, count]) => (
                 <div key={ifcClass} className="flex items-center space-x-1 py-0.5">
