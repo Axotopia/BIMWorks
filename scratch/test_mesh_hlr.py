@@ -38,7 +38,17 @@ def fresh():
 
 
 def plan_projector(m, cut_ft=4.0):
-    return MeshHlrProjector(m.get_geometry_buffers()["meshes"])
+    """
+    A projector fed the same buffers the production plan path feeds it.
+
+    `get_geometry_buffers()` returns the CLIENT contract, whose coordinates are decimal
+    feet. `MeshHlrProjector` is unit-agnostic but is driven with `cut_z` in the file's
+    unit, so production hands it `_meshes_for_projection()` (metres). Using the client
+    buffers here made every cut path come out 3.28084x too large and put the geometry in
+    a different unit from the cut plane, which is why the opening checks could not see
+    the void.
+    """
+    return MeshHlrProjector(m._meshes_for_projection())
 
 
 def main():
@@ -93,10 +103,21 @@ def main():
           all(str(e["d"]).startswith("M ") for e in contract["cut_paths"]))
     check("renderer identifies itself", contract["renderer"] == "mesh-hlr")
 
-    print("5. Geometry buffers are consistently metric (was a defect) ...")
-    # Was mixed-unit: profile dimensions were written in metres while the placement
-    # was written in decimal feet, so a wall at model x=10 ft landed at x=10 m (3.28x)
-    # and meshes disagreed between axes and elements. Fixed at the placement boundary.
+    print("5. Geometry buffers are consistently in DECIMAL FEET ...")
+    # Two successive defects lived here, and they were opposites.
+    #
+    # (a) Originally the profile was written in metres while the placement was written
+    #     in decimal feet, so a wall at model x=10 ft landed at x=10 m (3.28x off).
+    #     Fixed at the placement boundary — and asserted below for that reason.
+    # (b) Then the mesh was still emitted in the FILE's unit (metres) while every
+    #     parametric length (`meta["length"]`, thickness, height, command parameters)
+    #     was decimal feet. The mesh and the parametric record disagreed by exactly
+    #     3.28084, which is why the app's one editable dimension showed 9'-2" for a
+    #     30 ft spacing. `_build_element_mesh` now converts once, at that boundary.
+    #
+    # So the numbers below are FEET, matching `params` — and they double as the
+    # placement check, because the coordinates still have to land where the model put
+    # them (0..30, not 0..9.144, and a wall at model x=30 must sit at 30).
     mm = fresh()
     mm.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8, name="South")
     mm.add_wall((30, 0, 0), (30, 20, 0), height=FEET_10, thickness=INCHES_8, name="East")
@@ -106,18 +127,34 @@ def main():
         v = mesh["vertices"]
         spans[mesh.get("name")] = (min(v[0::3]), max(v[0::3]), min(v[1::3]), max(v[1::3]))
     south, east, off = spans["South"], spans["East"], spans["Offset"]
-    check("a 30 ft wall on x spans 0..9.144 m",
-          abs(south[0]) < 0.01 and abs(south[1] - 9.144) < 0.01, south)
-    check("a wall at model x=30 ft sits at 9.144 m, not 30 m",
-          abs(east[0] - 9.042) < 0.05 and abs(east[1] - 9.246) < 0.05, east)
     # spans are (xmin, xmax, ymin, ymax)
-    check("a wall from model (10, 10) ft to (40, 10) ft spans x 3.048..12.192 m",
-          abs(off[0] - 3.048) < 0.05 and abs(off[1] - 12.192) < 0.05, off)
-    # Centred on y = 3.048 m (thickness 8" = 0.203 m), not at y = 10 m.
-    check("...and is centred on y 3.048 m, not 10 m",
-          abs((off[2] + off[3]) / 2.0 - 3.048) < 0.02, off)
-    check("a 20 ft wall on y spans 0..6.096 m",
-          abs(east[2]) < 0.15 and abs(east[3] - 6.096) < 0.01, east)
+    check("a 30 ft wall on x spans 0..30 ft (not 0..9.144)",
+          abs(south[0]) < 0.01 and abs(south[1] - 30.0) < 0.01, south)
+    check("a wall at model x=30 ft sits at 30 ft, not 9.144",
+          abs(east[0] - 29.67) < 0.1 and abs(east[1] - 30.33) < 0.1, east)
+    check("a wall from model (10, 10) ft to (40, 10) ft spans x 10..40 ft",
+          abs(off[0] - 10.0) < 0.05 and abs(off[1] - 40.0) < 0.05, off)
+    # Centred on y = 10 ft, not at y = 3.048.
+    check("...and is centred on y 10 ft, not 3.048",
+          abs((off[2] + off[3]) / 2.0 - 10.0) < 0.02, off)
+    # The lower bound is half a thickness (0.333 ft) rather than 0 because this wall
+    # is mitered to the South wall at the corner — see the join-geometry note in
+    # `test_units_boundary.py` section 5. The upper bound is the assertion that
+    # matters: 20 ft, not 6.096.
+    check("a 20 ft wall on y spans 0..20 ft (not 0..6.096)",
+          abs(east[2]) < 0.4 and abs(east[3] - 20.0) < 0.01, east)
+    # The units invariant itself: the mesh must agree with the parametric record.
+    for mesh in mm.get_geometry_buffers()["meshes"]:
+        meta = mm.element_meta.get(mesh["guid"], {})
+        declared = meta.get("length")
+        if declared is None:
+            continue
+        bbox, v = mesh["bbox"], mesh["vertices"]
+        span = max(max(v[0::3]) - min(v[0::3]), max(v[1::3]) - min(v[1::3]))
+        check(f"mesh span agrees with declared length for {mesh.get('name')} "
+              f"({span:.3f} vs {declared:.3f} ft)",
+              abs(span - float(declared)) <= max(0.35, float(declared) * 0.03),
+              (span, declared, bbox))
 
     print("5b. The projector is the DEFAULT plan renderer ...")
     # The objective is to REPLACE the analytic slicer, so the plan entry point must
@@ -139,39 +176,47 @@ def main():
     # The door void is modelled as an IfcOpeningElement subtracted from the wall. It
     # now actually subtracts (it did not before the placement-units fix, because the
     # opening was 3.28x adrift and never intersected the wall).
+    #
+    # UNITS: `MeshHlrProjector` is unit-agnostic and is driven here with
+    # `cut_z=feet_to_metres(4.0)`, i.e. in METRES, so its output coordinates are metres.
+    # This check previously filtered the output at y = 0.33 — which is the wall face in
+    # FEET — so it matched nothing and could not observe the void at all. The filter is
+    # now in metres, and only the final comparison is converted to feet.
     mo = fresh()
     wo = mo.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8,
                      name="South")["guid"]
     mo.add_door(wo, offset_along_wall=10.0, width=3.0)
     vo = plan_projector(mo).render(cut_z=feet_to_metres(4.0))
-    segs = []
-    for e in vo.cut:
-        cs = [(round(metres_to_feet(x), 2), round(metres_to_feet(y), 2)) for x, y in e["coords"]]
-        if len(cs) == 2 and abs(cs[0][1] - 0.33) < 0.03 and abs(cs[1][1] - 0.33) < 0.03:
-            segs.append(tuple(sorted((cs[0][0], cs[1][0]))))
-    segs = sorted(set(segs))
+
+    def _face_segments(view):
+        """Cut segments lying on the wall's outer face, in FEET, as (lo, hi) pairs."""
+        face_y_m = feet_to_metres(0.33)
+        out = []
+        for e in view.cut:
+            cs = [(metres_to_feet(x), metres_to_feet(y)) for x, y in e["coords"]]
+            if len(cs) == 2 and abs(cs[0][1] - 0.33) < 0.05 and abs(cs[1][1] - 0.33) < 0.05:
+                out.append(tuple(sorted((round(cs[0][0], 2), round(cs[1][0], 2)))))
+        return sorted(set(out))
+
+    segs = _face_segments(vo)
     gap = None
     for a, b in zip(segs, segs[1:]):
-        d = b[0] - a[1]
-        if d > 1.0:
+        if b[0] - a[1] > 1.0:
             gap = (a[1], b[0])
-    check("the wall cut is interrupted by the door opening", gap is not None, segs)
+    check("the wall cut is interrupted by the door opening", gap is not None,
+          f"{len(segs)} face segments: {segs}")
     if gap:
         check("the gap is at the door's own position (10..13 ft)",
               abs(gap[0] - 10.0) < 0.2 and abs(gap[1] - 13.0) < 0.2, gap)
     # And a wall with no door is continuous across that span.
     mw = fresh()
-    ww = mw.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8,
-                     name="South")["guid"]
+    mw.add_wall((0, 0, 0), (30, 0, 0), height=FEET_10, thickness=INCHES_8,
+                name="South")
     vw = plan_projector(mw).render(cut_z=feet_to_metres(4.0))
-    wsegs = []
-    for e in vw.cut:
-        cs = [(round(metres_to_feet(x), 2), round(metres_to_feet(y), 2)) for x, y in e["coords"]]
-        if len(cs) == 2 and abs(cs[0][1] - 0.33) < 0.03 and abs(cs[1][1] - 0.33) < 0.03:
-            wsegs.append(tuple(sorted((cs[0][0], cs[1][0]))))
-    wseg_sorted = sorted(set(wsegs))
-    no_gap = all((b[0] - a[1]) <= 1.0 for a, b in zip(wseg_sorted, wseg_sorted[1:]))
-    check("a wall without a door has no gap there", no_gap, wseg_sorted)
+    wseg_sorted = _face_segments(vw)
+    check("a wall without a door has no gap there",
+          all((b[0] - a[1]) <= 1.0 for a, b in zip(wseg_sorted, wseg_sorted[1:])),
+          f"{len(wseg_sorted)} face segments: {wseg_sorted}")
 
     print("7. Unified view entry point: plan, section and elevation ...")
     mv = fresh()

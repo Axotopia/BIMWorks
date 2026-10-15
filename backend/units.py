@@ -97,32 +97,41 @@ DOOR_PANEL_THICKNESS = inches_to_feet(1.75)
 WINDOW_FRAME_THICKNESS = inches_to_feet(2.375)
 
 
-def format_feet_inches(feet: float, round_to: float = 1.0 / 16.0) -> str:
+def format_feet_inches(feet: float, round_to: float = 1.0 / 192.0) -> str:
     """
     Formats decimal feet as an architectural string, e.g. 0.6667 -> `8"`,
     9.7083 -> `9'-8 1/2"`. Rounds to the nearest 1/16" by default, the
     convention Revit uses for type parameters.
+
+    `round_to` is expressed as a fraction of a FOOT, because that is the unit the
+    whole module works in. The default is therefore 1/192 ft == 1/16", whereas the
+    function previously defaulted to 1/16 ft == 3/4" — a coarser grid than any
+    architectural dimension uses, which is why an 8" sill read `8 1/4"` and a 48"
+    width read `48 1/4"`. The arithmetic now runs in integer 1/16" so an exact
+    value cannot acquire a fraction from binary rounding.
     """
     if feet is None:
         return "—"
+    sixteenths_per_inch = 16
     negative = feet < 0
-    total_inches = abs(feet) * 12.0
-    if round_to:
-        total_inches = round(total_inches / (round_to * 12.0)) * (round_to * 12.0)
-    whole_feet = int(total_inches // 12)
-    remaining = total_inches - whole_feet * 12
-    whole_inches = int(remaining)
-    frac = remaining - whole_inches
+    total_sixteenths = round(abs(feet) * 12.0 * sixteenths_per_inch)
+    if round_to and round_to > 0:
+        step = max(1, int(round(round_to * 12.0 * sixteenths_per_inch)))
+        total_sixteenths = int(round(total_sixteenths / step)) * step
+
+    whole_feet = total_sixteenths // (12 * sixteenths_per_inch)
+    remainder_sixteenths = total_sixteenths - whole_feet * 12 * sixteenths_per_inch
+    whole_inches = remainder_sixteenths // sixteenths_per_inch
+    frac_sixteenths = remainder_sixteenths - whole_inches * sixteenths_per_inch
 
     frac_str = ""
-    if frac > 1e-9:
-        sixteenths = int(round(frac * 16))
-        if sixteenths:
-            divisor = 16
-            while sixteenths % 2 == 0 and divisor > 1:
-                sixteenths //= 2
-                divisor //= 2
-            frac_str = f" {sixteenths}/{divisor}"
+    if frac_sixteenths:
+        sixteenths = frac_sixteenths
+        divisor = sixteenths_per_inch
+        while sixteenths % 2 == 0 and divisor > 1:
+            sixteenths //= 2
+            divisor //= 2
+        frac_str = f" {sixteenths}/{divisor}"
 
     sign = "-" if negative else ""
     if whole_feet:

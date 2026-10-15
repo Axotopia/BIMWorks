@@ -875,6 +875,9 @@ class BimModelManager:
         if not verts:
             return
         meta["sketch_mesh"] = {"vertices": verts, "indices": faces}
+        # `build_roof_mesh` authors in decimal feet (the sketch is overlay data); the
+        # element cache is kept in the file's unit, so normalise through the one writer.
+        self._cache_verts(guid, verts, faces, in_feet=True)
         xs = verts[0::3]
         ys = verts[1::3]
         zs = verts[2::3]
@@ -1254,6 +1257,8 @@ class BimModelManager:
 
         Deliberately excludes: live entity refs, cached tessellation (`cached_verts`
         / `cached_faces` / `bbox`), and anything derivable — those are regenerated.
+        Both builder-produced and import-produced cache entries are decimal feet since
+        the import unit fix, so a regenerated mesh agrees with the parametric record.
         Includes the footprint because join trimming is real geometry the overlay
         must not silently re-derive.
         """
@@ -2005,9 +2010,12 @@ class BimModelManager:
                 meta["end"][1] += dy
                 meta["end"][2] = (meta["end"][2] if len(meta["end"]) > 2 else 0.0) + dz
             if "cached_verts" in meta and meta["cached_verts"]:
+                # The cache is in the FILE's unit (metres); dx/dy/dz are decimal feet.
+                _mpu = self._metres_per_unit()
+                _dx, _dy, _dz = dx * _mpu, dy * _mpu, dz * _mpu
                 cv = meta["cached_verts"]
                 meta["cached_verts"] = [
-                    cv[i] + dx if i % 3 == 0 else (cv[i] + dy if i % 3 == 1 else cv[i] + dz)
+                    cv[i] + _dx if i % 3 == 0 else (cv[i] + _dy if i % 3 == 1 else cv[i] + _dz)
                     for i in range(len(cv))
                 ]
             if "bbox" in meta and "min" in meta["bbox"]:
@@ -2069,9 +2077,12 @@ class BimModelManager:
             if "polygon" in meta and meta["polygon"]:
                 meta["polygon"] = [(p[0] + dx, p[1] + dy) for p in meta["polygon"]]
             if "cached_verts" in meta and meta["cached_verts"]:
+                # The cache is in the FILE's unit (metres); dx/dy/dz are decimal feet.
+                _mpu = self._metres_per_unit()
+                _dx, _dy, _dz = dx * _mpu, dy * _mpu, dz * _mpu
                 cv = meta["cached_verts"]
                 meta["cached_verts"] = [
-                    cv[i] + dx if i % 3 == 0 else (cv[i] + dy if i % 3 == 1 else cv[i] + dz)
+                    cv[i] + _dx if i % 3 == 0 else (cv[i] + _dy if i % 3 == 1 else cv[i] + _dz)
                     for i in range(len(cv))
                 ]
             if "bbox" in meta and "min" in meta["bbox"]:
@@ -2308,8 +2319,7 @@ class BimModelManager:
                 th = meta.get("thickness", 0.3)
                 pitch = meta.get("pitch", 15.0)
                 verts, faces = self._build_pitched_roof_mesh(poly, elev, th, pitch)
-                meta["cached_verts"] = verts
-                meta["cached_faces"] = faces
+                self._cache_verts(guid, verts, faces, in_feet=True)
                 xs = [p[0] for p in poly]
                 ys = [p[1] for p in poly]
                 zs = [verts[i] for i in range(2, len(verts), 3)]
@@ -2321,8 +2331,7 @@ class BimModelManager:
                 elev = meta.get("elevation", 0.0)
                 th = meta.get("thickness", 0.25)
                 verts, faces = self._build_flat_slab_mesh(poly, elev, th)
-                meta["cached_verts"] = verts
-                meta["cached_faces"] = faces
+                self._cache_verts(guid, verts, faces, in_feet=True)
                 xs = [p[0] for p in poly]
                 ys = [p[1] for p in poly]
                 meta["bbox"] = {
@@ -2350,8 +2359,7 @@ class BimModelManager:
             meta["length"] = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
             meta["angle"] = math.atan2(ep[1] - sp[1], ep[0] - sp[0])
             verts, faces = self._build_wall_mesh(sp, ep, h, th)
-            meta["cached_verts"] = verts
-            meta["cached_faces"] = faces
+            self._cache_verts(guid, verts, faces, in_feet=True)
             meta["bbox"] = {
                 "min": [min(sp[0], ep[0]) - th, min(sp[1], ep[1]) - th, sp[2] if len(sp) > 2 else 0.0],
                 "max": [max(sp[0], ep[0]) + th, max(sp[1], ep[1]) + th, (sp[2] if len(sp) > 2 else 0.0) + h],
@@ -3428,6 +3436,121 @@ class BimModelManager:
             return ifcopenshell.geom.create_shape(settings, p, rep)
         return ifcopenshell.geom.create_shape(settings, p)
 
+    def _cache_verts(self, guid: str, verts, faces, in_feet: bool = True) -> None:
+        """
+        Stores a tessellation in `element_meta`, ALWAYS in the file's unit (metres).
+
+        Every writer goes through here so the cache has exactly one unit. The mesh
+        builders (`_build_wall_mesh`, `_build_flat_slab_mesh`, `_build_pitched_roof_mesh`,
+        `build_roof_mesh`) author in decimal feet because that is the internal unit;
+        `_get_product_shape` returns the file's unit. Both are normalised here.
+
+        This exists because the ambiguity was not theoretical. With the cache holding
+        whichever unit the writer happened to use:
+          * `_build_element_mesh` emitted metres while `params` were feet, so the mesh
+            and the parametric record disagreed by 3.28084 and the app's dimension read
+            9'-2" for a 30 ft spacing;
+          * caching a *converted* value made the conversion self-amplifying — one 30 ft
+            wall returned 30, 98.425, 322.92, 1059.44 on four successive calls;
+          * feeding the feet buffers to `mesh_hlr` (which is given `cut_z` in metres)
+            put every cut path out by 3.28084 and made door openings disappear.
+        """
+        meta = self.element_meta.get(guid)
+        if meta is None or not verts:
+            return
+        if in_feet:
+            # Builder geometry is decimal FEET (the internal unit), and the cache is
+            # kept in METRES (the file's unit). Two different factors are easy to
+            # confuse here and the first attempt did: `_metres_per_unit()` is metres
+            # per FILE unit (1.0 for a metres model), whereas converting geometry that
+            # was authored in feet needs `METRES_PER_FOOT` (0.3048). Using the former
+            # left the cache in feet, so a 12 ft slab came back as 39.37 ft once the
+            # output boundary multiplied by 3.28084.
+            verts = [v * METRES_PER_FOOT for v in verts]
+        meta["cached_verts"] = verts
+        meta["cached_faces"] = faces
+        meta["cached_verts_is_feet"] = False
+
+    def _meshes_for_projection(self) -> List[Dict[str, Any]]:
+        """
+        Geometry buffers for the HLR projector, in the FILE's unit — not feet.
+
+        `mesh_hlr` is unit-agnostic: it projects whatever coordinates it is handed.
+        The projection pipeline hands it `cut_z=feet_to_metres(...)`, so its input must
+        be metric, and its output is then scaled to feet by `_scale_path`. Feeding it
+        the feet buffers that `get_geometry_buffers()` returns put every cut path out
+        by 3.28084 — measured as a 30 ft wall drawing cut segments out to 98.43, and as
+        a door opening that no longer appeared because the cut plane passed through
+        nothing.
+
+        So both consumers read the one cache: `get_geometry_buffers()` for the client,
+        this for the projector. The cache itself is always in the file's unit.
+        """
+        settings = ifcopenshell.geom.settings()
+        settings.set(settings.USE_WORLD_COORDS, True)
+        meshes: List[Dict[str, Any]] = []
+        for guid, meta in self.element_meta.items():
+            entity = meta.get("entity")
+            if not entity:
+                continue
+            cached_v = meta.get("cached_verts")
+            cached_f = meta.get("cached_faces")
+            if cached_v and cached_f:
+                verts, faces = cached_v, cached_f
+            else:
+                try:
+                    shape = self._get_product_shape(settings, entity)
+                    verts = list(shape.geometry.verts)
+                    faces = list(shape.geometry.faces)
+                    meta["cached_verts"] = verts
+                    meta["cached_faces"] = faces
+                except Exception:
+                    continue
+            # A builder-authored cache (`_build_wall_mesh` and friends) is written in
+            # decimal feet, so it must be normalised back to the file's unit; every
+            # other source is already in it.
+            if meta.get("cached_verts_is_feet") and verts:
+                metres_per_unit = self._metres_per_unit()
+                verts = [v * metres_per_unit for v in verts]
+            meshes.append({
+                "guid": guid,
+                "ifc_class": meta.get("ifc_class", "IfcProduct"),
+                "name": meta.get("name"),
+                "vertices": verts,
+                "indices": faces,
+            })
+        return meshes
+
+    def _metres_per_unit(self) -> float:
+        """
+        Metres per length unit of the model of record, cached per model identity.
+
+        This is the one place the mesh boundary asks the file what its own unit is, so
+        a metric IFC, an imperial IFC and a feet-authored builder all convert
+        correctly without any caller knowing which it holds. Cached because
+        `_build_element_mesh` runs once per element and `calculate_unit_scale` walks
+        the unit assignment each time.
+
+        Falls back to METRES_PER_FOOT — i.e. "already feet, do not convert" — rather
+        than 1.0, so a failure here degrades to leaving builder-authored feet geometry
+        untouched instead of multiplying it by 3.28084.
+        """
+        model = getattr(self, "model", None)
+        if model is None:
+            return METRES_PER_FOOT
+        cached = getattr(self, "_metres_per_unit_cache", None)
+        if cached is not None and cached[0] is model:
+            return cached[1]
+        try:
+            import ifcopenshell.util.unit as unit_util
+            scale = unit_util.calculate_unit_scale(model)
+        except Exception:
+            scale = None
+        if not scale or scale <= 0.0:
+            scale = METRES_PER_FOOT
+        self._metres_per_unit_cache = (model, float(scale))
+        return float(scale)
+
     def _build_element_mesh(self, guid: str, meta: Dict[str, Any], settings=None) -> Optional[Dict[str, Any]]:
         entity = meta.get("entity")
         if not entity:
@@ -3473,17 +3596,47 @@ class BimModelManager:
 
             style = category_colors.get(ifc_class, {"color": "#94a3b8", "opacity": 1.0, "cut_color": "#334155"})
 
-            if "bbox" in meta:
-                bbox = meta["bbox"]
-            else:
-                xs = raw_verts[0::3]
-                ys = raw_verts[1::3]
-                zs = raw_verts[2::3]
-                bbox = {
-                    "min": [min(xs), min(ys), min(zs)],
-                    "max": [max(xs), max(ys), max(zs)],
-                }
-                meta["bbox"] = bbox
+            # ------------------------------------------------------------------
+            # THE UNITS BOUNDARY FOR MESH GEOMETRY (spec §11.3).
+            #
+            # `_get_product_shape` returns a world-coordinate shape in the IFC's own
+            # unit, and the model of record is authored in METRES (see `reset_model`).
+            # Every parametric length — `meta["length"]`, `thickness`, `height`,
+            # elevations, command parameters — is decimal FEET. This method is the
+            # boundary, so what it RETURNS is feet.
+            #
+            # The cache stays in the file's unit and is the single source both consumers
+            # read: this method converts metres -> feet on output, and
+            # `_meshes_for_projection()` hands the projection pipeline the same raw
+            # cache untouched, because `mesh_hlr` works in the file's unit (it is given
+            # `cut_z=feet_to_metres(...)`).
+            #
+            # Getting this wrong is not cosmetic, and two specific failures were
+            # measured while implementing it:
+            #   * emitting metres here left the mesh and the parametric record
+            #     disagreeing by 3.28084, so the app's one editable dimension showed
+            #     9'-2" for a real 30 ft spacing and could not round-trip;
+            #   * caching the *converted* value and re-converting on each read
+            #     self-amplified — one 30 ft wall returned x = 30, 98.425, 322.92,
+            #     1059.44 on four successive calls. The cache therefore must never hold
+            #     a converted value.
+            metres_per_unit = self._metres_per_unit()
+            file_scale = metres_per_unit / METRES_PER_FOOT
+            if raw_verts and file_scale != 1.0:
+                raw_verts = [v * file_scale for v in raw_verts]
+
+            # The bounds are ALWAYS derived from the vertices just converted, never
+            # read from a cached `meta["bbox"]` — the cache was written in different
+            # units by different paths, and trusting it is how the two halves of a
+            # record drift apart. The bounds are in feet, like the frontend expects.
+            xs = raw_verts[0::3]
+            ys = raw_verts[1::3]
+            zs = raw_verts[2::3]
+            bbox = {
+                "min": [min(xs), min(ys), min(zs)],
+                "max": [max(xs), max(ys), max(zs)],
+            }
+            meta["bbox"] = bbox
 
             return {
                 "guid": guid,
@@ -3764,7 +3917,12 @@ class BimModelManager:
                         "start": sp[:2],
                         "end": ep[:2],
                         "length": length,
-                        "text": f"{length:.2f} m ({length * 3.28084:.1f}')",
+                        # `length` is decimal feet (see the units boundary). This
+                        # previously read `f"{length:.2f} m ({length * 3.28084:.1f}')"`,
+                        # which labelled feet as metres AND multiplied by 3.28084, so a
+                        # 30 ft wall drew as "30.00 m (98.4')". Every other length on
+                        # the drawing already goes through `format_feet_inches`.
+                        "text": format_feet_inches(length),
                         "offset_norm": [nx, ny],
                     })
 
@@ -3938,7 +4096,7 @@ class BimModelManager:
         key = "top" if view_type in ("floor_plan", "plan") else (direction or "south")
         camera = cameras.get(key, cameras["south"])
 
-        meshes = (self.get_geometry_buffers() or {}).get("meshes") or []
+        meshes = self._meshes_for_projection()
         if not meshes:
             return {"cut_paths": [], "projection_paths": [], "hidden_paths": [],
                     "partitions": {"cut": 0, "projection": 0, "hidden": 0},
@@ -4102,7 +4260,7 @@ class BimModelManager:
         from mesh_hlr import MeshHlrProjector
         from units import feet_to_metres, metres_to_feet
 
-        meshes = (self.get_geometry_buffers() or {}).get("meshes") or []
+        meshes = self._meshes_for_projection()
         if not meshes:
             return None
 
@@ -5403,6 +5561,13 @@ class BimModelManager:
             dx = (max_x - min_x) * unit_scale
             dy = (max_y - min_y) * unit_scale
             dz = (max_z - min_z) * unit_scale
+            # The cached tessellation is NOT converted here. Every mesh in the app is
+            # produced from the IFC representation by `_build_element_mesh`, which
+            # converts once at that boundary — converting here as well would apply the
+            # factor twice. See `_build_element_mesh`.
+            min_x, max_x = min_x * unit_scale, max_x * unit_scale
+            min_y, max_y = min_y * unit_scale, max_y * unit_scale
+            min_z, max_z = min_z * unit_scale, max_z * unit_scale
 
             meta: Dict[str, Any] = {
                 "entity": p,
@@ -5412,10 +5577,14 @@ class BimModelManager:
                 # Its storey, from the file's own containment. A floor plan view and
                 # the per-level cut plane both depend on this.
                 "level_id": element_level.get(guid),
-                "cached_verts": raw_verts,
-                "cached_faces": raw_faces,
                 "bbox": {"min": [min_x, min_y, min_z], "max": [max_x, max_y, max_z]},
             }
+            # Raw shape vertices are already in the file's unit, which is exactly what
+            # the cache stores, so no conversion: `in_feet=False`. (The in-memory model
+            # is metres, hence `_metres_per_unit()` is 1.0; `unit_scale` describes the
+            # *imported* file and must not be applied a second time.)
+            self.element_meta[guid] = meta
+            self._cache_verts(guid, raw_verts, raw_faces, in_feet=False)
 
             if ifc_class in ("IfcWall", "IfcWallStandardCase"):
                 profile_thickness: Optional[float] = None
@@ -5561,7 +5730,7 @@ class BimModelManager:
                         "polygon": footprint,
                     })
 
-            self.element_meta[guid] = meta
+            # `meta` is already registered above, together with its cached tessellation.
 
         # Second pass: calculate offset_along_wall for doors and windows
         for guid, meta in self.element_meta.items():

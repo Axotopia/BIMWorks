@@ -152,14 +152,17 @@ def main():
     check("roof pitch intact", roof["pitch"] == 22.5, roof.get("pitch"))
     check("roof polygon intact", len(roof["polygon"]) == 4)
     # Geometry must come from the polygon, not a bbox: the solid's mesh has a
-    # vertex at the notch, which a rectangular extrusion cannot produce. The IFC
-    # (and therefore the extracted mesh) is in metres, so convert to compare.
-    from units import metres_to_feet
-
+    # vertex at the notch, which a rectangular extrusion cannot produce.
+    #
+    # NO conversion here. `get_geometry_buffers()` is the CLIENT contract and its
+    # coordinates are decimal feet (see `_build_element_mesh`). This check used to
+    # apply `metres_to_feet` on top, which was right while that contract was metric;
+    # leaving it in put every vertex out by 3.28084, so the notch landed at 9.843
+    # instead of 3.0.
     geo = manager.get_geometry_buffers()
     slab_mesh = next(x for x in geo["meshes"] if x["guid"] == ids["slab"]["guid"])
     verts = {
-        (round(metres_to_feet(x), 3), round(metres_to_feet(y), 3))
+        (round(x, 3), round(y, 3))
         for x, y in zip(slab_mesh["vertices"][0::3], slab_mesh["vertices"][1::3])
     }
     check("slab solid built from the concave polygon (notch vertex present)",
