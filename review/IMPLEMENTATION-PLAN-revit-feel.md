@@ -7,11 +7,11 @@ under `review/AUDIT-*-vs-revit.md`.
 
 > ## ⏸ WHERE EXECUTION STOPPED — read §0a before touching anything
 >
-> **Phases completed and verified:** 0.1, 0.3, 0.4, 1.1, 1.2, 1.3a, 1.3b. Six commits,
-> `b6b3cdd` → `e3216fe`. All 23 backend suites and `npm run check` green at that commit.
+> **Phases completed and verified:** 0.1, 0.3, 0.4, 1.1, 1.2, 1.3a, 1.3b, 1.3c. All 23 backend suites,
+> `scratch/test_mesh_hlr_incremental.py` and `npm run check` green.
 >
-> **Next task:** **1.3c — make `_prepare` incremental.** It is the measured blocker for N≥500 and it
-> needs a design decision (§0a.4), which is why it was not started.
+> **Next task:** **Phase 2 (editable dimensions)** — start at 2.2. Phase 1.3c resolved the incremental
+> `_prepare` / `cut_at` bottleneck (plan cache miss on 484 walls dropped from 679 ms to 60 ms).
 >
 > **Do not start Phase 2 (editable dimensions) before reading §0a.2** — the dimension feature is blocked
 > on a *different* prerequisite than this plan originally assumed, and the work is smaller than
@@ -47,6 +47,7 @@ npm run check
 | 1.2 | `48ad6be` | Candidate index for join partners | `scratch/test_wall_joins*.py` |
 | 1.1 | `cc213fc` | Scoped join recompute | `scratch/test_join_incremental.py` (11 checks, scoped == global) |
 | 1.3b | `e3216fe` | Per-mesh union cached; occluder bounded per mesh | `scratch/test_mesh_hlr.py`, `test_hlr.py` |
+| 1.3c | working | Incremental _prepare & cut_at per-mesh caches | `scratch/test_mesh_hlr_incremental.py` (11 checks) |
 
 ### 0a.2 The measurement that matters, and the honest gap
 
@@ -327,13 +328,13 @@ Effort key: **S** ≤ 1 day · **M** ~1 week · **L** 2+ weeks.
 
 ### Phase 1 — Make trim and dimension edits fast (L) — *the felt bottleneck*
 
-**STATUS: 1.1 ✅ · 1.2 ✅ · 1.3a ✅ · 1.3b ✅ · 1.3c ⬜ NEXT · 1.4 ⬜ · 1.5 ⬜**
+**STATUS: 1.1 ✅ · 1.2 ✅ · 1.3a ✅ · 1.3b ✅ · 1.3c ✅ · 1.4 ⬜ · 1.5 ⬜**
 
 | # | Task | Expected effect | Files | Status |
 |---|---|---|---|---|
 | 1.1 | **Route every mutation through the dependency graph.** `translate_element`, `update_element`, trim, split and level move must call `DependencyGraph.recompute([guid])`, not the global `recompute_wall_joins()`. | Removes the dominant term: 992 ms → ~190 ms/tx at N=1000 | `ifc_service.py:2022`, `:2359`, `:2796-2821` | **✅ `cc213fc`.** Done differently from the plan: `DependencyGraph` was *not* used (its `join` edge keys on exact shared endpoints with 1e-6 tolerance, which misses tee joins). The radius is derived from the wall's OLD and NEW endpoint positions via the join index. 82.8 → 3.3 ms at 196 walls. |
 | 1.2 | **O(1) join-partner lookup** via a coordinate-keyed endpoint index (the graph already has the shape at `dependency_graph.py:93-98`). | Kills the 2,004,002-visit scan; removes the N² term entirely | `ifc_service.py:2767` | **✅ `48ad6be`.** Two grid buckets (`endpoints`, `baselines`), superset candidates in `walls` order. Per-element cost went flat: 0.33→0.37 ms/wall from 100 to 961 walls. |
-| 1.3 | **Incremental 2D view.** Revision-keyed cache of the composited contract per (view, revision); re-project only dirty GUIDs; replace the O(N²) view-depth closure with a spatial index; **bound the occluder set geographically** — the profile shows 76 % of slice time is GEOS `union_all` called ~4× per element against a growing occluder union. | 17,509 ms → target low hundreds of ms at N=1000; makes 5,000 conceivable | `mesh_hlr.py:116-164`, `:231-266`, `:390-476`, `main.py:1062` | **✅ a `73b7dbb`** (revision-keyed contract cache: 542 → 6 ms). **✅ b `e3216fe`** (per-mesh union cached once; occluder bounded per mesh: cold slice 945 → ~250 ms; `union_all` 783 calls/525 ms → 392/20 ms). **⬜ c NEXT** — `_prepare` still re-projects every mesh on any revision change. **Cache miss 350 ms vs hit 7.5 ms.** See §0a.4 for the design decision it needs. |
+| 1.3 | **Incremental 2D view.** Revision-keyed cache of the composited contract per (view, revision); re-project only dirty GUIDs; replace the O(N²) view-depth closure with a spatial index; **bound the occluder set geographically** — the profile shows 76 % of slice time is GEOS `union_all` called ~4× per element against a growing occluder union. | 17,509 ms → target low hundreds of ms at N=1000; makes 5,000 conceivable | `mesh_hlr.py:116-164`, `:231-266`, `:390-476`, `main.py:1062` | **✅ a `73b7dbb`** (revision-keyed contract cache: 542 → 6 ms). **✅ b `e3216fe`** (per-mesh union cached once; occluder bounded per mesh: cold slice 945 → ~250 ms; `union_all` 783 calls/525 ms → 392/20 ms). **✅ c** — incremental `_prepare` & `cut_at` per-mesh caches. Plan cache miss at 484 walls drops from 679 ms to 60 ms. Gate: `scratch/test_mesh_hlr_incremental.py` (11 checks). |
 | 1.4 | **Scope the constraint solve** to the affected component. | 31 participants → 3 in a 32-element probe | `constraint_solver.py:110-137`, `:224-250` | **⬜** untouched. |
 | 1.5 | **Delta transport for the slice.** Stop shipping the full storey's linework per edit (99.6 % of a 444 KB delta at N=200). Ship only changed paths. | delta 444 KB → ~2 KB | `main.py:1030-1109` | **⬜** untouched. Note the slice is now small in *time* but the payload question is separate and unmeasured since these changes. |
 
@@ -423,9 +424,9 @@ forgotten, not so it is done early.
 ```
 Phase 0 (days)      instruments + the units bug        ✅ done (0.2 deferred to Phase 3)
    ↓
-Phase 1 (weeks)     kill the two O(N²) paths            ✅ 1.1, 1.2, 1.3a/b done
-   ↓                                                    ⏸ STOPPED HERE — next is 1.3c
-Phase 1 remainder   1.3c incremental _prepare, 1.4, 1.5 ⬜
+Phase 1 (weeks)     kill the two O(N²) paths            ✅ 1.1, 1.2, 1.3a/b/c done
+   ↓                                                    ⏸ NEXT IS PHASE 2 (start at 2.2)
+Phase 1 remainder   1.4, 1.5 ⬜
    ↓
 Phase 2 (weeks)     editable dimensions                 ⬜ NOW UNBLOCKED — owner's priority
    ↓
