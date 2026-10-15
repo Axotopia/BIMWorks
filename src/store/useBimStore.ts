@@ -123,6 +123,12 @@ export const UI_ACTION_COMMANDS = {
   trimExtendWall: 'WallTrimExtend',
   splitWall: 'WallSplit',
   moveLevel: 'LevelMove',
+  // P6 sheet & viewport commands (bus-backed, journaled, undoable)
+  createSheet: 'SheetCreate',
+  deleteSheet: 'SheetDelete',
+  addViewportToSheet: 'ViewportAdd',
+  removeViewportFromSheet: 'ViewportRemove',
+  moveViewport: 'ViewportMove',
 } as const;
 
 export type UiAction = keyof typeof UI_ACTION_COMMANDS;
@@ -551,8 +557,13 @@ interface BimStoreState {
   deleteElement: (guid: string) => Promise<void>;
   translateElement: (guid: string, dx: number, dy: number, dz?: number) => Promise<void>;
   updateGeoreferencing: (data: BimStoreState['georeference']) => Promise<void>;
-  addViewportToSheet: (sheetId: string, viewId: string, x: number, y: number) => void;
+  createSheet: (sheetNumber: string, sheetTitle: string, paperSize?: 'ARCH_D' | 'ARCH_C' | 'ISO_A1') => Promise<void>;
+  deleteSheet: (sheetId: string) => Promise<void>;
+  addViewportToSheet: (sheetId: string, viewId: string, x: number, y: number) => Promise<void>;
+  removeViewportFromSheet: (viewportId: string, sheetId?: string) => Promise<void>;
+  moveViewport: (viewportId: string, x: number, y: number, sheetId?: string) => Promise<void>;
   exportSheetPdf: (sheetId: string, svgContent: string) => Promise<void>;
+  exportBatchPdf: (sheetsData: Array<{ sheetName: string; svgContent: string }>, filename?: string) => Promise<void>;
   exportIfc: () => Promise<void>;
 
   // GLM Spec v2 Additions
@@ -1272,6 +1283,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         // blanking the viewport.
         ...(data.slice2d ? { sliced2D: data.slice2d } : {}),
         ...(data.journal ? { transactionJournal: data.journal } : {}),
+        ...(data.sheets ? { sheets: data.sheets } : {}),
       });
 
       if (data.errors) {
@@ -1645,27 +1657,74 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     }
   },
 
-  addViewportToSheet: (sheetId, viewId, x, y) => {
-    set((state) => {
-      const sheet = state.sheets.find((s) => s.id === sheetId);
-      if (!sheet) return state;
+  createSheet: async (sheetNumber, sheetTitle, paperSize = 'ARCH_D') => {
+    try {
+      await get().dispatchTransaction('createSheet', {
+        sheet_number: sheetNumber,
+        sheet_title: sheetTitle,
+        paper_size: paperSize,
+      }, `Create Sheet ${sheetNumber}`);
+    } catch (e) {
+      set({ statusMessage: `Failed to create sheet: ${failureMessage(e)}` });
+      console.error('Failed to create sheet', e);
+      throw e;
+    }
+  },
 
-      const newViewport: SheetViewport = {
-        id: `vp-${Date.now()}`,
-        viewId,
+  deleteSheet: async (sheetId) => {
+    try {
+      await get().dispatchTransaction('deleteSheet', { sheet_id: sheetId }, `Delete Sheet`);
+    } catch (e) {
+      set({ statusMessage: `Failed to delete sheet: ${failureMessage(e)}` });
+      console.error('Failed to delete sheet', e);
+      throw e;
+    }
+  },
+
+  addViewportToSheet: async (sheetId, viewId, x, y) => {
+    try {
+      await get().dispatchTransaction('addViewportToSheet', {
+        sheet_id: sheetId,
+        view_id: viewId,
         x,
         y,
         width: 480,
         height: 360,
-        scaleFactor: 1.0,
-      };
+        scale_factor: 1.0,
+      }, `Add Viewport to Sheet`);
+    } catch (e) {
+      set({ statusMessage: `Failed to add viewport: ${failureMessage(e)}` });
+      console.error('Failed to add viewport', e);
+      throw e;
+    }
+  },
 
-      return {
-        sheets: state.sheets.map((s) =>
-          s.id === sheetId ? { ...s, viewports: [...s.viewports, newViewport] } : s
-        ),
-      };
-    });
+  removeViewportFromSheet: async (viewportId, sheetId) => {
+    try {
+      await get().dispatchTransaction('removeViewportFromSheet', {
+        viewport_id: viewportId,
+        sheet_id: sheetId,
+      }, `Remove Viewport`);
+    } catch (e) {
+      set({ statusMessage: `Failed to remove viewport: ${failureMessage(e)}` });
+      console.error('Failed to remove viewport', e);
+      throw e;
+    }
+  },
+
+  moveViewport: async (viewportId, x, y, sheetId) => {
+    try {
+      await get().dispatchTransaction('moveViewport', {
+        viewport_id: viewportId,
+        x,
+        y,
+        sheet_id: sheetId,
+      }, `Move Viewport`);
+    } catch (e) {
+      set({ statusMessage: `Failed to move viewport: ${failureMessage(e)}` });
+      console.error('Failed to move viewport', e);
+      throw e;
+    }
   },
 
   exportSheetPdf: async (sheetId, svgContent) => {
@@ -1693,6 +1752,39 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     } catch (e) {
       set({ statusMessage: `Export vector sheet PDF failed: ${failureMessage(e)}` });
       console.error('Failed to export vector sheet PDF', e);
+    }
+  },
+
+  exportBatchPdf: async (sheetsData, filename = 'Batch_Sheets_Export') => {
+    try {
+      const payload = {
+        sheets: sheetsData.map((s) => ({
+          svg_content: s.svgContent,
+          sheet_name: s.sheetName,
+        })),
+        filename,
+      };
+
+      const res = await fetch(`${API_BASE}/export/batch-pdf`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${filename}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      }
+    } catch (e) {
+      set({ statusMessage: `Export batch vector PDF failed: ${failureMessage(e)}` });
+      console.error('Failed to export batch vector PDF', e);
     }
   },
 
@@ -2027,6 +2119,28 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   },
 
   generateAiPlan: async (promptText: string): Promise<AiPlan | null> => {
+    // 1. First attempt backend typesafe AI Driver planner
+    try {
+      const selected = get().selectedGuid ? [get().selectedGuid!] : [];
+      const res = await fetch(`${API_BASE}/ai/plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: promptText,
+          active_view_id: get().activeViewId,
+          selected_guids: selected,
+        }),
+      });
+      if (res.ok) {
+        const backendPlan = await res.json();
+        if (backendPlan && backendPlan.commands && backendPlan.commands.length > 0) {
+          return backendPlan as AiPlan;
+        }
+      }
+    } catch {
+      // Fallback to client planner if engine is offline or in mock test mode
+    }
+
     const text = promptText.trim().toLowerCase();
     const elements = get().elements;
     const selectedGuid = get().selectedGuid;

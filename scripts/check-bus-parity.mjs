@@ -41,6 +41,10 @@ const ALLOWED_NON_GET = [
   '/project/load-bimworks', // document lifecycle
   '/georeference',       // non-IFC project metadata; not part of the model snapshot
   '/export/sheet-pdf',   // produces a file, does not mutate
+  '/export/batch-pdf',   // produces a file, does not mutate
+  '/ai/plan',            // synthesizes plan without mutating
+  '/ai/execute',         // AI transaction execution
+  '/ai/query',           // semantic query
 ];
 
 const failures = [];

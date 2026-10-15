@@ -397,8 +397,35 @@ Also established: `mesh_hlr` handles foreign IFC geometry (the external `sample_
 
 Flagged as blocked on that basis. Unblocking it requires one of: a reviewer confirming the drawings pass; a reviewer naming what is wrong; or a decision to accept the structural verification and record the visual check as an accepted open item.
 
-### P6 — Sheets, PDF, validation (README M4); P7 — AI driver layer (README M5)
-Unchanged in content from the spec; entry criterion for P7 is now strictly gated on the P1 parity audit having been green since P1 (the AI plans against the same bus the UI uses — any residual raw-REST path would poison it). The regex prompt-planner is explicitly a placeholder until then.
+### P6 — Sheets, Viewports, and Vector PDF Batch Export (README M4)
+
+**Status: COMPLETE (2026-10-14).** Verified by `scratch/test_sheets_pdf.py` (88 checks) plus all fifteen regression suites and UI/bus parity gates.
+
+| Item | What landed |
+|---|---|
+| View & Sheet separation invariant (§13.1) | A view is a document object that exists unplaced in `self.views`; a viewport is a placement referencing a sheet and view. Deleting a viewport or sheet removes placement and leaves the view intact. Tested & verified |
+| Placement constraints & pre-checks (§13.2) | Empty sheet numbers rejected (`"Sheet Number is empty"`). Duplicate sheet numbers rejected across scope (`"Sheet Number is already in use"`). Duplicate view placement rejected on same sheet and across model (`"Sheet views cannot contain more than one instance of '{view}'"` / `"Sheet views in this model cannot contain more than one instance of '{view}'"`). Placeholder sheets supported (`is_placeholder=True`) |
+| CommandBus transactions & Undo/Redo | `SheetCreate`, `SheetDelete`, `ViewportAdd`, `ViewportRemove`, `ViewportMove` registered as typed Pydantic v2 commands in `COMMAND_REGISTRY` (31 total commands). Full transactional undo/redo and atomic multi-command rollback |
+| Container persistence (.bimworks) | `sheets` and `views` serialized deterministically into `parametric.json` and `views/default.json`, maintaining Section 9 normalized byte-stability across save/load/save cycles |
+| Multi-page vector PDF (PyMuPDF) | `compile_sheet_to_vector_pdf` and `compile_batch_to_vector_pdf` in `ifc_service.py` compile SVG viewports into pure vector multi-page PDFs using PyMuPDF (`insert_pdf` with zero rasterization) |
+| REST endpoints & State bundle | Bus-backed REST shims in `backend/main.py`; `GET /api/sheets`, `GET /api/views`, `POST /api/export/batch-pdf`. State bundle `/api/state` includes `sheets`, `views` and latency timings |
+| Frontend store integration | Registered in `UI_ACTION_COMMANDS`; all sheet/viewport actions route through `dispatchTransaction`. `npm run check` clean (130 UI checks, 30 state bundle checks) |
+
+### P7 — AI Driver Layer (README M5)
+
+### P7 — Typesafe AI Driver Layer & MCP Server (README M5)
+
+**Status: COMPLETE (2026-10-14).** Verified by `scratch/test_ai_driver.py` (94 checks) plus all sixteen regression suites, UI gate (130 checks), and state bundle gate (30 checks).
+
+| Item | What landed |
+|---|---|
+| Tier 0 Command Catalog Export | `ai_driver.get_tool_catalog()` exports JSON Schema 2020-12 representations of all 31 registered commands from `COMMAND_REGISTRY`, formatted for LLM function calling and MCP. Exposed via `GET /api/ai/tools` and `GET /api/commands/schema` |
+| Semantic Query Engine & Context Grounding | `SemanticQueryEngine` in `backend/ai_driver.py`: `describe_scene()` (envelope width/depth/bounds, element counts, levels, sheets), `query_elements()`, `get_element()`. Cardinal direction classification (`classify_cardinal_walls`) and relative reference resolution (`resolve_target_wall` maps "the south wall", "north facade", "east side" to exact GUIDs) |
+| Typesafe AI Planner | `AiPlanner` translates natural language prompts into typed `AiPlan` transactions with command parameters validated against Pydantic schemas. Includes 10 architectural patterns (perimeter enclosures, walls, hosted doors/windows, slabs, roofs, EQ constraints, sheets/viewports, levels, element transformations) |
+| Atomic Execution & Post-Condition Rollback | `execute_plan` commits transactions on the CommandBus tagged with `origin="ai"`. Evaluates post-condition assertions (`element_count_at_least`, `wall_length_approx`, `opening_hosted`, `sheet_exists`). If any assertion fails, the entire transaction is rolled back atomically via `command_bus.undo()` and raises `AssertionError` |
+| Parametric Macro Skills (`.bwskill`) | `SkillDefinition` parameterized macros supporting parameter overrides (`run skill perimeter_box width 50 depth 35`) with recursive variable substitution (`$width`, `$depth`, `$height`) into command parameters and post-conditions |
+| Standard MCP Server | `backend/mcp_server.py` implements standard Model Context Protocol over stdio (JSON-RPC 2.0: `initialize`, `tools/list`, `tools/call`, `ping`). Connects external AI agents (Antigravity, Cursor, Claude Desktop, DSH) directly to the CommandBus |
+| Frontend Store Integration | `generateAiPlan` in `useBimStore.ts` queries backend `/api/ai/plan` with client fallback. `PromptBar` dispatches verified `ai` transactions. Parity gate clean (130 UI checks, 30 state bundle checks) |
 
 ---
 

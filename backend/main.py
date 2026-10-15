@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from ifc_service import bim_manager, CONTAINER_EXTENSION, CONTAINER_EXTENSIONS
 from command_bus import command_bus, CommandRequest, TransactionRequest, COMMAND_REGISTRY
+from ai_driver import ai_driver, AiPlan, AiContext
 
 app = FastAPI(title="BIMWorks BIM Sidecar", version="2.1.0")
 
@@ -218,6 +219,61 @@ class WallJoinRequest(BaseModel):
     end_index: int
     allow_join: bool = True
     mode: str = "butt"
+
+
+class SheetCreateRequest(BaseModel):
+    sheet_number: str
+    sheet_title: Optional[str] = "Unnamed Sheet"
+    paper_size: Optional[str] = "ARCH_D"
+    is_placeholder: bool = False
+    sheet_id: Optional[str] = None
+    drawn_by: Optional[str] = "BIMWorks Architect"
+    date: Optional[str] = None
+
+
+class ViewportAddRequest(BaseModel):
+    view_id: str
+    x: float
+    y: float
+    width: Optional[float] = 480.0
+    height: Optional[float] = 360.0
+    scale_factor: Optional[float] = 1.0
+    viewport_id: Optional[str] = None
+
+
+class ViewportMoveRequest(BaseModel):
+    x: float
+    y: float
+    sheet_id: Optional[str] = None
+
+
+class BatchSheetPdfRequest(BaseModel):
+    sheets: List[SheetPdfRequest]
+    filename: Optional[str] = "Batch_Sheets_Export"
+
+
+class AiPlanRequest(BaseModel):
+    prompt: str
+    active_view_id: Optional[str] = "view-level-1"
+    active_level_id: Optional[str] = None
+    selected_guids: List[str] = []
+
+
+class AiExecuteRequest(BaseModel):
+    plan: Optional[Dict[str, Any]] = None
+    prompt: Optional[str] = None
+    active_view_id: Optional[str] = "view-level-1"
+    selected_guids: List[str] = []
+
+
+class AiQueryRequest(BaseModel):
+    category: Optional[str] = None
+    level_id: Optional[str] = None
+    host_wall_guid: Optional[str] = None
+    min_x: Optional[float] = None
+    max_x: Optional[float] = None
+    min_y: Optional[float] = None
+    max_y: Optional[float] = None
 
 
 # Endpoints
@@ -537,6 +593,84 @@ def export_sheet_pdf(req: SheetPdfRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/export/batch-pdf")
+def export_batch_pdf(req: BatchSheetPdfRequest):
+    """Compiles multiple Sheet SVGs into a single multi-page vector PDF."""
+    try:
+        svg_list = [s.svg_content for s in req.sheets]
+        pdf_bytes = bim_manager.compile_batch_to_vector_pdf(svg_list)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{req.filename}.pdf"'},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/sheets")
+def get_sheets():
+    """Returns all sheets with placed viewports."""
+    return bim_manager.get_sheets()
+
+
+@app.get("/api/views")
+def get_views():
+    """Returns all views in the model."""
+    return bim_manager.get_views()
+
+
+@app.post("/api/sheet")
+def create_sheet(req: SheetCreateRequest):
+    """Creates a new sheet via CommandBus."""
+    return run_mutation(
+        [CommandRequest(command="SheetCreate", params=req.model_dump())],
+        description=f"Create Sheet {req.sheet_number}",
+    )
+
+
+@app.delete("/api/sheet/{sheet_id}")
+def delete_sheet(sheet_id: str):
+    """Deletes a sheet via CommandBus."""
+    return run_mutation(
+        [CommandRequest(command="SheetDelete", params={"sheet_id": sheet_id})],
+        description=f"Delete Sheet {sheet_id}",
+    )
+
+
+@app.post("/api/sheet/{sheet_id}/viewport")
+def add_viewport_to_sheet(sheet_id: str, req: ViewportAddRequest):
+    """Places a viewport on a sheet via CommandBus."""
+    params = req.model_dump()
+    params["sheet_id"] = sheet_id
+    return run_mutation(
+        [CommandRequest(command="ViewportAdd", params=params)],
+        description=f"Add Viewport to Sheet {sheet_id}",
+    )
+
+
+@app.delete("/api/sheet/viewport/{viewport_id}")
+def remove_viewport_from_sheet(viewport_id: str, sheet_id: Optional[str] = None):
+    """Removes a viewport from a sheet via CommandBus."""
+    return run_mutation(
+        [CommandRequest(command="ViewportRemove", params={"viewport_id": viewport_id, "sheet_id": sheet_id})],
+        description=f"Remove Viewport {viewport_id}",
+    )
+
+
+@app.post("/api/sheet/viewport/{viewport_id}/move")
+def move_viewport(viewport_id: str, req: ViewportMoveRequest):
+    """Moves a viewport on a sheet via CommandBus."""
+    params = req.model_dump()
+    params["viewport_id"] = viewport_id
+    if req.sheet_id:
+        params["sheet_id"] = req.sheet_id
+    return run_mutation(
+        [CommandRequest(command="ViewportMove", params=params)],
+        description=f"Move Viewport {viewport_id}",
+    )
+
+
 @app.get("/api/export/ifc")
 def export_ifc():
     """Generates and returns standard IFC4 STEP file."""
@@ -726,6 +860,73 @@ def get_transaction_journal(limit: int = 50):
     return command_bus.get_journal(limit=limit)
 
 
+# ============================================================================
+# TIER 1 & TIER 2 AI DRIVER ENDPOINTS
+# ============================================================================
+
+@app.get("/api/ai/tools")
+def get_ai_tools():
+    """Returns tools catalog and JSON Schema 2020-12 specifications for external AI agents and MCP."""
+    return ai_driver.get_tool_catalog()
+
+
+@app.get("/api/ai/describe")
+def describe_ai_scene():
+    """Returns semantic scene description (envelope bounds, cardinal walls, element counts)."""
+    return ai_driver.query_engine.describe_scene()
+
+
+@app.post("/api/ai/query")
+def query_ai_elements(req: AiQueryRequest):
+    """Executes semantic filter queries against active architectural model."""
+    return ai_driver.query_engine.query_elements(
+        category=req.category,
+        level_id=req.level_id,
+        host_wall_guid=req.host_wall_guid,
+        min_x=req.min_x,
+        max_x=req.max_x,
+        min_y=req.min_y,
+        max_y=req.max_y,
+    )
+
+
+@app.post("/api/ai/plan")
+def plan_ai_prompt(req: AiPlanRequest):
+    """Synthesizes and validates a typed plan against CommandBus schemas."""
+    try:
+        ctx = AiContext(
+            active_view_id=req.active_view_id,
+            active_level_id=req.active_level_id,
+            selected_guids=req.selected_guids,
+        )
+        plan = ai_driver.plan(req.prompt, ctx)
+        return plan.model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/ai/execute")
+def execute_ai_plan(req: AiExecuteRequest):
+    """Executes a plan (or plans and executes a prompt) with atomic rollback on assertion failure."""
+    try:
+        if req.plan:
+            plan = AiPlan(**req.plan)
+        elif req.prompt:
+            ctx = AiContext(
+                active_view_id=req.active_view_id,
+                selected_guids=req.selected_guids,
+            )
+            plan = ai_driver.plan(req.prompt, ctx)
+        else:
+            raise ValueError("Either 'plan' or 'prompt' must be provided")
+
+        return ai_driver.execute_plan(plan)
+    except AssertionError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # ---------------------------------------------------------------------------
 # Post-commit state bundle - SPECIFICATION-v0.2.md 6.3
 # ---------------------------------------------------------------------------
@@ -817,6 +1018,8 @@ def get_state_bundle(
     geometry = timed_soft("geometry", lambda: bim_manager.get_geometry_buffers())
     slice2d = timed_soft("slice2d", _slice)
     journal = timed_soft("journal", lambda: command_bus.get_journal(limit=journal_limit))
+    sheets = timed_soft("sheets", lambda: bim_manager.get_sheets())
+    views = timed_soft("views", lambda: bim_manager.get_views())
 
     total_ms = round((_time.perf_counter() - t_total) * 1000.0, 2)
     return {
@@ -826,6 +1029,8 @@ def get_state_bundle(
         "geometry": geometry,
         "slice2d": slice2d,
         "journal": journal,
+        "sheets": sheets,
+        "views": views,
         "timings": timings,
         "errors": errors,
         "engine_ms": total_ms,

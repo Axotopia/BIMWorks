@@ -249,6 +249,129 @@ class BimModelManager:
         self.apply_georeferencing()
         self.load_constraints_from_ifc()
 
+        # Views & Sheets subsystem (P6 / SPECIFICATION-v0.2.md §13)
+        self.views: Dict[str, Dict[str, Any]] = {
+            "view-3d": {
+                "id": "view-3d",
+                "name": "{3D}",
+                "type": "3d",
+                "scale": '1/8" = 1\'-0"',
+                "detail_level": "medium",
+                "visual_style": "consistent_colors",
+                "view_range": {"top": 8.0, "cut": 4.0, "bottom": 0.0, "view_depth": 0.0},
+            },
+            "view-level-1": {
+                "id": "view-level-1",
+                "name": "Floor Plan: Level 1",
+                "type": "floor_plan",
+                "level_id": "level_1",
+                "scale": '1/4" = 1\'-0"',
+                "detail_level": "medium",
+                "visual_style": "hidden_line",
+                "view_range": {"top": 8.0, "cut": 4.0, "bottom": 0.0, "view_depth": 0.0},
+            },
+            "view-level-2": {
+                "id": "view-level-2",
+                "name": "Floor Plan: Level 2",
+                "type": "floor_plan",
+                "level_id": "level_2",
+                "scale": '1/4" = 1\'-0"',
+                "detail_level": "medium",
+                "visual_style": "hidden_line",
+                "view_range": {"top": 8.0, "cut": 4.0, "bottom": 0.0, "view_depth": 0.0},
+            },
+            "view-roof": {
+                "id": "view-roof",
+                "name": "Floor Plan: Roof",
+                "type": "floor_plan",
+                "level_id": "roof",
+                "scale": '1/4" = 1\'-0"',
+                "detail_level": "medium",
+                "visual_style": "hidden_line",
+                "view_range": {"top": 30.0, "cut": 20.0, "bottom": 0.0, "view_depth": 0.0},
+            },
+            "view-elev-s": {
+                "id": "view-elev-s",
+                "name": "Elevation: South",
+                "type": "elevation",
+                "scale": '1/4" = 1\'-0"',
+                "detail_level": "medium",
+                "visual_style": "hidden_line",
+                "view_range": {"top": 8.0, "cut": 4.0, "bottom": 0.0, "view_depth": 0.0},
+            },
+            "view-elev-n": {
+                "id": "view-elev-n",
+                "name": "Elevation: North",
+                "type": "elevation",
+                "scale": '1/4" = 1\'-0"',
+                "detail_level": "medium",
+                "visual_style": "hidden_line",
+                "view_range": {"top": 8.0, "cut": 4.0, "bottom": 0.0, "view_depth": 0.0},
+            },
+            "view-elev-e": {
+                "id": "view-elev-e",
+                "name": "Elevation: East",
+                "type": "elevation",
+                "scale": '1/4" = 1\'-0"',
+                "detail_level": "medium",
+                "visual_style": "hidden_line",
+                "view_range": {"top": 8.0, "cut": 4.0, "bottom": 0.0, "view_depth": 0.0},
+            },
+            "view-elev-w": {
+                "id": "view-elev-w",
+                "name": "Elevation: West",
+                "type": "elevation",
+                "scale": '1/4" = 1\'-0"',
+                "detail_level": "medium",
+                "visual_style": "hidden_line",
+                "view_range": {"top": 8.0, "cut": 4.0, "bottom": 0.0, "view_depth": 0.0},
+            },
+            "view-sect-a": {
+                "id": "view-sect-a",
+                "name": "Section: Building Section 1",
+                "type": "section",
+                "scale": '1/4" = 1\'-0"',
+                "detail_level": "medium",
+                "visual_style": "hidden_line",
+                "view_range": {"top": 8.0, "cut": 4.0, "bottom": 0.0, "view_depth": 0.0},
+            },
+        }
+
+        self.sheets: Dict[str, Dict[str, Any]] = {
+            "sheet-a101": {
+                "id": "sheet-a101",
+                "sheet_number": "A101",
+                "sheet_title": "FLOOR PLAN & SECTIONS",
+                "paper_size": "ARCH_D",
+                "project_name": self.project_name,
+                "date": "2026-10-13",
+                "drawn_by": "BIMWorks Architect",
+                "is_placeholder": False,
+                "viewports": [
+                    {
+                        "id": "vp-1",
+                        "view_id": "view-level-1",
+                        "x": 80.0,
+                        "y": 120.0,
+                        "width": 480.0,
+                        "height": 380.0,
+                        "scale_factor": 1.0,
+                    }
+                ],
+            },
+            "sheet-a201": {
+                "id": "sheet-a201",
+                "sheet_number": "A201",
+                "sheet_title": "BUILDING ELEVATIONS",
+                "paper_size": "ARCH_D",
+                "project_name": self.project_name,
+                "date": "2026-10-13",
+                "drawn_by": "BIMWorks Architect",
+                "is_placeholder": False,
+                "viewports": [],
+            },
+        }
+
     # ------------------------------------------------------------------
     # Transactional state snapshots (GLM Master Spec v2.3 §3.2)
     # A snapshot captures the complete IFC STEP text plus all in-memory
@@ -285,6 +408,8 @@ class BimModelManager:
             "levels_entity_refs": levels_refs,
             "constraints": copy.deepcopy(self.constraints),
             "join_policies": copy.deepcopy(self.join_policies),
+            "sheets": copy.deepcopy(self.sheets),
+            "views": copy.deepcopy(self.views),
             "georeference_data": copy.deepcopy(self.georeference_data),
             "project_name": self.project_name,
         }
@@ -368,6 +493,8 @@ class BimModelManager:
 
         self.constraints = copy.deepcopy(snap["constraints"])
         self.join_policies = copy.deepcopy(snap["join_policies"])
+        self.sheets = copy.deepcopy(snap.get("sheets", {}))
+        self.views = copy.deepcopy(snap.get("views", {}))
         self.georeference_data = copy.deepcopy(snap["georeference_data"])
         self.project_name = snap["project_name"]
 
@@ -3117,6 +3244,27 @@ class BimModelManager:
         except Exception as e:
             print(f"Notice: join recompute after overlay rebuild failed: {e}")
 
+        # Sheets and Views from the overlay (P6 / SPECIFICATION-v0.2.md §13)
+        if "sheets" in overlay and isinstance(overlay["sheets"], (list, dict)):
+            raw_sheets = overlay["sheets"]
+            self.sheets = {}
+            if isinstance(raw_sheets, list):
+                for s in raw_sheets:
+                    sid = s.get("id") or f"sheet-{uuid.uuid4().hex[:8]}"
+                    self.sheets[sid] = copy.deepcopy(s)
+            elif isinstance(raw_sheets, dict):
+                self.sheets = copy.deepcopy(raw_sheets)
+
+        if "views" in overlay and isinstance(overlay["views"], (list, dict)):
+            raw_views = overlay["views"]
+            self.views = {}
+            if isinstance(raw_views, list):
+                for v in raw_views:
+                    vid = v.get("id") or f"view-{uuid.uuid4().hex[:8]}"
+                    self.views[vid] = copy.deepcopy(v)
+            elif isinstance(raw_views, dict):
+                self.views = copy.deepcopy(raw_views)
+
         if reported_ifc_guids:
             overlay_guids = set(elements.keys())
             report["unparametrized"] = sorted(reported_ifc_guids - overlay_guids - set(report["rebuilt"]))
@@ -4180,15 +4328,179 @@ class BimModelManager:
         return contract
 
     # =========================================================================
-    # VECTOR PDF COMPILATION & SHEET ENGINE
+    # VECTOR PDF COMPILATION & SHEET ENGINE (P6 / SPECIFICATION-v0.2.md §13)
     # =========================================================================
+
+    def add_sheet(
+        self,
+        sheet_number: str,
+        sheet_title: str = "Unnamed Sheet",
+        paper_size: str = "ARCH_D",
+        is_placeholder: bool = False,
+        sheet_id: Optional[str] = None,
+        drawn_by: str = "BIMWorks Architect",
+        date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Creates a new sheet in the model.
+        Enforces §13.2 constraints:
+          - Sheet number required (cannot be empty)
+          - Sheet number unique per scope
+        """
+        if not sheet_number or not sheet_number.strip():
+            raise ValueError("Sheet Number is empty")
+
+        num_clean = sheet_number.strip()
+        for sid, s in self.sheets.items():
+            if sid != sheet_id and s.get("sheet_number", "").strip().lower() == num_clean.lower():
+                raise ValueError(f"Sheet Number is already in use. Enter a unique number: '{num_clean}'")
+
+        sid = sheet_id or f"sheet-{uuid.uuid4().hex[:8]}"
+        new_sheet = {
+            "id": sid,
+            "sheet_number": num_clean,
+            "sheet_title": sheet_title.strip() if sheet_title else "Unnamed Sheet",
+            "paper_size": paper_size,
+            "project_name": self.project_name,
+            "date": date or "2026-10-13",
+            "drawn_by": drawn_by,
+            "is_placeholder": is_placeholder,
+            "viewports": [],
+        }
+        self.sheets[sid] = new_sheet
+        return new_sheet
+
+    def delete_sheet(self, sheet_id: str) -> bool:
+        """
+        Deletes a sheet and its placed viewports.
+        Invariant §13.1: Deleting a viewport/sheet removes placements,
+        but NEVER deletes the referenced view.
+        """
+        if sheet_id not in self.sheets:
+            raise ValueError(f"Sheet '{sheet_id}' not found")
+        del self.sheets[sheet_id]
+        return True
+
+    def add_viewport_to_sheet(
+        self,
+        sheet_id: str,
+        view_id: str,
+        x: float,
+        y: float,
+        width: float = 480.0,
+        height: float = 360.0,
+        scale_factor: float = 1.0,
+        viewport_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Places a view on a sheet.
+        Enforces §13.1 and §13.2 invariants & constraints:
+          - Views and placement are separate objects
+          - View must exist in self.views
+          - A view appears at most once per sheet
+          - A view appears at most once across all sheets in the model
+        """
+        if sheet_id not in self.sheets:
+            raise ValueError(f"Sheet '{sheet_id}' not found")
+        if view_id not in self.views:
+            raise ValueError(f"View '{view_id}' not found")
+
+        view_def = self.views[view_id]
+        view_name = view_def.get("name", view_id)
+
+        target_sheet = self.sheets[sheet_id]
+        # §13.2 Constraint: A view appears at most once per sheet
+        for vp in target_sheet.get("viewports", []):
+            if vp.get("view_id") == view_id:
+                raise ValueError(f"Sheet views cannot contain more than one instance of '{view_name}'")
+
+        # §13.2 Constraint: A view appears at most once in the model across sheets
+        for sid, s in self.sheets.items():
+            for vp in s.get("viewports", []):
+                if vp.get("view_id") == view_id:
+                    raise ValueError(f"Sheet views in this model cannot contain more than one instance of '{view_name}'")
+
+        vp_id = viewport_id or f"vp-{uuid.uuid4().hex[:8]}"
+        vp = {
+            "id": vp_id,
+            "view_id": view_id,
+            "x": float(x),
+            "y": float(y),
+            "width": float(width),
+            "height": float(height),
+            "scale_factor": float(scale_factor),
+        }
+        target_sheet.setdefault("viewports", []).append(vp)
+        return vp
+
+    def remove_viewport_from_sheet(self, viewport_id: str, sheet_id: Optional[str] = None) -> bool:
+        """
+        Removes a viewport from its sheet.
+        Invariant §13.1: Deleting a viewport removes placement, NEVER deletes the view.
+        """
+        found = False
+        for sid, s in self.sheets.items():
+            if sheet_id and sid != sheet_id:
+                continue
+            vps = s.get("viewports", [])
+            new_vps = [vp for vp in vps if vp.get("id") != viewport_id]
+            if len(new_vps) < len(vps):
+                s["viewports"] = new_vps
+                found = True
+                break
+        if not found:
+            raise ValueError(f"Viewport '{viewport_id}' not found")
+        return True
+
+    def move_viewport(self, viewport_id: str, x: float, y: float, sheet_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Translates a placed viewport in sheet coordinates.
+        """
+        for sid, s in self.sheets.items():
+            if sheet_id and sid != sheet_id:
+                continue
+            for vp in s.get("viewports", []):
+                if vp.get("id") == viewport_id:
+                    vp["x"] = float(x)
+                    vp["y"] = float(y)
+                    return vp
+        raise ValueError(f"Viewport '{viewport_id}' not found")
+
+    def get_sheets(self) -> List[Dict[str, Any]]:
+        """
+        Returns all sheets with both snake_case and camelCase keys for UI compatibility.
+        """
+        res = []
+        for sid in sorted(self.sheets.keys()):
+            s = self.sheets[sid]
+            item = copy.deepcopy(s)
+            item["sheetNumber"] = item.get("sheet_number")
+            item["sheetTitle"] = item.get("sheet_title")
+            item["paperSize"] = item.get("paper_size")
+            item["projectName"] = item.get("project_name")
+            item["drawnBy"] = item.get("drawn_by")
+            item["isPlaceholder"] = item.get("is_placeholder", False)
+            vps = []
+            for vp in item.get("viewports", []):
+                v_copy = copy.deepcopy(vp)
+                v_copy["viewId"] = v_copy.get("view_id")
+                v_copy["scaleFactor"] = v_copy.get("scale_factor", 1.0)
+                vps.append(v_copy)
+            item["viewports"] = vps
+            res.append(item)
+        return res
+
+    def get_views(self) -> List[Dict[str, Any]]:
+        """
+        Returns all registered views.
+        """
+        return [copy.deepcopy(self.views[vid]) for vid in sorted(self.views.keys())]
 
     def compile_sheet_to_vector_pdf(self, svg_content: str) -> bytes:
         """
         Compiles pure vector Sheet SVG into print-ready, vectorized PDF.
         Maintains 100% scalable vector linework and searchable text.
         """
-        # Ensure standard XML header
         clean_svg = svg_content.strip()
         if not clean_svg.startswith("<?xml"):
             clean_svg = '<?xml version="1.0" encoding="UTF-8"?>\n' + clean_svg
@@ -4197,6 +4509,24 @@ class BimModelManager:
         svg_doc = pymupdf.open("svg", svg_bytes)
         pdf_bytes = svg_doc.convert_to_pdf()
         return pdf_bytes
+
+    def compile_batch_to_vector_pdf(self, svg_contents: List[str]) -> bytes:
+        """
+        Compiles multiple Sheet SVGs into a single multi-page vectorized PDF.
+        """
+        if not svg_contents:
+            return b""
+        combined_doc = pymupdf.open()
+        for svg_content in svg_contents:
+            clean_svg = svg_content.strip()
+            if not clean_svg.startswith("<?xml"):
+                clean_svg = '<?xml version="1.0" encoding="UTF-8"?>\n' + clean_svg
+            svg_bytes = clean_svg.encode("utf-8")
+            page_svg_doc = pymupdf.open("svg", svg_bytes)
+            page_pdf_bytes = page_svg_doc.convert_to_pdf()
+            page_pdf = pymupdf.open("pdf", page_pdf_bytes)
+            combined_doc.insert_pdf(page_pdf)
+        return combined_doc.tobytes()
 
     def export_ifc_step(self, filepath: Optional[str] = None) -> str:
         """Serializes in-memory model to valid standard IFC4 STEP file."""
@@ -4251,6 +4581,8 @@ class BimModelManager:
             "internal_units": INTERNAL_UNIT,
             "constraints": self._jsonable(self.constraints),
             "join_policies": self._jsonable(self.join_policies),
+            "sheets": self._jsonable(sorted(list(self.sheets.values()), key=lambda s: s["id"])),
+            "views": self._jsonable(sorted(list(self.views.values()), key=lambda v: v["id"])),
             "levels": [
                 {"id": lid, "name": lv.get("name"), "elevation": self._jsonable(lv.get("elevation", 0.0))}
                 for lid, lv in self.levels.items()
@@ -4263,19 +4595,7 @@ class BimModelManager:
 
         # 3. View templates and settings
         views_data = {
-            "views": [
-                {
-                    "id": "floor_plan_level_1",
-                    "name": "Level 1 Floor Plan",
-                    "view_type": "floor_plan",
-                    "cut_elevation": 1.2,
-                    "top_clip": 2.3,
-                    "bottom_clip": 0.0,
-                    "view_depth": -1.2,
-                    "detail_level": "medium",
-                    "visual_style": "consistent_colors",
-                }
-            ]
+            "views": self._jsonable(sorted(list(self.views.values()), key=lambda v: v["id"]))
         }
 
         # 4. Meta manifest

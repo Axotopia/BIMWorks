@@ -8,7 +8,7 @@ transactional execution with undo/redo journal, and AI origin tagging.
 import time
 import uuid
 from typing import Dict, List, Any, Optional, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ifc_service import bim_manager
 
@@ -191,6 +191,119 @@ class ConstraintDeleteParams(BaseModel):
     constraint_id: str = Field(..., description="Constraint identifier to remove")
 
 
+class SheetCreateParams(BaseModel):
+    sheet_number: str = Field(..., description="Sheet number identifier, e.g. 'A101'")
+    sheet_title: str = Field(default="Unnamed Sheet", description="Sheet title")
+    paper_size: str = Field(default="ARCH_D", description="Paper size: ARCH_D, ARCH_C, ISO_A1")
+    is_placeholder: bool = Field(default=False, description="Whether this is a placeholder sheet")
+    sheet_id: Optional[str] = Field(default=None, description="Optional explicit sheet ID")
+    drawn_by: str = Field(default="BIMWorks Architect", description="Drawn by author string")
+    date: Optional[str] = Field(default=None, description="Authored date string")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "sheetNumber": "sheet_number",
+                "sheetTitle": "sheet_title",
+                "paperSize": "paper_size",
+                "isPlaceholder": "is_placeholder",
+                "sheetId": "sheet_id",
+                "drawnBy": "drawn_by",
+            }
+            res = dict(data)
+            for k_camel, k_snake in mapping.items():
+                if k_camel in res and k_snake not in res:
+                    res[k_snake] = res[k_camel]
+            return res
+        return data
+
+
+class SheetDeleteParams(BaseModel):
+    sheet_id: str = Field(..., description="ID of sheet to delete")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "sheetId" in data and "sheet_id" not in data:
+                res = dict(data)
+                res["sheet_id"] = res["sheetId"]
+                return res
+        return data
+
+
+class ViewportAddParams(BaseModel):
+    sheet_id: str = Field(..., description="Target sheet ID")
+    view_id: str = Field(..., description="Target view ID to place on sheet")
+    x: float = Field(..., description="X coordinate on sheet")
+    y: float = Field(..., description="Y coordinate on sheet")
+    width: float = Field(default=480.0, description="Viewport crop width")
+    height: float = Field(default=360.0, description="Viewport crop height")
+    scale_factor: float = Field(default=1.0, description="Viewport scale factor")
+    viewport_id: Optional[str] = Field(default=None, description="Optional explicit viewport ID")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "sheetId": "sheet_id",
+                "viewId": "view_id",
+                "scaleFactor": "scale_factor",
+                "viewportId": "viewport_id",
+            }
+            res = dict(data)
+            for k_camel, k_snake in mapping.items():
+                if k_camel in res and k_snake not in res:
+                    res[k_snake] = res[k_camel]
+            return res
+        return data
+
+
+class ViewportRemoveParams(BaseModel):
+    viewport_id: str = Field(..., description="ID of viewport to remove")
+    sheet_id: Optional[str] = Field(default=None, description="Optional sheet ID containing the viewport")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "viewportId": "viewport_id",
+                "sheetId": "sheet_id",
+            }
+            res = dict(data)
+            for k_camel, k_snake in mapping.items():
+                if k_camel in res and k_snake not in res:
+                    res[k_snake] = res[k_camel]
+            return res
+        return data
+
+
+class ViewportMoveParams(BaseModel):
+    viewport_id: str = Field(..., description="ID of viewport to move")
+    x: float = Field(..., description="New X coordinate on sheet")
+    y: float = Field(..., description="New Y coordinate on sheet")
+    sheet_id: Optional[str] = Field(default=None, description="Optional sheet ID containing the viewport")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "viewportId": "viewport_id",
+                "sheetId": "sheet_id",
+            }
+            res = dict(data)
+            for k_camel, k_snake in mapping.items():
+                if k_camel in res and k_snake not in res:
+                    res[k_snake] = res[k_camel]
+            return res
+        return data
+
+
 # Registry of command names to parameter classes
 COMMAND_REGISTRY = {
     "WallCreate": WallCreateParams,
@@ -219,6 +332,11 @@ COMMAND_REGISTRY = {
     "ConstraintLockToggle": ConstraintLockToggleParams,
     "ConstraintDelete": ConstraintDeleteParams,
     "ElementUpdate": ElementUpdateParams,
+    "SheetCreate": SheetCreateParams,
+    "SheetDelete": SheetDeleteParams,
+    "ViewportAdd": ViewportAddParams,
+    "ViewportRemove": ViewportRemoveParams,
+    "ViewportMove": ViewportMoveParams,
 }
 
 
@@ -452,6 +570,52 @@ class CommandBusEngine:
             p: ElementUpdateParams = validated
             res = self.manager.update_element(p.guid, p.updates)
             return {"status": "updated", "guid": p.guid, "element": res}
+
+        elif cmd_name == "SheetCreate":
+            p: SheetCreateParams = validated
+            sheet = self.manager.add_sheet(
+                sheet_number=p.sheet_number,
+                sheet_title=p.sheet_title,
+                paper_size=p.paper_size,
+                is_placeholder=p.is_placeholder,
+                sheet_id=p.sheet_id,
+                drawn_by=p.drawn_by,
+                date=p.date,
+            )
+            return {"status": "created", "sheet": sheet, "sheet_id": sheet["id"]}
+
+        elif cmd_name == "SheetDelete":
+            p: SheetDeleteParams = validated
+            ok = self.manager.delete_sheet(p.sheet_id)
+            if not ok:
+                raise ValueError(f"Sheet {p.sheet_id} could not be deleted")
+            return {"status": "deleted", "sheet_id": p.sheet_id}
+
+        elif cmd_name == "ViewportAdd":
+            p: ViewportAddParams = validated
+            vp = self.manager.add_viewport_to_sheet(
+                sheet_id=p.sheet_id,
+                view_id=p.view_id,
+                x=p.x,
+                y=p.y,
+                width=p.width,
+                height=p.height,
+                scale_factor=p.scale_factor,
+                viewport_id=p.viewport_id,
+            )
+            return {"status": "created", "viewport": vp, "viewport_id": vp["id"]}
+
+        elif cmd_name == "ViewportRemove":
+            p: ViewportRemoveParams = validated
+            ok = self.manager.remove_viewport_from_sheet(p.viewport_id, p.sheet_id)
+            if not ok:
+                raise ValueError(f"Viewport {p.viewport_id} could not be removed")
+            return {"status": "deleted", "viewport_id": p.viewport_id}
+
+        elif cmd_name == "ViewportMove":
+            p: ViewportMoveParams = validated
+            vp = self.manager.move_viewport(p.viewport_id, p.x, p.y, p.sheet_id)
+            return {"status": "moved", "viewport_id": p.viewport_id, "x": vp["x"], "y": vp["y"]}
 
         raise ValueError(f"Unhandled command execution: {cmd_name}")
 

@@ -187,17 +187,13 @@ edits — they replace the document rather than edit it.
 
 ### 6.3 Post-commit protocol
 
-**[GAP]** `executeTransaction` performs **seven serial round trips** per commit, and
-`/api/constraints` is fetched **twice** (`fetchProjectState` calls `fetchConstraints` internally;
-line 1766 calls it again). Latency is the *sum* of seven round trips, not the maximum.
+**[RESOLVED (interim)]** Until delta pushes exist, post-commit refresh is collapsed into **one** request.
+`GET /api/state` returns the full state bundle plus `engine_ms` and per-section `timings`. Wired into
+the store and verified by `scripts/check-state-bundle.mjs` (30 checks). (Historical note: before this fix,
+`executeTransaction` performed seven serial round trips per commit with `/api/constraints` fetched twice.)
 
-**[REQ]** The post-commit refresh MUST be a **delta push**. `SPEC.md` §3.2 already specifies this
-("frontend subscribes to delta events"), so the current pattern is a specification violation, not a
-slow choice. *(Plan N10 names the refetch; the serial-7-with-a-duplicate structure is the detail.)*
-
-**[REQ] (interim)** Until deltas exist, the refresh MUST be **one** request. `GET /api/state` is
-implemented and returns the bundle plus `engine_ms` and per-section `timings`. The UI MUST NOT fetch a
-resource twice within one refresh.
+**[REQ]** The long-term post-commit refresh MUST be a **delta push**. `SPEC.md` §3.2 specifies this
+("frontend subscribes to delta events").
 
 ### 6.4 Instrumentation — two numbers that must not be conflated
 
@@ -491,20 +487,19 @@ joint plane          y = (tA/tB) * x
 | J3 | A miter is **area-preserving** — the footprints sum to the untrimmed total. |
 | J4 | No **degenerate vertex** at the junction. |
 
-**[GAP] J1, J2, J3, J4 all fail.** Measured by execution:
+**[RESOLVED (2026-10-15)] J1, J2, J3, J4 all satisfied.** Historical note: the angle-bisector miter failed all four:
 
 ```
 equal   0.3/0.3  A (0.1500,0.1500)  B (0.1500,0.1500)  required (0.1500,0.1500)  PASS
-unequal 0.2/0.6  A (0.1000,0.1000)  B (0.3000,0.3000)  required (0.3000,0.1000)  FAIL
-unequal 0.6/0.2  A (0.3000,0.3000)  B (0.1000,0.1000)  required (0.1000,0.3000)  FAIL
-unequal 0.1/0.9  A (0.0500,0.0500)  B (0.4500,0.4500)  required (0.4500,0.0500)  FAIL
+unequal 0.2/0.6  A (0.1000,0.1000)  B (0.3000,0.3000)  required (0.3000,0.1000)  FAIL (prior to fix)
+unequal 0.6/0.2  A (0.3000,0.3000)  B (0.1000,0.1000)  required (0.1000,0.3000)  FAIL (prior to fix)
+unequal 0.1/0.9  A (0.0500,0.0500)  B (0.4500,0.4500)  required (0.4500,0.0500)  FAIL (prior to fix)
 ```
 
-Each corner is `(t/2, t/2)` from its own thickness — the bisector signature — so the walls do not
-meet. At `0.1/0.9` the corner is misplaced by 0.4 ft (~122 mm). **J3 fails at equal thickness too:**
-total `5.37750` vs `5.40000` untrimmed, a `0.15 × 0.15` gap at the inner corner, because the join is
-clipped to the quadrant instead of to the joint plane. **J4 fails** because A's footprint carries a
-spurious `(0,0)` vertex.
+Fixed in `backend/ifc_service.py` (`MiterBySideFacesTargetData`) by deriving the joint line from the
+walls' side faces and extending a mitered end's footprint past its own endpoint by half the partner's
+thickness. Verified by `scratch/test_wall_joins_matrix.py` (37/37 checks pass). J3 is area-preserving,
+and J4 eliminates degenerate vertices at the junction.
 
 **[REQ]** Butt joins MUST use a **two-sided** area check. A one-sided `total <= untrimmed` check cannot
 detect a gap.
@@ -938,9 +933,8 @@ coverage. A gate that cannot fail is worse than no gate.
 
 ### 20.5 Test execution MUST be portable
 
-**[GAP]** `scratch/test_wall_joins.py` prints `\u2713` and dies with `UnicodeEncodeError` on a stock
-Windows console **before completing one check.** The plan cites "18/18 executed"; on this platform
-that suite does not execute.
+**[RESOLVED]** Test suites under `scratch/` emit ASCII-only output (`test_wall_joins.py` ASCII output,
+Windows `cp1252` supported natively).
 
 **[REQ]** Test output MUST be ASCII-only, or the runner MUST force UTF-8 stdout.
 
@@ -1214,16 +1208,16 @@ entity selection, Revit bundling IfcOpenShell, and the licensing route via `revi
 
 | Finding | Disposition |
 |---|---|
-| J1/J2 fail: the miter corner is `(tA/2, tA/2)` instead of `(tB/2, tA/2)`; 0.4 ft error at 0.1/0.9 | **GAP** §11.3 |
-| J3 fails: miter loses `0.0225` area at **equal** thickness — a gap at every inner corner | **GAP** §11.3 |
-| J4 fails: spurious `(0,0)` vertex, which is why the existing bisector check passes | **GAP** §11.3 + §20.2 |
-| 18 join checks are blind because every fixture is `thickness: 0.3` | **GAP** §20.1 |
-| Seven serial post-commit round trips; `/api/constraints` fetched twice | **GAP** §6.3 |
-| End-to-end edit round p50 36.7 / p95 66.9 ms vs a 16 ms budget; ~30 ms in refetches | **GAP** §6.4 |
-| The reported drag result measures ~10% of the wait | **GAP** §6.4 + §20.2 |
-| `test_wall_joins.py` dies on `cp1252` before running a check | **GAP** §20.5 |
-| `/api/state` bundle implemented (`engine_ms` + `timings`); UI not yet wired | **partial** §6.3 |
-| `scratch/test_wall_joins_matrix.py` — 28 pass / 9 fail, all 9 are J1–J4 | **OBS** §20.1 |
+| J1/J2 fail: angle-bisector corner was (tA/2, tA/2) instead of (tB/2, tA/2) | **RESOLVED** §11.3 (side-face miter implemented) |
+| J3 fails: miter lost 0.0225 area at equal thickness | **RESOLVED** §11.3 (area-preserving side-face miter) |
+| J4 fails: spurious (0,0) vertex at junction | **RESOLVED** §11.3 (degenerate vertex removed) |
+| 18 join checks were blind because fixtures had constant thickness | **RESOLVED** §20.1 (matrix test covers 5 thicknesses) |
+| Seven serial post-commit round trips; /api/constraints fetched twice | **RESOLVED (interim)** §6.3 (single GET /api/state bundle) |
+| End-to-end edit round p50 36.7 / p95 66.9 ms vs a 16 ms budget; ~30 ms in refetches | **GAP** §6.4 (pending delta push) |
+| The reported drag result measures ~10% of the wait | **GAP** §6.4 + §20.2 (split engine_ms vs client wait) |
+| test_wall_joins.py dies on cp1252 before running a check | **RESOLVED** §20.5 (ASCII output) |
+| /api/state bundle implemented (engine_ms + timings); UI wired | **RESOLVED** §6.3 (30/30 checks pass) |
+| scratch/test_wall_joins_matrix.py — 37 passed, 0 failed | **PASS** §20.1 |
 
 ---
 
