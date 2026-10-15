@@ -2003,6 +2003,12 @@ class BimModelManager:
         translated = False
 
         if ifc_class in ("IfcWall", "IfcWallStandardCase"):
+            # Capture the pre-edit ends: the join radius needs them to find the partners
+            # this move might pull away from (see `_recompute_after_joined_edit`).
+            _old_pts = [
+                (float(p[0]), float(p[1]))
+                for p in (meta.get("start"), meta.get("end")) if p
+            ]
             if "start" in meta and meta["start"]:
                 meta["start"][0] += dx
                 meta["start"][1] += dy
@@ -2028,8 +2034,13 @@ class BimModelManager:
                 meta["bbox"]["max"][1] += dy
                 meta["bbox"]["max"][2] += dz
             translated = True
-            # Rebuild join-trimmed geometry and placement from the new baseline
-            self.recompute_wall_joins()
+            # Rebuild join-trimmed geometry and placement from the new baseline, scoped
+            # to this wall and the walls it joined before or joins now.
+            _new_pts = [
+                (float(p[0]), float(p[1]))
+                for p in (meta.get("start"), meta.get("end")) if p
+            ]
+            self._recompute_after_joined_edit(guid, old_points=_old_pts, new_points=_new_pts)
 
         elif ifc_class in ("IfcDoor", "IfcWindow"):
             # Slide along the host wall.
@@ -2299,7 +2310,12 @@ class BimModelManager:
 
         meta = self.element_meta[guid]
         ifc_class = meta.get("ifc_class")
-
+        # Pre-edit ends, captured before any branch mutates them. The join radius needs
+        # them to find partners a reshape might pull away from.
+        _old_ends = [
+            (float(p[0]), float(p[1]))
+            for p in (meta.get("start"), meta.get("end")) if p
+        ]
         # Case 1: Roof or Slab
         if ifc_class in ("IfcRoof", "IfcSlab"):
             if "name" in updates and updates["name"]:
@@ -2366,7 +2382,10 @@ class BimModelManager:
                 "min": [min(sp[0], ep[0]) - th, min(sp[1], ep[1]) - th, sp[2] if len(sp) > 2 else 0.0],
                 "max": [max(sp[0], ep[0]) + th, max(sp[1], ep[1]) + th, (sp[2] if len(sp) > 2 else 0.0) + h],
             }
-            self.recompute_wall_joins()
+            _new_ends = [
+                (float(p[0]), float(p[1])) for p in (sp, ep) if p
+            ]
+            self._recompute_after_joined_edit(guid, old_points=_old_ends, new_points=_new_ends)
 
         # Case 3: Door / Window
         elif ifc_class in ("IfcDoor", "IfcWindow"):
@@ -3520,6 +3539,71 @@ class BimModelManager:
         if rep is not None:
             return ifcopenshell.geom.create_shape(settings, p, rep)
         return ifcopenshell.geom.create_shape(settings, p)
+
+    #: Endpoint-proximity radius (feet) for finding the walls an edit can re-join.
+    #: Must exceed the largest join tolerance, which is `_JOIN_TOL + thickness/2` for a
+    #: tee (0.05 + ~0.35 for an 8" CMU wall), so 1 ft is comfortably conservative.
+    _JOIN_EDIT_RADIUS = 1.0
+
+    def _recompute_after_joined_edit(self, guid: Optional[str] = None,
+                                     old_points: Optional[List[Tuple[float, float]]] = None,
+                                     new_points: Optional[List[Tuple[float, float]]] = None) -> None:
+        """
+        Recompute joins for the walls an edit can affect, not the whole model.
+
+        An edit both GAINS and LOSES joins: moving a wall end away from a partner drops
+        a tee, and moving it onto one creates a tee. The correct radius is therefore
+        every wall with an endpoint near the wall's OLD or NEW baseline ends — the old
+        positions are passed in because the metadata has already been mutated by the
+        time this runs, and a graph rebuilt from current state cannot see the join that
+        just disappeared (its partner would keep a stale footprint permanently).
+
+        Falls back to the global pass whenever the radius cannot be established, because
+        a wrong subset leaves stale join geometry, which is worse than a slow edit.
+        """
+        if guid is None or guid not in self.element_meta:
+            self.recompute_wall_joins()
+            return
+        # The caller must supply the pre-edit ends: a graph rebuilt from current state
+        # cannot see a join the edit just removed. Without them the radius is unsound,
+        # so take the slow-but-correct path.
+        if not old_points:
+            self.recompute_wall_joins()
+            return
+
+        points: List[Tuple[float, float]] = []
+        for p in list(old_points) + list(new_points or []):
+            if p:
+                points.append((float(p[0]), float(p[1])))
+        if not points:
+            self.recompute_wall_joins()
+            return
+
+        try:
+            all_walls = {
+                g: m for g, m in self.element_meta.items()
+                if m.get("ifc_class") in ("IfcWall", "IfcWallStandardCase")
+                and "start" in m and "end" in m
+            }
+            index = self._build_join_index(all_walls)
+            affected: set = {guid}
+            for px, py in points:
+                for other in self._join_candidates(index, all_walls, guid, (px, py),
+                                                   self._JOIN_EDIT_RADIUS):
+                    affected.add(other)
+        except Exception:
+            self.recompute_wall_joins()
+            return
+
+        affected = {
+            g for g in affected
+            if g in self.element_meta
+            and self.element_meta[g].get("ifc_class") in ("IfcWall", "IfcWallStandardCase")
+        }
+        if not affected:
+            self.recompute_wall_joins()
+            return
+        self.recompute_wall_joins(only=sorted(affected))
 
     def _cache_verts(self, guid: str, verts, faces, in_feet: bool = True) -> None:
         """
