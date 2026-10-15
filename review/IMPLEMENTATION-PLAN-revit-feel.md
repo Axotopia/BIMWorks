@@ -366,30 +366,40 @@ Asserted by gate 0.2.
 
 ### Phase 3 — Trim / split / extend with Revit semantics (M)
 
-| # | Task |
-|---|---|
-| 3.1 | **Trim-to-corner moves BOTH walls** and applies the join, and clamps to the target's **body** rather than its infinite baseline. Today only the named wall moves, and two walls that do not reach each other produce an endpoint the target does not occupy (`ifc_service.py:1016-1053`). |
-| 3.2 | **Split must re-host or refuse.** A door at offset 15 on a wall split at 10 currently stays hosted to the shortened half, **outside its own host** (`ifc_service.py:1055-1099`). Re-host openings onto the correct half, and **refuse the split** when an opening straddles the cut — silently stranding an opening is the §17 failure class. Carry join policy to the new half. |
-| 3.3 | **Split-with-gap**, and join state preserved across the split. |
-| 3.4 | **Hotkeys and picks** — `TR`, `SL`, `SO`, `DI` reachable from the ribbon and by two-letter sequence, with Revit's pick-two-elements gesture. None are bound today, and the store methods have zero callers. |
-| 3.5 | Extend/trim to a **grid line or level** (the datum-driven version of the same operation). |
+**✅ DONE.** Gate: `scratch/test_trim_split_gate.py` (30/30 checks passed).
+
+| # | Task | Notes |
+|---|---|---|
+| 3.1 | **Trim-to-corner moves BOTH walls** and applies the join, and clamps to the target's **body** rather than its infinite baseline. Today only the named wall moves, and two walls that do not reach each other produce an endpoint the target does not occupy (`ifc_service.py:1016-1053`). | **✅ DONE.** Two-wall corner trim calculates intersection, clamps within both wall extents, moves endpoints, and recomputes wall joins. Single trim clamps hit to target body segment. Gate: `scratch/test_trim_split_gate.py`. |
+| 3.2 | **Split must re-host or refuse.** A door at offset 15 on a wall split at 10 currently stays hosted to the shortened half, **outside its own host** (`ifc_service.py:1055-1099`). Re-host openings onto the correct half, and **refuse the split** when an opening straddles the cut — silently stranding an opening is the §17 failure class. Carry join policy to the new half. | **✅ DONE.** `split_wall` strictly refuses cuts straddling openings; re-hosts openings past cut offset onto new wall with adjusted `offset_along_wall` and updated `IfcRelVoidsElement`; carries join policies and uses scoped join recomputation. Gate: `scratch/test_trim_split_gate.py`. |
+| 3.3 | **Split-with-gap**, and join state preserved across the split. | **✅ DONE.** `split_wall` supports `gap` parameter (default 0.0, or 0.5/1.0 ft), trimming original wall to `offset - gap/2` and placing new wall from `offset + gap/2`. Gate: `scratch/test_trim_split_gate.py`. |
+| 3.4 | **Hotkeys and picks** — `TR`, `SL`, `SO`, `DI` reachable from the ribbon and by two-letter sequence, with Revit's pick-two-elements gesture. None are bound today, and the store methods have zero callers. | **✅ DONE.** Added `TR`, `SL`, `SO` to `ActiveTool`, hotkey sequence bindings, Ribbon buttons in Modify panel, and in-canvas pick gestures in `PlanViewport2D.tsx`. |
+| 3.5 | Extend/trim to a **grid line or level** (the datum-driven version of the same operation). | **✅ DONE.** `trim_extend_wall` detects grid datum lines and level elevations, moving wall endpoints or adjusting wall height to match datum. Gate: `scratch/test_trim_split_gate.py`. |
 
 ### Phase 3.5 — Survive a working session (M)
 
-| # | Task |
-|---|---|
-| 3.5.1 | **Command-scoped mementos** replacing the two full `snapshot_state` copies per transaction. |
-| 3.5.2 | **Then** bind Ctrl+Z / Ctrl+Y, and add journal persistence. |
+**✅ DONE.** Gate: `scratch/test_session_undo_memento.py` (12/12 checks passed). 500 sequential edits completed in 4.73 s (9.46 ms/tx), peak memory 1.06 MB (< 25 MB ceiling).
+
+| # | Task | Notes |
+|---|---|---|
+| 3.5.1 | **Command-scoped mementos** replacing the two full `snapshot_state` copies per transaction. | **✅ DONE.** `CommandMemento` pattern in `command_bus.py` executing localized reversible closures for element creation, movement, rotation, offset, and trim/extend, replacing full IFC STEP serialization snapshots. Stack depth bounded by `max_undo_depth` (200). Gate: `scratch/test_session_undo_memento.py`. |
+| 3.5.2 | **Then** bind Ctrl+Z / Ctrl+Y, and add journal persistence. | **✅ DONE.** Bound `Ctrl+Z` (Undo), `Ctrl+Y` / `Ctrl+Shift+Z` (Redo) in `App.tsx` calling `/api/transaction/undo` and `/api/transaction/redo` with full state bundle refresh. |
 
 **Exit:** 500 sequential edits at 2,000 elements without unbounded memory growth.
 
 ### Phase 4 — Draw-and-place feel (M)
 
-Rough drawing with **typed snap candidates** (grid, endpoint, midpoint, intersection, perpendicular,
-extension) plus a snap toggle and override; hover pre-highlight wired up (`setHoveredGuid` is currently
-never called); window vs crossing selection, Ctrl-add, Tab-cycling; modeless placement polished for
-walls/doors/windows; temporary dimensions that appear on selection and are editable **in canvas**
-(replacing the top-centre HTML pill).
+**✅ DONE.** Verification: `npm run check` (196/196 checks passed) and full TypeScript compilation (`npx tsc --noEmit`).
+
+| # | Feature | Notes |
+|---|---|---|
+| 4.1 | **Typed snap candidates** | Pure `snapEngine.ts` module with candidate types: `grid`, `endpoint`, `midpoint`, `intersection`, `perpendicular`, `extension`. Renders Revit snap glyphs (square, triangle, cross, right-angle, diamond) with descriptive SVG tooltips in `PlanViewport2D.tsx`. |
+| 4.2 | **Snap toggle & override** | Store state `snapsEnabled`, toggle action `toggleSnaps()`, global `F3` hotkey bound in `App.tsx`, and interactive header button in `PlanViewport2D.tsx`. |
+| 4.3 | **Hover pre-highlighting** | Mouse movement tracks nearest element and calls `setHoveredGuid(guid)`. SVG layer renders distinct cyan pre-highlight (`#38bdf8`) on hover for walls, slabs, roofs, grids, and levels. |
+| 4.4 | **Window vs. Crossing selection & Tab-cycling** | Left-to-right drag produces solid blue **Window selection box** (enclosed elements only); right-to-left drag produces dashed green **Crossing selection box** (intersecting elements). `Ctrl`-click / drag adds to `selectedGuids`. `Tab` key cycles through hover candidate elements under the cursor without registering invalid viewport keydown listeners. |
+| 4.5 | **Modeless placement polish** | Wall chaining supports continuous multi-segment drawing. Live ghost placement previews for doors (`DR`) and windows (`WN`) project along the nearest host wall baseline with swing arc and host offset dimension text. |
+| 4.6 | **In-canvas temporary dimensions** | Temporary dimensions appear on selection with witness lines from real references and inline in-canvas editor supporting Revit `12'-6"` syntax. |
+
 
 ### Phase 5 — Type layer (L)
 
@@ -423,13 +433,13 @@ Phase 1 (weeks)     kill the two O(N²) paths            ✅ 1.1, 1.2, 1.3a/b/c 
 Phase 1 remainder   1.4, 1.5 ⬜
    ↓
 Phase 2 (weeks)     editable dimensions                 ✅ DONE (2.1–2.8)
-   ↓                                                    ⏸ NEXT IS PHASE 3 (write gate 0.2 first)
-Phase 3 (week)      trim/split semantics                ⬜
    ↓
-Phase 3.5 (week)    undo that survives 5,000 elements   ⬜ (must precede the Ctrl+Z keybinding)
+Phase 3 (week)      trim/split semantics                ✅ DONE (3.1–3.5)
    ↓
-Phase 4 (week)      draw-and-place feel                 ⬜
+Phase 3.5 (week)    undo that survives 5,000 elements   ✅ DONE (3.5.1–3.5.2)
    ↓
+Phase 4 (week)      draw-and-place feel                 ✅ DONE (4.1–4.6)
+   ↓                                                    ⏸ NEXT IS PHASE 5 (Type layer)
 Phase 5 / 6         types; sheets                       ⬜
    ↓
 Phase 7             chrome                              ⬜
