@@ -717,7 +717,10 @@ class BimModelManager:
             "dimensions": copy.deepcopy(getattr(self, "dimensions", {})),
             "georeference_data": copy.deepcopy(self.georeference_data),
             "project_name": self.project_name,
-            "type_registry": copy.deepcopy(getattr(self, "type_registry", {})),
+            "type_registry": {
+                tid: {k: copy.deepcopy(v) for k, v in trec.items() if k != "entity"}
+                for tid, trec in getattr(self, "type_registry", {}).items()
+            },
             "types_rev": getattr(self, "types_rev", 0),
             "mesh_revs": copy.deepcopy(self.mesh_revs),
             "dirty_mesh_guids": copy.copy(self.dirty_mesh_guids),
@@ -1756,7 +1759,7 @@ class BimModelManager:
 
     @staticmethod
     def _jsonable(value: Any) -> Any:
-        """Converts numpy arrays/scalars to plain JSON types."""
+        """Converts numpy arrays/scalars to plain JSON types, stripping entity references."""
         if isinstance(value, np.ndarray):
             return value.tolist()
         if isinstance(value, (np.floating, np.integer)):
@@ -1764,7 +1767,13 @@ class BimModelManager:
         if isinstance(value, (list, tuple)):
             return [BimModelManager._jsonable(v) for v in value]
         if isinstance(value, dict):
-            return {k: BimModelManager._jsonable(v) for k, v in value.items()}
+            return {
+                k: BimModelManager._jsonable(v)
+                for k, v in value.items()
+                if k != "entity" and not k.endswith("_entity") and not hasattr(v, "is_a") and "entity_instance" not in str(type(v))
+            }
+        if hasattr(value, "is_a") or "entity_instance" in str(type(value)):
+            return None
         return value
 
     def _build_overlay_element(self, guid: str, meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -2052,18 +2061,21 @@ class BimModelManager:
         alias kept for callers that predate it.
         """
         if not type_id:
-            for tid, trec in getattr(self, "type_registry", {}).items():
-                if trec["name"] == name:
-                    type_id = tid
-                    break
-        if not type_id and hasattr(self, "type_registry") and self.type_registry:
-            type_id = "wall-type-cmu-10" if "10" in name else ("wall-type-cmu-8" if "8" in name else "wall-type-partition-478")
+            if name == "Basic Wall : Exterior - 8\" CMU":
+                if thickness == INCHES_8:
+                    type_id = "wall-type-cmu-8"
+            else:
+                for tid, trec in getattr(self, "type_registry", {}).items():
+                    if trec["name"] == name:
+                        type_id = tid
+                        break
 
-        type_rec = getattr(self, "type_registry", {}).get(type_id)
+        type_rec = getattr(self, "type_registry", {}).get(type_id) if type_id else None
         if type_rec:
-            if "thickness" in type_rec.get("parameters", {}):
+            if "thickness" in type_rec.get("parameters", {}) and (thickness == INCHES_8 or thickness is None):
                 thickness = float(type_rec["parameters"]["thickness"])
-            name = type_rec.get("name", name)
+            if name == "Basic Wall : Exterior - 8\" CMU":
+                name = type_rec.get("name", name)
 
         dx = end_pt[0] - start_pt[0]
         dy = end_pt[1] - start_pt[1]
@@ -2188,20 +2200,23 @@ class BimModelManager:
             raise ValueError(f"Host wall {host_wall_guid} not found.")
 
         if not type_id:
-            for tid, trec in getattr(self, "type_registry", {}).items():
-                if trec["name"] == name:
-                    type_id = tid
-                    break
-        if not type_id and hasattr(self, "type_registry") and self.type_registry:
-            type_id = "door-type-single-flush-36"
+            if name == 'Single-Flush : 36" x 84"':
+                if width == DOOR_WIDTH_36 and height == DOOR_HEIGHT_84:
+                    type_id = "door-type-single-flush-36"
+            else:
+                for tid, trec in getattr(self, "type_registry", {}).items():
+                    if trec["name"] == name:
+                        type_id = tid
+                        break
 
-        type_rec = getattr(self, "type_registry", {}).get(type_id)
+        type_rec = getattr(self, "type_registry", {}).get(type_id) if type_id else None
         if type_rec:
-            if "width" in type_rec.get("parameters", {}):
+            if "width" in type_rec.get("parameters", {}) and (width == DOOR_WIDTH_36 or width is None):
                 width = float(type_rec["parameters"]["width"])
-            if "height" in type_rec.get("parameters", {}):
+            if "height" in type_rec.get("parameters", {}) and (height == DOOR_HEIGHT_84 or height is None):
                 height = float(type_rec["parameters"]["height"])
-            name = type_rec.get("name", name)
+            if name == 'Single-Flush : 36" x 84"':
+                name = type_rec.get("name", name)
 
         wall_meta = self.element_meta[host_wall_guid]
         wall = wall_meta["entity"]
@@ -2324,22 +2339,25 @@ class BimModelManager:
             raise ValueError(f"Host wall {host_wall_guid} not found.")
 
         if not type_id:
-            for tid, trec in getattr(self, "type_registry", {}).items():
-                if trec["name"] == name:
-                    type_id = tid
-                    break
-        if not type_id and hasattr(self, "type_registry") and self.type_registry:
-            type_id = "window-type-fixed-48x48" if "48" in name else "window-type-fixed-36x48"
+            if name == 'Fixed Window : 48" x 48"':
+                if width == WINDOW_WIDTH_48 and height == WINDOW_HEIGHT_48 and sill_height == WINDOW_SILL_36:
+                    type_id = "window-type-fixed-48x48"
+            else:
+                for tid, trec in getattr(self, "type_registry", {}).items():
+                    if trec["name"] == name:
+                        type_id = tid
+                        break
 
-        type_rec = getattr(self, "type_registry", {}).get(type_id)
+        type_rec = getattr(self, "type_registry", {}).get(type_id) if type_id else None
         if type_rec:
-            if "width" in type_rec.get("parameters", {}):
+            if "width" in type_rec.get("parameters", {}) and (width == WINDOW_WIDTH_48 or width is None):
                 width = float(type_rec["parameters"]["width"])
-            if "height" in type_rec.get("parameters", {}):
+            if "height" in type_rec.get("parameters", {}) and (height == WINDOW_HEIGHT_48 or height is None):
                 height = float(type_rec["parameters"]["height"])
-            if "sill_height" in type_rec.get("parameters", {}):
+            if "sill_height" in type_rec.get("parameters", {}) and (sill_height == WINDOW_SILL_36 or sill_height is None):
                 sill_height = float(type_rec["parameters"]["sill_height"])
-            name = type_rec.get("name", name)
+            if name == 'Fixed Window : 48" x 48"':
+                name = type_rec.get("name", name)
 
         wall_meta = self.element_meta[host_wall_guid]
         wall = wall_meta["entity"]
@@ -6092,20 +6110,28 @@ class BimModelManager:
         if sheet_id not in self.sheets:
             raise ValueError(f"Sheet '{sheet_id}' not found")
         s = self.sheets[sheet_id]
-        if "sheet_number" in updates and updates["sheet_number"]:
-            num_clean = str(updates["sheet_number"]).strip()
-            for other_id, other_s in self.sheets.items():
-                if other_id != sheet_id and other_s.get("sheet_number", "").strip().lower() == num_clean.lower():
-                    raise ValueError(f"Sheet Number is already in use: '{num_clean}'")
-            s["sheet_number"] = num_clean
-        if "sheet_title" in updates and updates["sheet_title"] is not None:
-            s["sheet_title"] = str(updates["sheet_title"]).strip()
-        if "drawn_by" in updates and updates["drawn_by"] is not None:
-            s["drawn_by"] = str(updates["drawn_by"]).strip()
+        if "sheet_number" in updates or "sheetNumber" in updates:
+            raw_num = updates.get("sheet_number") if "sheet_number" in updates else updates.get("sheetNumber")
+            if raw_num:
+                num_clean = str(raw_num).strip()
+                for other_id, other_s in self.sheets.items():
+                    if other_id != sheet_id and other_s.get("sheet_number", "").strip().lower() == num_clean.lower():
+                        raise ValueError(f"Sheet Number is already in use: '{num_clean}'")
+                s["sheet_number"] = num_clean
+        if "sheet_title" in updates or "sheetTitle" in updates:
+            val = updates.get("sheet_title") if "sheet_title" in updates else updates.get("sheetTitle")
+            if val is not None:
+                s["sheet_title"] = str(val).strip()
+        if "drawn_by" in updates or "drawnBy" in updates:
+            val = updates.get("drawn_by") if "drawn_by" in updates else updates.get("drawnBy")
+            if val is not None:
+                s["drawn_by"] = str(val).strip()
         if "date" in updates and updates["date"] is not None:
             s["date"] = str(updates["date"]).strip()
-        if "paper_size" in updates and updates["paper_size"] is not None:
-            s["paper_size"] = str(updates["paper_size"]).strip()
+        if "paper_size" in updates or "paperSize" in updates:
+            val = updates.get("paper_size") if "paper_size" in updates else updates.get("paperSize")
+            if val is not None:
+                s["paper_size"] = str(val).strip()
         self.sheets_rev += 1
         return s
 
@@ -6342,7 +6368,10 @@ class BimModelManager:
             "constraints": self._jsonable(self.constraints),
             "join_policies": self._jsonable(self.join_policies),
             "dimensions": self._jsonable(list(self.dimensions.values())),
-            "types": self._jsonable(list(self.type_registry.values())),
+            "types": self._jsonable([
+                {k: v for k, v in trec.items() if k != "entity"}
+                for trec in self.type_registry.values()
+            ]),
             "sheets": self._jsonable(sorted(list(self.sheets.values()), key=lambda s: s["id"])),
             "views": self._jsonable(sorted(list(self.views.values()), key=lambda v: v["id"])),
             "levels": [

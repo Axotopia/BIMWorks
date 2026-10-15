@@ -42,8 +42,9 @@ function section(title) {
 // ---------------------------------------------------------------------------
 section('D6.1 Backend Differential Equivalence (Python engine & geometry)');
 {
-  const venvPython = join(ROOT, '.venv', 'Scripts', 'python.exe');
-  const pythonCmd = existsSync(venvPython) ? venvPython : 'python';
+  const venvPythonWin = join(ROOT, '.venv', 'Scripts', 'python.exe');
+  const venvPythonUnix = join(ROOT, '.venv', 'bin', 'python');
+  const pythonCmd = process.env.PYTHON || (existsSync(venvPythonWin) ? venvPythonWin : (existsSync(venvPythonUnix) ? venvPythonUnix : (process.platform === 'win32' ? 'python' : 'python3')));
   const testScript = join(ROOT, 'scratch', 'test_delta_equivalence.py');
 
   const pyResult = spawnSync(pythonCmd, [testScript], {

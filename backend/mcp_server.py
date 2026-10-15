@@ -175,7 +175,7 @@ class McpServer:
                     "content": [
                         {
                             "type": "text",
-                            "text": json.dumps(result_payload, indent=2),
+                            "text": json.dumps(self.driver.manager._jsonable(result_payload), indent=2),
                         }
                     ],
                     "isError": False,

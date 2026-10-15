@@ -205,6 +205,19 @@ export const OptionsBar: React.FC = () => {
             <span className="text-[11px] font-medium text-[#1e293b]">Tag on Placement</span>
           </label>
 
+          {activeTool === 'WN' && (
+            <div className="flex items-center space-x-1">
+              <span className="text-[#64748b] text-[11px]">Sill Height:</span>
+              <input
+                type="text"
+                value={sillInput}
+                onChange={(e) => setSillInput(e.target.value)}
+                className="w-16 bg-[#ffffff] border border-[#cbd5e1] rounded px-1.5 py-0.5 text-[11px] font-mono text-[#1e293b] focus:border-[#0284c7] outline-none text-center"
+                title="Window Sill Height"
+              />
+            </div>
+          )}
+
           <span className="text-[11px] text-[#64748b]">
             Hover over an existing wall to host and click to place.
           </span>

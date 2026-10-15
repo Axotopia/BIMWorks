@@ -270,10 +270,24 @@ class SheetUpdateParams(BaseModel):
     @classmethod
     def _normalize_keys(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            if "sheetId" in data and "sheet_id" not in data:
-                res = dict(data)
+            res = dict(data)
+            if "sheetId" in res and "sheet_id" not in res:
                 res["sheet_id"] = res["sheetId"]
-                return res
+            if "updates" in res and isinstance(res["updates"], dict):
+                norm_updates = {}
+                for k, v in res["updates"].items():
+                    if k == "sheetTitle":
+                        norm_updates["sheet_title"] = v
+                    elif k == "sheetNumber":
+                        norm_updates["sheet_number"] = v
+                    elif k == "drawnBy":
+                        norm_updates["drawn_by"] = v
+                    elif k == "paperSize":
+                        norm_updates["paper_size"] = v
+                    else:
+                        norm_updates[k] = v
+                res["updates"] = norm_updates
+            return res
         return data
 
 
@@ -880,7 +894,8 @@ class CommandBusEngine:
         elif cmd_name == "DeleteElement":
             p: DeleteElementParams = validated
             guid = p.guid
-            meta_pre = copy.deepcopy(self.manager.element_meta.get(guid))
+            raw_meta = self.manager.element_meta.get(guid)
+            meta_pre = {k: copy.deepcopy(v) for k, v in raw_meta.items() if k != "entity" and not k.endswith("_entity") and not hasattr(v, "is_a")} if raw_meta else None
             ok = self.manager.delete_element(guid)
             if not ok:
                 raise ValueError(f"Element {guid} could not be deleted")
@@ -888,11 +903,15 @@ class CommandBusEngine:
                 if meta_pre:
                     ifc_cls = meta_pre.get("ifc_class")
                     if ifc_cls in ("IfcWallStandardCase", "IfcWall"):
-                        mgr.add_wall(meta_pre["start"], meta_pre["end"], height=meta_pre.get("height", 10.0), thickness=meta_pre.get("thickness", 0.67), level_id=meta_pre.get("level_id"), name=meta_pre.get("name", "Wall"), guid=guid)
+                        mgr.add_wall(meta_pre["start"], meta_pre["end"], height=meta_pre.get("height", 10.0), thickness=meta_pre.get("thickness", 0.67), level_id=meta_pre.get("level_id"), name=meta_pre.get("name", "Wall"), guid=guid, type_id=meta_pre.get("type_id"))
                     elif ifc_cls == "IfcDoor":
-                        mgr.add_door(meta_pre["host_wall_guid"], meta_pre["offset_along_wall"], width=meta_pre.get("width", 3.0), height=meta_pre.get("height", 7.0), name=meta_pre.get("name", "Door"), guid=guid)
+                        mgr.add_door(meta_pre["host_wall_guid"], meta_pre["offset_along_wall"], width=meta_pre.get("width", 3.0), height=meta_pre.get("height", 7.0), name=meta_pre.get("name", "Door"), guid=guid, type_id=meta_pre.get("type_id"))
                     elif ifc_cls == "IfcWindow":
-                        mgr.add_window(meta_pre["host_wall_guid"], meta_pre["offset_along_wall"], width=meta_pre.get("width", 4.0), height=meta_pre.get("height", 4.0), sill_height=meta_pre.get("sill_height", 3.0), name=meta_pre.get("name", "Window"), guid=guid)
+                        mgr.add_window(meta_pre["host_wall_guid"], meta_pre["offset_along_wall"], width=meta_pre.get("width", 4.0), height=meta_pre.get("height", 4.0), sill_height=meta_pre.get("sill_height", 3.0), name=meta_pre.get("name", "Window"), guid=guid, type_id=meta_pre.get("type_id"))
+                    elif ifc_cls == "IfcSlab":
+                        mgr.add_slab(meta_pre.get("polygon", []), elevation=meta_pre.get("elevation", 0.0), thickness=meta_pre.get("thickness", 0.25), name=meta_pre.get("name", "Floor"), guid=guid)
+                    elif ifc_cls == "IfcRoof":
+                        mgr.add_roof(meta_pre.get("polygon", []), elevation=meta_pre.get("elevation", 6.0), thickness=meta_pre.get("thickness", 0.3), pitch=meta_pre.get("pitch", 15.0), name=meta_pre.get("name", "Roof"), guid=guid)
             def redo_fn(mgr):
                 mgr.delete_element(guid)
             return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "deleted", "guid": guid}
@@ -1052,11 +1071,140 @@ class CommandBusEngine:
                 mgr.update_sheet(p.sheet_id, p.updates)
             return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "sheet": sheet, "sheet_id": p.sheet_id}
 
+        elif cmd_name == "ElementCopy":
+            p: ElementCopyParams = validated
+            res = self.manager.copy_element(p.guid, p.dx, p.dy, p.dz)
+            new_guid = res.get("guid")
+            def undo_fn(mgr):
+                if new_guid:
+                    mgr.delete_element(new_guid)
+            def redo_fn(mgr):
+                mgr.copy_element(p.guid, p.dx, p.dy, p.dz)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "ElementUpdate":
+            p: ElementUpdateParams = validated
+            raw_meta = self.manager.element_meta.get(p.guid, {})
+            old_vals = {}
+            for k in p.updates.keys():
+                if k in raw_meta:
+                    old_vals[k] = copy.deepcopy(raw_meta[k])
+            res = self.manager.update_element(p.guid, p.updates)
+            def undo_fn(mgr):
+                if old_vals:
+                    mgr.update_element(p.guid, old_vals)
+            def redo_fn(mgr):
+                mgr.update_element(p.guid, p.updates)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "element": res}
+
+        elif cmd_name == "SheetCreate":
+            p: SheetCreateParams = validated
+            sheet = self.manager.add_sheet(
+                sheet_number=p.sheet_number,
+                sheet_title=p.sheet_title,
+                paper_size=p.paper_size,
+                drawn_by=p.drawn_by,
+                is_placeholder=p.is_placeholder,
+                sheet_id=p.sheet_id,
+            )
+            sid = sheet["id"]
+            def undo_fn(mgr):
+                mgr.delete_sheet(sid)
+            def redo_fn(mgr):
+                mgr.add_sheet(
+                    sheet_number=p.sheet_number,
+                    sheet_title=p.sheet_title,
+                    paper_size=p.paper_size,
+                    drawn_by=p.drawn_by,
+                    is_placeholder=p.is_placeholder,
+                    sheet_id=sid,
+                )
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "created", "sheet": sheet, "sheet_id": sid}
+
+        elif cmd_name == "SheetDelete":
+            p: SheetDeleteParams = validated
+            old_sheet = copy.deepcopy(self.manager.sheets.get(p.sheet_id))
+            self.manager.delete_sheet(p.sheet_id)
+            def undo_fn(mgr):
+                if old_sheet:
+                    mgr.sheets[p.sheet_id] = copy.deepcopy(old_sheet)
+                    mgr.sheets_rev += 1
+            def redo_fn(mgr):
+                mgr.delete_sheet(p.sheet_id)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "deleted", "sheet_id": p.sheet_id}
+
+        elif cmd_name == "ViewportAdd":
+            p: ViewportAddParams = validated
+            vp = self.manager.add_viewport_to_sheet(
+                sheet_id=p.sheet_id,
+                view_id=p.view_id,
+                x=p.x,
+                y=p.y,
+                width=p.width,
+                height=p.height,
+                scale_factor=p.scale_factor,
+                viewport_id=p.viewport_id,
+            )
+            vpid = vp["id"]
+            def undo_fn(mgr):
+                mgr.remove_viewport_from_sheet(vpid, p.sheet_id)
+            def redo_fn(mgr):
+                mgr.add_viewport_to_sheet(
+                    sheet_id=p.sheet_id,
+                    view_id=p.view_id,
+                    x=p.x,
+                    y=p.y,
+                    width=p.width,
+                    height=p.height,
+                    scale_factor=p.scale_factor,
+                    viewport_id=vpid,
+                )
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "created", "viewport": vp, "viewport_id": vpid}
+
+        elif cmd_name == "ViewportRemove":
+            p: ViewportRemoveParams = validated
+            old_sheet = copy.deepcopy(self.manager.sheets.get(p.sheet_id)) if p.sheet_id else None
+            if not old_sheet:
+                for s in self.manager.sheets.values():
+                    if any(vp.get("id") == p.viewport_id for vp in s.get("viewports", [])):
+                        old_sheet = copy.deepcopy(s)
+                        break
+            ok = self.manager.remove_viewport_from_sheet(p.viewport_id, p.sheet_id)
+            if not ok:
+                raise ValueError(f"Viewport {p.viewport_id} could not be removed")
+            def undo_fn(mgr):
+                if old_sheet:
+                    mgr.sheets[old_sheet["id"]] = copy.deepcopy(old_sheet)
+                    mgr.sheets_rev += 1
+            def redo_fn(mgr):
+                mgr.remove_viewport_from_sheet(p.viewport_id, p.sheet_id)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "deleted", "viewport_id": p.viewport_id}
+
+        elif cmd_name == "ViewportMove":
+            p: ViewportMoveParams = validated
+            old_vp = None
+            for s in self.manager.sheets.values():
+                for vp_item in s.get("viewports", []):
+                    if vp_item.get("id") == p.viewport_id:
+                        old_vp = copy.deepcopy(vp_item)
+                        break
+                if old_vp:
+                    break
+            old_x = old_vp.get("x", 0.0) if old_vp else 0.0
+            old_y = old_vp.get("y", 0.0) if old_vp else 0.0
+            vp = self.manager.move_viewport(p.viewport_id, p.x, p.y, p.sheet_id)
+            def undo_fn(mgr):
+                mgr.move_viewport(p.viewport_id, old_x, old_y, p.sheet_id)
+            def redo_fn(mgr):
+                mgr.move_viewport(p.viewport_id, p.x, p.y, p.sheet_id)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "moved", "viewport_id": p.viewport_id, "x": vp["x"], "y": vp["y"]}
+
         else:
-            # Fallback for any other registered command
+            # Fallback for any other registered command (e.g. constraints, sketch curves, etc.)
+            pre_snap = self.manager.snapshot_state()
             res = self.execute_single_command(cmd_name, params)
             def undo_fn(mgr):
-                pass
+                mgr.restore_state(pre_snap)
             def redo_fn(mgr):
                 self.execute_single_command(cmd_name, params)
             return CommandMemento(cmd_name, undo_fn, redo_fn), res
@@ -1080,7 +1228,7 @@ class CommandBusEngine:
                 for item in commands:
                     memento, res = self._execute_with_memento(item.command, item.params)
                     mementos.append(memento)
-                    results.append({"command": item.command, "result": res})
+                    results.append({"command": item.command, "result": self.manager._jsonable(res)})
             except Exception as e:
                 # Roll back partially executed commands in reverse order using surgical mementos
                 for m in reversed(mementos):

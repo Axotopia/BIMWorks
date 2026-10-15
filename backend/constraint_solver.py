@@ -38,7 +38,7 @@ model untouched, so a bad constraint set is visible rather than silently applied
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Set, Any
 
 try:
     from planegcs import Sketch, SolveStatus
@@ -194,6 +194,9 @@ class ConstraintSolver:
             if g in coords:
                 coords[g] = pins[g]
 
+        if Sketch is None:
+            return self._solve_pure_python(axis, coords, pins, extras, participants)
+
         self._require_solver()
 
         sketch = Sketch()
@@ -279,6 +282,135 @@ class ConstraintSolver:
         return ConstraintSolve(
             axis=axis, status="success", coordinates=out, pinned=pins,
             conflicting=conflicting, moved=sorted(moved),
+        )
+
+    def _solve_pure_python(
+        self,
+        axis: str,
+        coords: Dict[str, float],
+        pins: Dict[str, float],
+        extras: List[Any],
+        participants: Set[str],
+    ) -> ConstraintSolve:
+        out = dict(coords)
+        for g, p in pins.items():
+            if g in out:
+                out[g] = float(p)
+
+        fixed = set(pins.keys())
+        applied = []
+        conflicting = []
+
+        active_constraints = []
+        for kind, payload in extras:
+            if kind == "equalize":
+                start, end, interiors = payload
+                active_constraints.append({
+                    "id": "extra:equalize",
+                    "type": "equalize",
+                    "span_start_guid": start,
+                    "span_end_guid": end,
+                    "interior_guids": interiors,
+                })
+
+        for cid, c in sorted(self.manager.constraints.items()):
+            if not c.get("is_locked", True):
+                continue
+            if c.get("axis", "x") != axis:
+                continue
+            active_constraints.append(dict(c))
+
+        for _ in range(len(out) + 5):
+            changed = False
+            for c in active_constraints:
+                cid = c.get("id")
+                ctype = c.get("type")
+                if ctype == "align":
+                    ref = c.get("ref_guid")
+                    tgt = c.get("target_guid")
+                    if ref in out and tgt in out:
+                        if ref in fixed and tgt not in fixed:
+                            out[tgt] = out[ref]
+                            fixed.add(tgt)
+                            changed = True
+                            applied.append(cid)
+                        elif tgt in fixed and ref not in fixed:
+                            out[ref] = out[tgt]
+                            fixed.add(ref)
+                            changed = True
+                            applied.append(cid)
+                        elif ref in fixed and tgt in fixed:
+                            if abs(out[ref] - out[tgt]) > 1e-4:
+                                conflicting.append(cid)
+                            else:
+                                applied.append(cid)
+                        elif ref in out and tgt in out:
+                            out[tgt] = out[ref]
+                            applied.append(cid)
+
+                elif ctype == "dimension_lock":
+                    a = c.get("guid_a")
+                    b = c.get("guid_b")
+                    dist = c.get("locked_distance")
+                    if a in out and b in out:
+                        orig_a = self._position(a, axis) or 0.0
+                        orig_b = self._position(b, axis) or 0.0
+                        sign = 1.0 if orig_b >= orig_a else -1.0
+                        if dist is None:
+                            dist = abs(orig_b - orig_a)
+                        target_dist = float(dist)
+
+                        if a in fixed and b not in fixed:
+                            out[b] = out[a] + sign * target_dist
+                            fixed.add(b)
+                            changed = True
+                            applied.append(cid)
+                        elif b in fixed and a not in fixed:
+                            out[a] = out[b] - sign * target_dist
+                            fixed.add(a)
+                            changed = True
+                            applied.append(cid)
+                        elif a in fixed and b in fixed:
+                            if abs(abs(out[b] - out[a]) - target_dist) > 1e-4:
+                                conflicting.append(cid)
+                            else:
+                                applied.append(cid)
+
+                elif ctype == "equalize":
+                    start = c.get("span_start_guid")
+                    end = c.get("span_end_guid")
+                    interiors = c.get("interior_guids") or []
+                    if start in out and end in out and interiors:
+                        span_len = out[end] - out[start]
+                        step = span_len / (len(interiors) + 1)
+                        for i, ig in enumerate(interiors):
+                            if ig in out:
+                                target_pos = out[start] + (i + 1) * step
+                                if abs(out[ig] - target_pos) > 1e-9:
+                                    out[ig] = target_pos
+                                    changed = True
+                        applied.append(cid)
+
+            if not changed:
+                break
+
+        if conflicting:
+            return ConstraintSolve(
+                axis=axis,
+                status="conflict",
+                conflicting=sorted(set(conflicting)),
+                coordinates=dict(coords),
+                pinned=pins,
+            )
+
+        moved = [g for g, v in out.items() if abs(v - coords.get(g, v)) > 1e-9]
+        return ConstraintSolve(
+            axis=axis,
+            status="success",
+            coordinates=out,
+            pinned=pins,
+            conflicting=[],
+            moved=sorted(moved),
         )
 
     def _apply_equalize(self, sketch, ids, start, end, interiors, conflicting, add_p2p) -> None:
