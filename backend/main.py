@@ -528,6 +528,12 @@ def get_geometry():
     return bim_manager.get_geometry_buffers()
 
 
+@app.get("/api/types")
+def get_types():
+    """Returns the type catalog."""
+    return bim_manager.get_types()
+
+
 @app.get("/api/view/2d")
 def get_2d_view(
     view_type: str = "floor_plan",
@@ -1077,6 +1083,7 @@ def get_state_bundle(
         ] if getattr(bim_manager, "grids_rev", 0) > parsed_since else None
         sheets_section = bim_manager.get_sheets() if getattr(bim_manager, "sheets_rev", 0) > parsed_since else None
         views_section = bim_manager.get_views() if getattr(bim_manager, "views_rev", 0) > parsed_since else None
+        types_section = bim_manager.get_types() if getattr(bim_manager, "types_rev", 0) > parsed_since else None
         constraints_section = list(bim_manager.constraints.values()) if getattr(bim_manager, "constraints_rev", 0) > parsed_since else None
         wall_joins_section = bim_manager.get_wall_joins() if getattr(bim_manager, "wall_joins_rev", 0) > parsed_since else None
         project_section = {
@@ -1098,6 +1105,7 @@ def get_state_bundle(
             "grids": grids_data,
             "sheets": sheets_section,
             "views": views_section,
+            "types": types_section,
             "project": project_section,
             "constraints": constraints_section,
             "wall_joins": wall_joins_section,
@@ -1122,6 +1130,7 @@ def get_state_bundle(
     journal = timed_soft("journal", lambda: command_bus.get_journal(limit=journal_limit))
     sheets = timed_soft("sheets", lambda: bim_manager.get_sheets())
     views = timed_soft("views", lambda: bim_manager.get_views())
+    types = timed_soft("types", lambda: bim_manager.get_types())
 
     total_ms = round((_time.perf_counter() - t_total) * 1000.0, 2)
     return {
@@ -1137,6 +1146,7 @@ def get_state_bundle(
         "journal": journal,
         "sheets": sheets,
         "views": views,
+        "types": types,
         "timings": timings,
         "errors": errors,
         "engine_ms": total_ms,

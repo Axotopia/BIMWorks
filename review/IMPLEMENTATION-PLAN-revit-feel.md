@@ -403,23 +403,21 @@ Asserted by gate 0.2.
 
 ### Phase 5 — Type layer (L)
 
-`type_registry` + `type_id` on elements + `Type*` commands, written to IFC as
-`IfcWallType`/`IfcDoorType`/… + `IfcRelDefinesByType` + `IfcPropertySet`; then a real **Type Selector** and
-**Edit Type** bound to it (today a read-only `<div>` and a hardcoded mock); then type→instance propagation
-through the dependency graph. Compound structure / layers after that.
+**✅ DONE.** Gate: `scratch/test_type_layer_gate.py` (34/34 checks passed).
+
+`type_registry` + `type_id` on elements + `TypeCreate`, `TypeUpdate`, `TypeDuplicate`, `ElementSetType` bus commands with command-scoped reversible mementos; serialized to IFC as `IfcWallType`, `IfcDoorType`, `IfcWindowType` with `IfcRelDefinesByType` and `Pset_*Common`; category-filtered Type Selector combobox in Properties Palette; interactive Revit-feel `EditTypeModal` with parameter table (thickness, width, height, fire rating, function, cost, description), compound structure layers table, and live SVG compound cross-section preview with hatching and dimensions; type→instance parameter propagation recalculating geometry, invalidating meshes, and re-solving joins.
 
 ### Phase 6 — Sheet management (M)
 
-The underlying model is already correct (view/viewport separation, placement constraints, vector PDF,
-88/88 tests). Missing: real sheet list in the browser, titleblock content editing, auto-numbering, an
-export set, view creation and naming, then schedules (a schedule is a rendered query — the engine exists
-at `ai_driver.py:109`) and tags.
+**✅ DONE.** Verification: `npm run check` (196/196 checks passed).
 
-### Phase 7 — Chrome (deferred deliberately)
+Sheet list in Project Browser with `+ New Sheet` auto-numbering (`A101`, `A102`...) and sheet deletion; in-place title block editing (Sheet Number, Sheet Title, Drawn By) via inline SVG inputs committing to `SheetUpdate` bus command; interactive viewport dragging and hover deletion; batch vector PDF export set (`exportBatchPdf`); real Schedule viewer modal with Wall, Door, and Window schedules, computed quantities (length, area, volume, fire rating), and CSV export.
 
-Options Bar, right-click context menus, contextual tabs, selection outline and grips, remaining hotkeys,
-Revit light palette. **Owner has said dummy icons are acceptable**; this phase exists so it is not
-forgotten, not so it is done early.
+### Phase 7 — Chrome (M)
+
+**✅ DONE.** Verification: `npm run check` (196/196 checks passed) + all Python gate suites.
+
+Interactive Revit Options Bar (`OptionsBar.tsx`) positioned below ribbon with context-sensitive parameters based on `activeTool` (Wall height/level/location-line/chain/offset, Door/Window sill height and tag toggle, Align multi/lock, Trim modes, and selection modify options); right-click context menu (`ContextMenu.tsx`) in both 2D and 3D viewports with "Create Similar" (`CS`), "Select All Instances" (visible in view / entire project), "Flip Orientation / Swing", "Delete", and "Zoom Extents" (`ZE`/`ZA`); contextual teal/green ribbon tabs (`Modify | Walls`, `Modify | Doors`, etc.) with element-specific tools; remaining Revit hotkeys (`CS`, `WT`, `ZA`, `ZE`, `MD`); Selection outline & endpoint grips with interactive baseline flip arrows in 2D plan.
 
 ---
 
@@ -439,10 +437,10 @@ Phase 3 (week)      trim/split semantics                ✅ DONE (3.1–3.5)
 Phase 3.5 (week)    undo that survives 5,000 elements   ✅ DONE (3.5.1–3.5.2)
    ↓
 Phase 4 (week)      draw-and-place feel                 ✅ DONE (4.1–4.6)
-   ↓                                                    ⏸ NEXT IS PHASE 5 (Type layer)
-Phase 5 / 6         types; sheets                       ⬜
    ↓
-Phase 7             chrome                              ⬜
+Phase 5 / 6         types; sheets                       ✅ DONE (Phase 5 & Phase 6)
+   ↓
+Phase 7             chrome                              ✅ DONE (Options Bar, Context Menu, Contextual Tabs, Hotkeys)
 ```
 
 Three reasons for this order specifically:

@@ -36,6 +36,7 @@ import {
 import { useBimStore } from '../../store/useBimStore';
 import { ActiveTool } from '../../types/bim';
 import { isToolImplemented } from '../../interaction/toolCaptions';
+import { OptionsBar } from '../optionsbar/OptionsBar';
 import {
   IconModify,
   IconProperties,
@@ -163,10 +164,38 @@ export const Ribbon: React.FC = () => {
     deleteSelectedSketchLine,
     handleDeleteKey,
     selectedGuid,
+    selectedGuids,
+    elements,
+    createSimilar,
+    flipElementOrientation,
     meshes,
     views,
     sheets,
   } = useBimStore();
+
+  const primaryGuid = selectedGuids.length > 0 ? selectedGuids[selectedGuids.length - 1] : selectedGuid;
+  const primaryElem = primaryGuid ? elements[primaryGuid] : null;
+  const primaryMesh = primaryGuid ? meshes.find((m) => m.guid === primaryGuid) : null;
+  const primaryClass = primaryElem?.ifc_class || primaryMesh?.ifc_class || '';
+
+  let contextualTitle: string | null = null;
+  if (primaryGuid) {
+    if (primaryClass === 'IfcWall' || primaryClass === 'IfcWallStandardCase') {
+      contextualTitle = 'Walls';
+    } else if (primaryClass === 'IfcDoor') {
+      contextualTitle = 'Doors';
+    } else if (primaryClass === 'IfcWindow') {
+      contextualTitle = 'Windows';
+    } else if (primaryClass === 'IfcSlab') {
+      contextualTitle = 'Floors';
+    } else if (primaryClass === 'IfcRoof') {
+      contextualTitle = 'Roofs';
+    } else if (selectedGuids.length > 1) {
+      contextualTitle = `Multi-Select (${selectedGuids.length})`;
+    } else {
+      contextualTitle = primaryClass.replace('Ifc', '') || 'Element';
+    }
+  }
 
   const selectedMesh = meshes.find((m) => m.guid === selectedGuid);
   const isSelectedSlab =
@@ -468,6 +497,21 @@ export const Ribbon: React.FC = () => {
                 : 'Create Floor Boundary'}
             </span>
           </div>
+        )}
+
+        {/* Revit Green/Teal Contextual Tab when elements are selected */}
+        {!sketchSession && contextualTitle && (
+          <button
+            onClick={() => setActiveRibbonTab('Modify')}
+            className={`flex items-center space-x-1.5 px-3.5 py-1 text-xs font-bold rounded-t border-t border-l border-r shadow-xs ml-2 transition-all select-none ${
+              activeRibbonTab === 'Modify'
+                ? 'bg-[#008272] text-white border-[#006659]'
+                : 'bg-[#e6f4f1] text-[#006659] border-[#a3d9d2] hover:bg-[#008272] hover:text-white'
+            }`}
+          >
+            <Sparkles size={13} className={activeRibbonTab === 'Modify' ? 'text-[#80dfd2]' : 'text-[#008272]'} />
+            <span>Modify | {contextualTitle}</span>
+          </button>
         )}
       </div>
 
@@ -1208,7 +1252,7 @@ export const Ribbon: React.FC = () => {
 
             {/* Create Panel */}
             <RibbonPanel title="Create">
-              {renderDummyTool('Create Similar', 'CS', <IconCreateSimilar size={22} />)}
+              {renderToolButton('select', 'Create Similar', 'CS', <IconCreateSimilar size={22} />, () => createSimilar())}
               {renderDummyTool('Create Group', 'GP', <IconCreateGroup size={22} />)}
             </RibbonPanel>
           </>
@@ -1216,74 +1260,7 @@ export const Ribbon: React.FC = () => {
       </div>
 
       {/* 4. Revit Options Bar */}
-      <div className="flex items-center px-3 py-1 bg-[#f8fafc] border-t border-[#e2e8f0] text-xs text-[#334155] min-h-[28px] space-x-4">
-        {activeTool === 'WA' ? (
-          <>
-            <span className="font-semibold text-[#0284c7]">Wall Options:</span>
-            <div className="flex items-center space-x-1">
-              <span className="text-[#64748b] text-[11px]">Height:</span>
-              <span className="font-medium text-[11px] bg-[#ffffff] border border-[#cbd5e1] px-1.5 py-0.5 rounded">
-                Unconnected (10' 0")
-              </span>
-            </div>
-            <div className="flex items-center space-x-1">
-              <span className="text-[#64748b] text-[11px]">Location Line:</span>
-              <span className="font-medium text-[11px] bg-[#ffffff] border border-[#cbd5e1] px-1.5 py-0.5 rounded">
-                Wall Centerline
-              </span>
-            </div>
-            <label className="flex items-center space-x-1 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={chainTools}
-                onChange={(e) => setChainTools(e.target.checked)}
-                className="rounded border-[#cbd5e1] text-[#007acc]"
-              />
-              <span className="text-[11px] font-medium">Chain</span>
-            </label>
-            <div className="flex items-center space-x-1">
-              <span className="text-[#64748b] text-[11px]">Offset:</span>
-              <span className="font-mono text-[11px] bg-[#ffffff] border border-[#cbd5e1] px-1.5 py-0.5 rounded">
-                0' 0"
-              </span>
-            </div>
-          </>
-        ) : activeTool === 'DR' || activeTool === 'WN' ? (
-          <>
-            <span className="font-semibold text-[#0284c7]">
-              {activeTool === 'DR' ? 'Door Placement:' : 'Window Placement:'}
-            </span>
-            <label className="flex items-center space-x-1 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={chainTools}
-                onChange={(e) => setChainTools(e.target.checked)}
-                className="rounded border-[#cbd5e1] text-[#007acc]"
-              />
-              <span className="text-[11px] font-medium">Chain Placement</span>
-            </label>
-            <span className="text-[11px] text-[#64748b]">Hover over an existing wall to host and click to place.</span>
-          </>
-        ) : activeTool === 'AL' ? (
-          <>
-            <span className="font-semibold text-[#0284c7]">Align:</span>
-            <label className="flex items-center space-x-1 cursor-pointer">
-              <input type="checkbox" className="rounded border-[#cbd5e1] text-[#007acc]" />
-              <span className="text-[11px] font-medium">Multiple Alignment</span>
-            </label>
-            <label className="flex items-center space-x-1 cursor-pointer">
-              <input type="checkbox" defaultChecked className="rounded border-[#cbd5e1] text-[#007acc]" />
-              <span className="text-[11px] font-medium">Lock</span>
-            </label>
-            <span className="text-[11px] text-[#64748b]">Select line or element to align to, then select element to align.</span>
-          </>
-        ) : (
-          <div className="flex items-center space-x-2 text-[#64748b] text-[11px]">
-            <span className="font-medium text-[#1e293b]">Ready</span>
-            <span>• Click an architectural tool above or type a two-letter hotkey (WA, DR, WN, RF, SB, AL)</span>
-          </div>
-        )}
-      </div>
+      <OptionsBar />
 
       {/* Hidden file input for opening IFC or BIMWorks containers */}
       <input

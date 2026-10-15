@@ -8,10 +8,34 @@ export type IfcClass =
   | 'IfcGrid'
   | 'IfcBuildingStorey';
 
+export interface BimTypeLayer {
+  function: string;
+  material: string;
+  thickness: number;
+}
+
+export interface BimType {
+  id: string;
+  name: string;
+  ifc_class: string;
+  family_name?: string;
+  parameters: {
+    thickness?: number;
+    height?: number;
+    width?: number;
+    sill_height?: number;
+    fire_rating?: string;
+    function?: string;
+    layers?: BimTypeLayer[];
+    [key: string]: any;
+  };
+}
+
 export interface BimElement {
   guid: string;
   ifc_class: IfcClass;
   name: string;
+  type_id?: string;
   start?: [number, number, number];
   end?: [number, number, number];
   length?: number;
@@ -57,6 +81,7 @@ export interface ElementParams {
   guid: string;
   ifc_class: string;
   name?: string;
+  type_id?: string;
   start?: [number, number, number];
   end?: [number, number, number];
   length?: number;

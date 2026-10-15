@@ -262,6 +262,21 @@ class SheetDeleteParams(BaseModel):
         return data
 
 
+class SheetUpdateParams(BaseModel):
+    sheet_id: str = Field(..., description="Target sheet ID")
+    updates: Dict[str, Any] = Field(..., description="Dictionary of sheet property updates")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "sheetId" in data and "sheet_id" not in data:
+                res = dict(data)
+                res["sheet_id"] = res["sheetId"]
+                return res
+        return data
+
+
 class ViewportAddParams(BaseModel):
     sheet_id: str = Field(..., description="Target sheet ID")
     view_id: str = Field(..., description="Target view ID to place on sheet")
@@ -332,6 +347,29 @@ class ViewportMoveParams(BaseModel):
         return data
 
 
+class TypeCreateParams(BaseModel):
+    type_id: str = Field(..., description="Unique type identifier")
+    name: str = Field(..., description="Human-readable family and type name")
+    ifc_class: str = Field(default="IfcWallType", description="IFC type class")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="Type parameters dict")
+
+
+class TypeUpdateParams(BaseModel):
+    type_id: str = Field(..., description="Target type ID to update")
+    parameters: Dict[str, Any] = Field(..., description="Dictionary of parameter updates")
+
+
+class TypeDuplicateParams(BaseModel):
+    source_type_id: str = Field(..., description="Existing type ID to clone")
+    new_type_id: str = Field(..., description="New unique type ID")
+    new_name: str = Field(..., description="New human-readable type name")
+
+
+class ElementSetTypeParams(BaseModel):
+    guid: str = Field(..., description="Target element GUID")
+    type_id: str = Field(..., description="Type ID to assign")
+
+
 # Registry of command names to parameter classes
 COMMAND_REGISTRY = {
     "WallCreate": WallCreateParams,
@@ -362,12 +400,17 @@ COMMAND_REGISTRY = {
     "ElementUpdate": ElementUpdateParams,
     "SheetCreate": SheetCreateParams,
     "SheetDelete": SheetDeleteParams,
+    "SheetUpdate": SheetUpdateParams,
     "ViewportAdd": ViewportAddParams,
     "ViewportRemove": ViewportRemoveParams,
     "ViewportMove": ViewportMoveParams,
     "DimensionCreate": DimensionCreateParams,
     "DimensionValueSet": DimensionValueSetParams,
     "DimensionDelete": DimensionDeleteParams,
+    "TypeCreate": TypeCreateParams,
+    "TypeUpdate": TypeUpdateParams,
+    "TypeDuplicate": TypeDuplicateParams,
+    "ElementSetType": ElementSetTypeParams,
 }
 
 
@@ -652,6 +695,11 @@ class CommandBusEngine:
                 raise ValueError(f"Sheet {p.sheet_id} could not be deleted")
             return {"status": "deleted", "sheet_id": p.sheet_id}
 
+        elif cmd_name == "SheetUpdate":
+            p: SheetUpdateParams = validated
+            sheet = self.manager.update_sheet(p.sheet_id, p.updates)
+            return {"status": "updated", "sheet": sheet, "sheet_id": p.sheet_id}
+
         elif cmd_name == "ViewportAdd":
             p: ViewportAddParams = validated
             vp = self.manager.add_viewport_to_sheet(
@@ -705,6 +753,22 @@ class CommandBusEngine:
             if not ok:
                 raise ValueError(f"Dimension {p.dimension_id} not found")
             return {"status": "deleted", "dimension_id": p.dimension_id}
+
+        elif cmd_name == "TypeCreate":
+            p: TypeCreateParams = validated
+            return self.manager.create_type(p.type_id, p.name, p.ifc_class, p.parameters)
+
+        elif cmd_name == "TypeUpdate":
+            p: TypeUpdateParams = validated
+            return self.manager.update_type(p.type_id, p.parameters)
+
+        elif cmd_name == "TypeDuplicate":
+            p: TypeDuplicateParams = validated
+            return self.manager.duplicate_type(p.source_type_id, p.new_type_id, p.new_name)
+
+        elif cmd_name == "ElementSetType":
+            p: ElementSetTypeParams = validated
+            return self.manager.set_element_type(p.guid, p.type_id)
 
         raise ValueError(f"Unhandled command execution: {cmd_name}")
 
@@ -936,6 +1000,57 @@ class CommandBusEngine:
             def redo_fn(mgr):
                 mgr.offset_element(p.guid, p.distance, p.side)
             return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "TypeCreate":
+            p: TypeCreateParams = validated
+            res = self.manager.create_type(p.type_id, p.name, p.ifc_class, p.parameters)
+            def undo_fn(mgr):
+                mgr.delete_type(p.type_id)
+            def redo_fn(mgr):
+                mgr.create_type(p.type_id, p.name, p.ifc_class, p.parameters)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "TypeUpdate":
+            p: TypeUpdateParams = validated
+            old_type = self.manager.type_registry.get(p.type_id)
+            old_params = copy.deepcopy(old_type.get("parameters", {})) if old_type else {}
+            res = self.manager.update_type(p.type_id, p.parameters)
+            def undo_fn(mgr):
+                mgr.update_type(p.type_id, old_params)
+            def redo_fn(mgr):
+                mgr.update_type(p.type_id, p.parameters)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "TypeDuplicate":
+            p: TypeDuplicateParams = validated
+            res = self.manager.duplicate_type(p.source_type_id, p.new_type_id, p.new_name)
+            def undo_fn(mgr):
+                mgr.delete_type(p.new_type_id)
+            def redo_fn(mgr):
+                mgr.duplicate_type(p.source_type_id, p.new_type_id, p.new_name)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "ElementSetType":
+            p: ElementSetTypeParams = validated
+            old_meta = self.manager.element_meta.get(p.guid, {})
+            old_type_id = old_meta.get("type_id")
+            res = self.manager.set_element_type(p.guid, p.type_id)
+            def undo_fn(mgr):
+                if old_type_id:
+                    mgr.set_element_type(p.guid, old_type_id)
+            def redo_fn(mgr):
+                mgr.set_element_type(p.guid, p.type_id)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "SheetUpdate":
+            p: SheetUpdateParams = validated
+            old_sheet = copy.deepcopy(self.manager.sheets.get(p.sheet_id, {}))
+            sheet = self.manager.update_sheet(p.sheet_id, p.updates)
+            def undo_fn(mgr):
+                mgr.update_sheet(p.sheet_id, old_sheet)
+            def redo_fn(mgr):
+                mgr.update_sheet(p.sheet_id, p.updates)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "sheet": sheet, "sheet_id": p.sheet_id}
 
         else:
             # Fallback for any other registered command

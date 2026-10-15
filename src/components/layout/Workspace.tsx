@@ -4,7 +4,7 @@ import {
   DockviewReadyEvent,
   IDockviewPanelProps,
 } from 'dockview-react';
-import { useBimStore } from '../../store/useBimStore';
+import { useBimStore, TILE_WINDOWS_EVENT, ZOOM_EXTENTS_EVENT } from '../../store/useBimStore';
 import { ProjectBrowser } from '../browser/ProjectBrowser';
 import { PropertiesPalette } from '../properties/PropertiesPalette';
 import { Viewport3D } from '../viewport/Viewport3D';
@@ -140,6 +140,36 @@ export const Workspace: React.FC = () => {
       }
     }
   }, [activeSheetId]);
+
+  useEffect(() => {
+    let isTiled = false;
+    const handleTile = () => {
+      const api = dockviewApiRef.current;
+      if (!api) return;
+      const planPanel = api.getPanel('view-level-1');
+      const threeDPanel = api.getPanel('view-3d');
+      if (planPanel && threeDPanel) {
+        if (!isTiled) {
+          planPanel.api.moveTo({
+            direction: 'right',
+            referencePanel: threeDPanel,
+          });
+          isTiled = true;
+        } else {
+          planPanel.api.moveTo({
+            referencePanel: threeDPanel,
+          });
+          isTiled = false;
+        }
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT));
+        }, 100);
+      }
+    };
+
+    window.addEventListener(TILE_WINDOWS_EVENT, handleTile);
+    return () => window.removeEventListener(TILE_WINDOWS_EVENT, handleTile);
+  }, []);
 
   return (
     <div className="flex-1 w-full h-full overflow-hidden dockview-theme-dark">

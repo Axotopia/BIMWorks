@@ -212,6 +212,8 @@ class BimModelManager:
         self.wall_joins_rev: int = 0
         self.project_rev: int = 0
         self.dimensions_rev: int = 0
+        self.types_rev: int = 0
+        self.type_registry: Dict[str, Dict[str, Any]] = {}
 
         # Storeys (Levels)
         self.levels: Dict[str, Any] = {}
@@ -395,7 +397,286 @@ class BimModelManager:
             },
         }
 
-    # ------------------------------------------------------------------
+        self._init_default_types()
+
+    def _init_default_types(self) -> None:
+        """Initializes the default Revit-style type registry and links IFC type products."""
+        defaults = [
+            {
+                "id": "wall-type-cmu-10",
+                "name": 'Basic Wall : Exterior - 10" CMU',
+                "ifc_class": "IfcWallType",
+                "parameters": {
+                    "thickness": 10.0 / 12.0,
+                    "function": "Exterior",
+                    "fire_rating": "2 HR",
+                    "structural_material": "Concrete Masonry Units",
+                    "thermal_resistance": "R-19.0",
+                    "layers": [
+                        {"name": "Exterior Finish", "thickness": 1.0 / 12.0, "material": "Stucco", "function": "Finish 1"},
+                        {"name": "Core", "thickness": 8.0 / 12.0, "material": "Concrete Masonry Units", "function": "Structure"},
+                        {"name": "Interior Finish", "thickness": 1.0 / 12.0, "material": "Gypsum Wall Board", "function": "Finish 2"},
+                    ],
+                },
+            },
+            {
+                "id": "wall-type-cmu-8",
+                "name": 'Basic Wall : Exterior - 8" CMU',
+                "ifc_class": "IfcWallType",
+                "parameters": {
+                    "thickness": 8.0 / 12.0,
+                    "function": "Exterior",
+                    "fire_rating": "2 HR",
+                    "structural_material": "Concrete Masonry Units",
+                    "thermal_resistance": "R-15.0",
+                    "layers": [
+                        {"name": "Core", "thickness": 8.0 / 12.0, "material": "Concrete Masonry Units", "function": "Structure"},
+                    ],
+                },
+            },
+            {
+                "id": "wall-type-partition-478",
+                "name": 'Basic Wall : Interior - 4 7/8" Partition',
+                "ifc_class": "IfcWallType",
+                "parameters": {
+                    "thickness": 4.875 / 12.0,
+                    "function": "Interior",
+                    "fire_rating": "1 HR",
+                    "structural_material": "Gypsum Wall Board on Metal Stud",
+                    "thermal_resistance": "R-11.0",
+                    "layers": [
+                        {"name": "Finish 1", "thickness": 0.625 / 12.0, "material": "Gypsum Wall Board", "function": "Finish 1"},
+                        {"name": "Core", "thickness": 3.625 / 12.0, "material": "Metal Stud Layer", "function": "Structure"},
+                        {"name": "Finish 2", "thickness": 0.625 / 12.0, "material": "Gypsum Wall Board", "function": "Finish 2"},
+                    ],
+                },
+            },
+            {
+                "id": "wall-type-partition-6",
+                "name": 'Basic Wall : Interior - 6" Partition',
+                "ifc_class": "IfcWallType",
+                "parameters": {
+                    "thickness": 6.0 / 12.0,
+                    "function": "Interior",
+                    "fire_rating": "1 HR",
+                    "structural_material": "Metal Stud",
+                    "thermal_resistance": "R-13.0",
+                    "layers": [
+                        {"name": "Core", "thickness": 6.0 / 12.0, "material": "Metal Stud", "function": "Structure"},
+                    ],
+                },
+            },
+            {
+                "id": "door-type-single-flush-36",
+                "name": 'Single-Flush : 36" x 84"',
+                "ifc_class": "IfcDoorType",
+                "parameters": {
+                    "width": 3.0,
+                    "height": 7.0,
+                    "fire_rating": "20 MIN",
+                    "material": "Wood Flush Panel",
+                    "function": "Interior",
+                },
+            },
+            {
+                "id": "door-type-single-flush-30",
+                "name": 'Single-Flush : 30" x 84"',
+                "ifc_class": "IfcDoorType",
+                "parameters": {
+                    "width": 2.5,
+                    "height": 7.0,
+                    "fire_rating": "20 MIN",
+                    "material": "Wood Flush Panel",
+                    "function": "Interior",
+                },
+            },
+            {
+                "id": "window-type-fixed-36x48",
+                "name": 'Fixed : 36" x 48"',
+                "ifc_class": "IfcWindowType",
+                "parameters": {
+                    "width": 3.0,
+                    "height": 4.0,
+                    "sill_height": 3.0,
+                    "thermal_resistance": "U-0.28",
+                    "material": "Double Glazed Low-E Aluminum",
+                    "function": "Exterior",
+                },
+            },
+            {
+                "id": "window-type-fixed-48x48",
+                "name": 'Fixed : 48" x 48"',
+                "ifc_class": "IfcWindowType",
+                "parameters": {
+                    "width": 4.0,
+                    "height": 4.0,
+                    "sill_height": 3.0,
+                    "thermal_resistance": "U-0.28",
+                    "material": "Double Glazed Low-E Aluminum",
+                    "function": "Exterior",
+                },
+            },
+        ]
+        for d in defaults:
+            self._register_type_entity(d["id"], d["name"], d["ifc_class"], d["parameters"])
+
+    def _register_type_entity(
+        self, type_id: str, name: str, ifc_class: str, parameters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        entity = None
+        try:
+            entity = ifcopenshell.api.run("root.create_entity", self.model, ifc_class=ifc_class, name=name)
+            pset_name = "Pset_WallCommon" if "Wall" in ifc_class else ("Pset_DoorCommon" if "Door" in ifc_class else "Pset_WindowCommon")
+            pset = ifcopenshell.api.run("pset.add_pset", self.model, product=entity, name=pset_name)
+            props = {}
+            if "fire_rating" in parameters:
+                props["FireRating"] = str(parameters["fire_rating"])
+            if "thermal_resistance" in parameters:
+                props["ThermalTransmittance"] = str(parameters["thermal_resistance"])
+            if props:
+                ifcopenshell.api.run("pset.edit_pset", self.model, pset=pset, properties=props)
+        except Exception:
+            pass
+
+        rec = {
+            "id": type_id,
+            "name": name,
+            "ifc_class": ifc_class,
+            "parameters": copy.deepcopy(parameters),
+            "entity": entity,
+        }
+        self.type_registry[type_id] = rec
+        self.types_rev += 1
+        return rec
+
+    def get_types(self) -> List[Dict[str, Any]]:
+        out = []
+        for tid, t in sorted(self.type_registry.items(), key=lambda x: x[0]):
+            out.append({
+                "id": t["id"],
+                "name": t["name"],
+                "ifc_class": t["ifc_class"],
+                "parameters": self._jsonable(t["parameters"]),
+            })
+        return out
+
+    def create_type(
+        self, type_id: str, name: str, ifc_class: str = "IfcWallType", parameters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        if parameters is None:
+            parameters = {}
+        rec = self._register_type_entity(type_id, name, ifc_class, parameters)
+        self.project_rev += 1
+        return {"status": "created", "type_id": type_id, "name": name}
+
+    def duplicate_type(self, source_type_id: str, new_type_id: str, new_name: str) -> Dict[str, Any]:
+        if source_type_id not in self.type_registry:
+            raise KeyError(f"Source type '{source_type_id}' not found in registry")
+        source = self.type_registry[source_type_id]
+        rec = self._register_type_entity(new_type_id, new_name, source["ifc_class"], source["parameters"])
+        self.project_rev += 1
+        return {"status": "duplicated", "type_id": new_type_id, "name": new_name}
+
+    def update_type(self, type_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        if type_id not in self.type_registry:
+            raise KeyError(f"Type '{type_id}' not found in registry")
+        t = self.type_registry[type_id]
+        t["parameters"].update(copy.deepcopy(parameters))
+
+        # Propagate to all instances referencing this type
+        affected_walls = []
+        for guid, meta in self.element_meta.items():
+            if meta.get("type_id") == type_id:
+                if meta.get("ifc_class") in ("IfcWallStandardCase", "IfcWall"):
+                    if "thickness" in parameters:
+                        meta["thickness"] = float(parameters["thickness"])
+                        meta["footprint"] = None
+                        self._rebuild_wall_representation(guid)
+                        self._invalidate_geometry_cache(guid)
+                        self.mark_mesh_dirty(guid)
+                        affected_walls.append(guid)
+                elif meta.get("ifc_class") == "IfcDoor":
+                    if "width" in parameters:
+                        meta["width"] = float(parameters["width"])
+                    if "height" in parameters:
+                        meta["height"] = float(parameters["height"])
+                    self._invalidate_geometry_cache(guid)
+                    self.mark_mesh_dirty(guid)
+                elif meta.get("ifc_class") == "IfcWindow":
+                    if "width" in parameters:
+                        meta["width"] = float(parameters["width"])
+                    if "height" in parameters:
+                        meta["height"] = float(parameters["height"])
+                    self._invalidate_geometry_cache(guid)
+                    self.mark_mesh_dirty(guid)
+
+        if affected_walls:
+            self.recompute_wall_joins(only=affected_walls)
+
+        self.types_rev += 1
+        self.project_rev += 1
+        return {"status": "updated", "type_id": type_id, "parameters": t["parameters"]}
+
+    def delete_type(self, type_id: str) -> bool:
+        if type_id in self.type_registry:
+            del self.type_registry[type_id]
+            self.types_rev += 1
+            return True
+        return False
+
+    def set_element_type(self, guid: str, type_id: str) -> Dict[str, Any]:
+        if guid not in self.element_meta:
+            raise KeyError(f"Element '{guid}' not found")
+        if type_id not in self.type_registry:
+            raise KeyError(f"Type '{type_id}' not found in registry")
+
+        meta = self.element_meta[guid]
+        t = self.type_registry[type_id]
+        meta["type_id"] = type_id
+        meta["name"] = t["name"]
+
+        # Re-link IfcRelDefinesByType
+        entity = meta.get("entity")
+        type_ent = t.get("entity")
+        if entity and type_ent:
+            try:
+                for rel in self.model.by_type("IfcRelDefinesByType"):
+                    if entity in rel.RelatedObjects:
+                        rel_objs = [o for o in rel.RelatedObjects if o != entity]
+                        if rel_objs:
+                            rel.RelatedObjects = rel_objs
+                        else:
+                            self.model.remove(rel)
+                        break
+                ifcopenshell.api.run("type.assign_type", self.model, related_objects=[entity], relating_type=type_ent)
+            except Exception:
+                pass
+
+        if meta.get("ifc_class") in ("IfcWallStandardCase", "IfcWall"):
+            if "thickness" in t["parameters"]:
+                meta["thickness"] = float(t["parameters"]["thickness"])
+            meta["footprint"] = None
+            self._rebuild_wall_representation(guid)
+            self._invalidate_geometry_cache(guid)
+            self.mark_mesh_dirty(guid)
+            self.recompute_wall_joins(only=[guid])
+        elif meta.get("ifc_class") == "IfcDoor":
+            if "width" in t["parameters"]:
+                meta["width"] = float(t["parameters"]["width"])
+            if "height" in t["parameters"]:
+                meta["height"] = float(t["parameters"]["height"])
+            self._invalidate_geometry_cache(guid)
+            self.mark_mesh_dirty(guid)
+        elif meta.get("ifc_class") == "IfcWindow":
+            if "width" in t["parameters"]:
+                meta["width"] = float(t["parameters"]["width"])
+            if "height" in t["parameters"]:
+                meta["height"] = float(t["parameters"]["height"])
+            self._invalidate_geometry_cache(guid)
+            self.mark_mesh_dirty(guid)
+
+        self.project_rev += 1
+        return {"status": "updated", "guid": guid, "type_id": type_id, "name": t["name"]}
     # Transactional state snapshots (GLM Master Spec v2.3 §3.2)
     # A snapshot captures the complete IFC STEP text plus all in-memory
     # tracking state. Entity references are excluded (they are re-resolved
@@ -436,6 +717,8 @@ class BimModelManager:
             "dimensions": copy.deepcopy(getattr(self, "dimensions", {})),
             "georeference_data": copy.deepcopy(self.georeference_data),
             "project_name": self.project_name,
+            "type_registry": copy.deepcopy(getattr(self, "type_registry", {})),
+            "types_rev": getattr(self, "types_rev", 0),
             "mesh_revs": copy.deepcopy(self.mesh_revs),
             "dirty_mesh_guids": copy.copy(self.dirty_mesh_guids),
             "removed_guids_by_rev": copy.deepcopy(self.removed_guids_by_rev),
@@ -552,6 +835,12 @@ class BimModelManager:
         self.wall_joins_rev = snap.get("wall_joins_rev", 0)
         self.project_rev = snap.get("project_rev", 0)
         self.dimensions_rev = snap.get("dimensions_rev", 0)
+        self.types_rev = snap.get("types_rev", 0)
+        self.type_registry = copy.deepcopy(snap.get("type_registry", {}))
+        for trec in self.type_registry.values():
+            if trec.get("ifc_class") and trec.get("name"):
+                ents = [e for e in self.model.by_type(trec["ifc_class"]) if getattr(e, "Name", None) == trec["name"]]
+                trec["entity"] = ents[0] if ents else None
 
     def mark_mesh_dirty(self, *guids: str, clear_cache: bool = True) -> None:
         """Marks elements as having modified geometry/placement."""
@@ -1753,6 +2042,7 @@ class BimModelManager:
         name: str = "Basic Wall : Exterior - 8\" CMU",
         wall_id: Optional[str] = None,
         guid: Optional[str] = None,
+        type_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Creates an IfcWallStandardCase defined by 2D baseline, height, and thickness.
@@ -1761,6 +2051,20 @@ class BimModelManager:
         `guid` re-uses the caller's GUID (overlay replay); `wall_id` is the legacy
         alias kept for callers that predate it.
         """
+        if not type_id:
+            for tid, trec in getattr(self, "type_registry", {}).items():
+                if trec["name"] == name:
+                    type_id = tid
+                    break
+        if not type_id and hasattr(self, "type_registry") and self.type_registry:
+            type_id = "wall-type-cmu-10" if "10" in name else ("wall-type-cmu-8" if "8" in name else "wall-type-partition-478")
+
+        type_rec = getattr(self, "type_registry", {}).get(type_id)
+        if type_rec:
+            if "thickness" in type_rec.get("parameters", {}):
+                thickness = float(type_rec["parameters"]["thickness"])
+            name = type_rec.get("name", name)
+
         dx = end_pt[0] - start_pt[0]
         dy = end_pt[1] - start_pt[1]
         length = math.hypot(dx, dy)
@@ -1775,6 +2079,14 @@ class BimModelManager:
             "root.create_entity", self.model, ifc_class="IfcWallStandardCase", name=name
         )
         guid = self._apply_guid(wall, guid or wall_id)
+
+        if type_rec and type_rec.get("entity") is not None:
+            try:
+                ifcopenshell.api.run(
+                    "type.assign_type", self.model, related_objects=[wall], relating_type=type_rec["entity"]
+                )
+            except Exception:
+                pass
 
         ifcopenshell.api.run(
             "spatial.assign_container", self.model, relating_structure=storey, products=[wall]
@@ -1819,6 +2131,7 @@ class BimModelManager:
             "guid": guid,
             "ifc_class": "IfcWallStandardCase",
             "name": name,
+            "type_id": type_id,
             "start": list(start_pt),
             "end": list(end_pt),
             "length": length,
@@ -1865,6 +2178,7 @@ class BimModelManager:
         name: str = "Single Flush : 36\" x 84\"",
         swing_flipped: bool = False,
         guid: Optional[str] = None,
+        type_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Creates an IfcDoor hosted inside host wall.
@@ -1872,6 +2186,22 @@ class BimModelManager:
         """
         if host_wall_guid not in self.element_meta:
             raise ValueError(f"Host wall {host_wall_guid} not found.")
+
+        if not type_id:
+            for tid, trec in getattr(self, "type_registry", {}).items():
+                if trec["name"] == name:
+                    type_id = tid
+                    break
+        if not type_id and hasattr(self, "type_registry") and self.type_registry:
+            type_id = "door-type-single-flush-36"
+
+        type_rec = getattr(self, "type_registry", {}).get(type_id)
+        if type_rec:
+            if "width" in type_rec.get("parameters", {}):
+                width = float(type_rec["parameters"]["width"])
+            if "height" in type_rec.get("parameters", {}):
+                height = float(type_rec["parameters"]["height"])
+            name = type_rec.get("name", name)
 
         wall_meta = self.element_meta[host_wall_guid]
         wall = wall_meta["entity"]
@@ -1911,6 +2241,15 @@ class BimModelManager:
             "root.create_entity", self.model, ifc_class="IfcDoor", name=name
         )
         door_guid = self._apply_guid(door, guid)
+
+        if type_rec and type_rec.get("entity") is not None:
+            try:
+                ifcopenshell.api.run(
+                    "type.assign_type", self.model, related_objects=[door], relating_type=type_rec["entity"]
+                )
+            except Exception:
+                pass
+
         storey = self.get_storey_by_id(wall_meta["level_id"])
         ifcopenshell.api.run(
             "spatial.assign_container", self.model, relating_structure=storey, products=[door]
@@ -1942,6 +2281,7 @@ class BimModelManager:
             "opening_guid": opening_guid,
             "ifc_class": "IfcDoor",
             "name": name,
+            "type_id": type_id,
             "host_wall_guid": host_wall_guid,
             "offset_along_wall": offset_along_wall,
             "width": width,
@@ -1977,10 +2317,29 @@ class BimModelManager:
         sill_height: float = WINDOW_SILL_36,
         name: str = "Fixed Window : 48\" x 48\"",
         guid: Optional[str] = None,
+        type_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Creates an IfcWindow hosted in wall with automated IfcOpeningElement."""
         if host_wall_guid not in self.element_meta:
             raise ValueError(f"Host wall {host_wall_guid} not found.")
+
+        if not type_id:
+            for tid, trec in getattr(self, "type_registry", {}).items():
+                if trec["name"] == name:
+                    type_id = tid
+                    break
+        if not type_id and hasattr(self, "type_registry") and self.type_registry:
+            type_id = "window-type-fixed-48x48" if "48" in name else "window-type-fixed-36x48"
+
+        type_rec = getattr(self, "type_registry", {}).get(type_id)
+        if type_rec:
+            if "width" in type_rec.get("parameters", {}):
+                width = float(type_rec["parameters"]["width"])
+            if "height" in type_rec.get("parameters", {}):
+                height = float(type_rec["parameters"]["height"])
+            if "sill_height" in type_rec.get("parameters", {}):
+                sill_height = float(type_rec["parameters"]["sill_height"])
+            name = type_rec.get("name", name)
 
         wall_meta = self.element_meta[host_wall_guid]
         wall = wall_meta["entity"]
@@ -2019,6 +2378,15 @@ class BimModelManager:
             "root.create_entity", self.model, ifc_class="IfcWindow", name=name
         )
         win_guid = self._apply_guid(window, guid)
+
+        if type_rec and type_rec.get("entity") is not None:
+            try:
+                ifcopenshell.api.run(
+                    "type.assign_type", self.model, related_objects=[window], relating_type=type_rec["entity"]
+                )
+            except Exception:
+                pass
+
         storey = self.get_storey_by_id(wall_meta["level_id"])
         ifcopenshell.api.run(
             "spatial.assign_container", self.model, relating_structure=storey, products=[window]
@@ -2050,6 +2418,7 @@ class BimModelManager:
             "opening_guid": opening_guid,
             "ifc_class": "IfcWindow",
             "name": name,
+            "type_id": type_id,
             "host_wall_guid": host_wall_guid,
             "offset_along_wall": offset_along_wall,
             "width": width,
@@ -3980,6 +4349,7 @@ class BimModelManager:
     ELEMENT_PARAM_FIELDS = (
         "ifc_class",
         "name",
+        "type_id",
         "start",
         "end",
         "length",
@@ -4023,6 +4393,7 @@ class BimModelManager:
         ifc_class = rec.get("ifc_class")
         name = rec.get("name") or ifc_class or "Element"
         level_id = rec.get("level_id")
+        type_id = rec.get("type_id")
 
         try:
             if ifc_class in ("IfcWallStandardCase", "IfcWall"):
@@ -4035,6 +4406,7 @@ class BimModelManager:
                     height=float(rec.get("height", FEET_10)),
                     thickness=float(rec.get("thickness", 0.2)),
                     level_id=level_id, name=name, guid=guid,
+                    type_id=type_id,
                 )
 
             elif ifc_class in ("IfcDoor", "IfcWindow"):
@@ -4051,6 +4423,7 @@ class BimModelManager:
                         name=name,
                         swing_flipped=bool(rec.get("swing_flipped", False)),
                         guid=guid,
+                        type_id=type_id,
                     )
                 else:
                     meta = self.add_window(
@@ -4060,6 +4433,7 @@ class BimModelManager:
                         height=float(rec.get("height", WINDOW_HEIGHT_48)),
                         sill_height=float(rec.get("sill_height", WINDOW_SILL_36)),
                         name=name, guid=guid,
+                        type_id=type_id,
                     )
 
             elif ifc_class == "IfcSlab":
@@ -4144,6 +4518,13 @@ class BimModelManager:
         self.element_meta = {}
         self.join_policies = {}
         self.constraints = self._jsonable(overlay.get("constraints", {}) or {})
+
+        # Restore types from overlay if present
+        if overlay.get("types"):
+            for t in overlay["types"]:
+                tid = t.get("id")
+                if tid:
+                    self._register_type_entity(tid, t.get("name", tid), t.get("ifc_class", "IfcWallType"), t.get("parameters", {}))
 
         # Levels: keep whatever the IFC import produced (storeys are structural)
         # but adopt overlay names/elevations where they exist.
@@ -5704,6 +6085,30 @@ class BimModelManager:
         self.sheets_rev += 1
         return True
 
+    def update_sheet(self, sheet_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Updates metadata of an existing sheet (e.g. sheet_title, sheet_number, drawn_by, date).
+        """
+        if sheet_id not in self.sheets:
+            raise ValueError(f"Sheet '{sheet_id}' not found")
+        s = self.sheets[sheet_id]
+        if "sheet_number" in updates and updates["sheet_number"]:
+            num_clean = str(updates["sheet_number"]).strip()
+            for other_id, other_s in self.sheets.items():
+                if other_id != sheet_id and other_s.get("sheet_number", "").strip().lower() == num_clean.lower():
+                    raise ValueError(f"Sheet Number is already in use: '{num_clean}'")
+            s["sheet_number"] = num_clean
+        if "sheet_title" in updates and updates["sheet_title"] is not None:
+            s["sheet_title"] = str(updates["sheet_title"]).strip()
+        if "drawn_by" in updates and updates["drawn_by"] is not None:
+            s["drawn_by"] = str(updates["drawn_by"]).strip()
+        if "date" in updates and updates["date"] is not None:
+            s["date"] = str(updates["date"]).strip()
+        if "paper_size" in updates and updates["paper_size"] is not None:
+            s["paper_size"] = str(updates["paper_size"]).strip()
+        self.sheets_rev += 1
+        return s
+
     def convert_placeholder_sheet(self, sheet_id: str) -> Dict[str, Any]:
         """Converts a placeholder sheet into a real printable sheet (SPEC §13.2)."""
         if sheet_id not in self.sheets:
@@ -5937,6 +6342,7 @@ class BimModelManager:
             "constraints": self._jsonable(self.constraints),
             "join_policies": self._jsonable(self.join_policies),
             "dimensions": self._jsonable(list(self.dimensions.values())),
+            "types": self._jsonable(list(self.type_registry.values())),
             "sheets": self._jsonable(sorted(list(self.sheets.values()), key=lambda s: s["id"])),
             "views": self._jsonable(sorted(list(self.views.values()), key=lambda v: v["id"])),
             "levels": [

@@ -3,6 +3,7 @@ import { useBimStore, ZOOM_EXTENTS_EVENT } from '../../store/useBimStore';
 import { formatLength, tryParseLength } from '../../utils/units';
 import { BimElement, MeshBufferData } from '../../types/bim';
 import { Maximize2, ZoomIn, ZoomOut, Lock, Equal, Check, X, Crosshair } from 'lucide-react';
+import { ContextMenu } from '../common/ContextMenu';
 import {
   findSnapCandidate,
   SnapCandidate,
@@ -167,6 +168,7 @@ export const PlanViewport2D: React.FC = () => {
     projectName,
     levels,
     moveLevel,
+    flipElementOrientation,
   } = useBimStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -176,6 +178,7 @@ export const PlanViewport2D: React.FC = () => {
   const [sketchStartPoint, setSketchStartPoint] = useState<[number, number] | null>(null);
   const [editingDimension, setEditingDimension] = useState<{ id: string; mx: number; my: number } | null>(null);
   const [dimInputVal, setDimInputVal] = useState<string>('');
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; guid: string | null } | null>(null);
 
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 300, y: 300 });
   // UI-P0-8: decimal feet, not metres — the engine's internal unit (spec §11.3).
@@ -858,6 +861,19 @@ export const PlanViewport2D: React.FC = () => {
 
   const isDrawing = activeTool !== 'select' && activeTool !== 'AL';
 
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const target = hoveredGuid || (selectedGuids.length > 0 ? selectedGuids[selectedGuids.length - 1] : selectedGuid);
+    if (target && !selectedGuids.includes(target)) {
+      setSelectedGuid(target);
+    }
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      guid: target,
+    });
+  };
+
   return (
     <div
       ref={containerRef}
@@ -869,7 +885,7 @@ export const PlanViewport2D: React.FC = () => {
       onMouseUp={handleMouseUp}
       onMouseLeave={handlePointerLeave}
       onDoubleClick={handleDoubleClick}
-      onContextMenu={(e) => e.preventDefault()}
+      onContextMenu={handleContextMenu}
     >
       {/* 2D Vector Drawing Layer */}
       <svg
@@ -1981,6 +1997,75 @@ export const PlanViewport2D: React.FC = () => {
               </g>
             );
           })()}
+
+          {/* 8. Revit Selection Endpoint Grips & Flip Controls Overlay */}
+          {selectedGuids.map((guid) => {
+            const el = elements[guid];
+            if (!el) return null;
+            if (el.start && el.end) {
+              const sx = el.start[0];
+              const sy = el.start[1];
+              const ex = el.end[0];
+              const ey = el.end[1];
+              const mx = (sx + ex) / 2;
+              const my = (sy + ey) / 2;
+              const dx = ex - sx;
+              const dy = ey - sy;
+              const len = Math.hypot(dx, dy);
+              const nx = len > 0.001 ? -dy / len : 0;
+              const ny = len > 0.001 ? dx / len : 0;
+              const flipX = mx + nx * 0.6;
+              const flipY = my + ny * 0.6;
+
+              return (
+                <g key={`grips-${guid}`} className="select-none pointer-events-auto">
+                  {/* Start Point Grip */}
+                  <circle
+                    cx={sx}
+                    cy={sy}
+                    r={5 / scale}
+                    fill="#ffffff"
+                    stroke="#007acc"
+                    strokeWidth={2 / scale}
+                    className="hover:scale-125 transition-transform cursor-pointer"
+                  />
+                  {/* End Point Grip */}
+                  <circle
+                    cx={ex}
+                    cy={ey}
+                    r={5 / scale}
+                    fill="#ffffff"
+                    stroke="#007acc"
+                    strokeWidth={2 / scale}
+                    className="hover:scale-125 transition-transform cursor-pointer"
+                  />
+                  {/* Interactive Flip Arrows Control */}
+                  <g
+                    transform={`translate(${flipX}, ${flipY}) scale(${1 / scale}, ${-1 / scale})`}
+                    className="cursor-pointer"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      flipElementOrientation(guid);
+                    }}
+                  >
+                    <title>Flip Wall Direction (Space)</title>
+                    <circle cx="0" cy="0" r="10" fill="#0284c7" className="hover:fill-sky-700 shadow-sm" />
+                    <text
+                      x="0"
+                      y="3.5"
+                      textAnchor="middle"
+                      fill="#ffffff"
+                      fontSize="10"
+                      fontWeight="bold"
+                    >
+                      ⇄
+                    </text>
+                  </g>
+                </g>
+              );
+            }
+            return null;
+          })}
         </g>
       </svg>
 
@@ -2209,6 +2294,16 @@ export const PlanViewport2D: React.FC = () => {
             </button>
           </div>
         )}
+
+      {/* Right-Click Context Menu */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          targetGuid={contextMenu.guid}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </div>
   );
 };

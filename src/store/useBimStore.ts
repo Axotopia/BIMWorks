@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   ActiveTool,
   BimElement,
+  BimType,
   LevelData,
   GridData,
   MeshBufferData,
@@ -29,6 +30,7 @@ const API_BASE = '/api';
  * and only the 3D viewport listened, so `ZE` silently did nothing in a plan view.
  */
 export const ZOOM_EXTENTS_EVENT = 'bimworks-zoom-extents';
+export const TILE_WINDOWS_EVENT = 'bimworks-tile-windows';
 
 /**
  * UI-P0-10/UI-P0-11: interaction state that lives inside a viewport component
@@ -126,6 +128,7 @@ export const UI_ACTION_COMMANDS = {
   // P6 sheet & viewport commands (bus-backed, journaled, undoable)
   createSheet: 'SheetCreate',
   deleteSheet: 'SheetDelete',
+  updateSheet: 'SheetUpdate',
   addViewportToSheet: 'ViewportAdd',
   removeViewportFromSheet: 'ViewportRemove',
   moveViewport: 'ViewportMove',
@@ -133,6 +136,10 @@ export const UI_ACTION_COMMANDS = {
   createDimension: 'DimensionCreate',
   setDimensionValue: 'DimensionValueSet',
   deleteDimension: 'DimensionDelete',
+  // Phase 5 type commands
+  setElementType: 'ElementSetType',
+  updateType: 'TypeUpdate',
+  duplicateType: 'TypeDuplicate',
 } as const;
 
 export type UiAction = keyof typeof UI_ACTION_COMMANDS;
@@ -178,6 +185,7 @@ function geometryPatch(
       pitch: params.pitch,
       tag: params.tag,
       type_properties: params.type_properties,
+      type_id: params.type_id,
     };
   }
   return {
@@ -259,6 +267,7 @@ async function refreshIndividually(
     getState().fetchWallJoins(),
     getState().fetch2DSlice(cutElevation),
     getState().fetchTransactionJournal(),
+    getState().fetchTypes(),
   ]);
 }
 
@@ -592,6 +601,13 @@ interface BimStoreState {
   undo: () => Promise<void>;
   redo: () => Promise<void>;
 
+  // Phase 5 type management
+  types: BimType[];
+  fetchTypes: () => Promise<void>;
+  setElementType: (guid: string, typeId: string) => Promise<void>;
+  updateType: (typeId: string, parameters: Record<string, any>) => Promise<void>;
+  duplicateType: (sourceTypeId: string, newTypeId: string, newName: string) => Promise<void>;
+
   // API Async Actions
   fetchProjectState: () => Promise<void>;
   fetchGeometry: () => Promise<void>;
@@ -610,12 +626,27 @@ interface BimStoreState {
   updateGeoreferencing: (data: BimStoreState['georeference']) => Promise<void>;
   createSheet: (sheetNumber: string, sheetTitle: string, paperSize?: 'ARCH_D' | 'ARCH_C' | 'ISO_A1') => Promise<void>;
   deleteSheet: (sheetId: string) => Promise<void>;
+  updateSheet: (sheetId: string, updates: Partial<SheetDefinition>) => Promise<void>;
   addViewportToSheet: (sheetId: string, viewId: string, x: number, y: number) => Promise<void>;
   removeViewportFromSheet: (viewportId: string, sheetId?: string) => Promise<void>;
   moveViewport: (viewportId: string, x: number, y: number, sheetId?: string) => Promise<void>;
   exportSheetPdf: (sheetId: string, svgContent: string) => Promise<void>;
   exportBatchPdf: (sheetsData: Array<{ sheetName: string; svgContent: string }>, filename?: string) => Promise<void>;
   exportIfc: () => Promise<void>;
+
+  // Wall & Modeling Tool Options (Options Bar)
+  wallHeight: number;
+  wallLocationLine: 'centerline' | 'core_centerline' | 'exterior' | 'interior';
+  wallOffset: number;
+  wallLevelId: string | null;
+  setWallHeight: (height: number) => void;
+  setWallLocationLine: (loc: 'centerline' | 'core_centerline' | 'exterior' | 'interior') => void;
+  setWallOffset: (offset: number) => void;
+  setWallLevelId: (levelId: string | null) => void;
+
+  createSimilar: () => void;
+  flipElementOrientation: (guid: string) => Promise<void>;
+  selectAllInstances: (categoryOrClass: string, onlyInActiveView?: boolean) => void;
 
   // GLM Spec v2 Additions
   displayUnit: UnitSystem;
@@ -801,6 +832,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   rev: undefined,
   docId: undefined,
   elements: {},
+  types: [],
   meshes: [],
   grids: [],
   sliced2D: null,
@@ -815,6 +847,11 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   hoveredGuid: null,
   hoverCandidates: [],
   snapsEnabled: true,
+
+  wallHeight: 10.0,
+  wallLocationLine: 'centerline',
+  wallOffset: 0.0,
+  wallLevelId: null,
 
   sectionBox: {
     enabled: false,
@@ -965,6 +1002,18 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       HI: () => get().tempIsolateSelected(),
       ZE: () => {
         window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT));
+      },
+      ZA: () => {
+        window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT));
+      },
+      CS: () => {
+        get().createSimilar();
+      },
+      WT: () => {
+        window.dispatchEvent(new CustomEvent(TILE_WINDOWS_EVENT));
+      },
+      MD: () => {
+        get().setActiveTool('select');
       },
     };
 
@@ -1587,6 +1636,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
             pitch: params.pitch,
             tag: params.tag,
             type_properties: params.type_properties,
+            type_id: params.type_id,
           };
         }
 
@@ -1614,6 +1664,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           ...(data.grids ? { grids: data.grids } : {}),
           ...(data.sheets ? { sheets: data.sheets } : {}),
           ...(data.views ? { views: (data.views as any[]).map(normalizeView) } : {}),
+          ...(data.types ? { types: data.types } : {}),
           ...(data.constraints ? { constraints: data.constraints } : {}),
           ...(data.wall_joins ? { wallJoins: data.wall_joins } : {}),
           ...(data.project
@@ -1645,6 +1696,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         ...(data.journal ? { transactionJournal: data.journal.slice(-50) } : {}),
         ...(data.sheets ? { sheets: data.sheets } : {}),
         ...(data.views ? { views: (data.views as any[]).map(normalizeView) } : {}),
+        ...(data.types ? { types: data.types } : {}),
       });
 
       if (data.errors) {
@@ -1713,6 +1765,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
             pitch: params.pitch,
             tag: params.tag,
             type_properties: params.type_properties,
+            type_id: params.type_id,
           };
         }
         set({
@@ -1905,9 +1958,17 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   createWall: async (start, end, name = 'Basic Wall : Exterior - 10" CMU') => {
     try {
+      const state = get();
       await get().dispatchTransaction(
         'createWall',
-        { start, end, height: 10.0, thickness: 0.8333, name },
+        {
+          start,
+          end,
+          height: state.wallHeight || 10.0,
+          thickness: 0.8333,
+          name,
+          level_id: state.wallLevelId || undefined,
+        },
         `Create wall "${name}"`
       );
       get().completePlacement();
@@ -2012,6 +2073,120 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     }
   },
 
+  setWallHeight: (height) => set({ wallHeight: height }),
+  setWallLocationLine: (loc) => set({ wallLocationLine: loc }),
+  setWallOffset: (offset) => set({ wallOffset: offset }),
+  setWallLevelId: (levelId) => set({ wallLevelId: levelId }),
+
+  createSimilar: () => {
+    const { selectedGuid, elements, meshes, setActiveTool, startSketchMode, setStatusMessage } = get();
+    if (!selectedGuid) {
+      setStatusMessage('Select an element to Create Similar (CS)');
+      return;
+    }
+    const elem = elements[selectedGuid];
+    const mesh = meshes.find((m) => m.guid === selectedGuid);
+    const ifcClass = elem?.ifc_class || mesh?.ifc_class || '';
+    const name = elem?.name || mesh?.name || ifcClass;
+
+    if (WALL_CLASSES.includes(ifcClass) || ifcClass === 'IfcWall') {
+      setActiveTool('WA', 'Architecture');
+      setStatusMessage(`Create Similar: Wall (${name})`);
+    } else if (ifcClass === 'IfcDoor') {
+      setActiveTool('DR', 'Architecture');
+      setStatusMessage(`Create Similar: Door (${name})`);
+    } else if (ifcClass === 'IfcWindow') {
+      setActiveTool('WN', 'Architecture');
+      setStatusMessage(`Create Similar: Window (${name})`);
+    } else if (ifcClass === 'IfcSlab') {
+      startSketchMode('floor');
+      setStatusMessage(`Create Similar: Floor (${name})`);
+    } else if (ifcClass === 'IfcRoof') {
+      startSketchMode('roof');
+      setStatusMessage(`Create Similar: Roof (${name})`);
+    } else {
+      setStatusMessage(`Create Similar not supported for ${ifcClass || 'this element'}`);
+    }
+  },
+
+  flipElementOrientation: async (guid: string) => {
+    const { elements, updateElement, setStatusMessage } = get();
+    const elem = elements[guid];
+    if (!elem) return;
+
+    if (elem.start && elem.end) {
+      try {
+        await updateElement(guid, {
+          start: elem.end,
+          end: elem.start,
+        });
+        setStatusMessage(`Flipped orientation of wall "${elem.name || guid}"`);
+      } catch (e) {
+        setStatusMessage(`Flip failed: ${failureMessage(e)}`);
+      }
+    } else if (elem.ifc_class === 'IfcDoor' || elem.swing_flipped !== undefined) {
+      try {
+        const flipped = !elem.swing_flipped;
+        await updateElement(guid, {
+          swing_flipped: flipped,
+        });
+        setStatusMessage(`Flipped door swing direction (${flipped ? 'flipped' : 'normal'})`);
+      } catch (e) {
+        setStatusMessage(`Flip failed: ${failureMessage(e)}`);
+      }
+    }
+  },
+
+  selectAllInstances: (categoryOrClass: string, onlyInActiveView = false) => {
+    const { elements, meshes, sliced2D } = get();
+    const isWall = categoryOrClass === 'IfcWall' || categoryOrClass.toLowerCase().includes('wall');
+    const isDoor = categoryOrClass === 'IfcDoor' || categoryOrClass.toLowerCase().includes('door');
+    const isWindow = categoryOrClass === 'IfcWindow' || categoryOrClass.toLowerCase().includes('window');
+    const isSlab = categoryOrClass === 'IfcSlab' || categoryOrClass.toLowerCase().includes('slab') || categoryOrClass.toLowerCase().includes('floor');
+    const isRoof = categoryOrClass === 'IfcRoof' || categoryOrClass.toLowerCase().includes('roof');
+
+    const matchesClass = (cls: string) => {
+      if (isWall) return WALL_CLASSES.includes(cls) || cls === 'IfcWall';
+      if (isDoor) return cls === 'IfcDoor';
+      if (isWindow) return cls === 'IfcWindow';
+      if (isSlab) return cls === 'IfcSlab';
+      if (isRoof) return cls === 'IfcRoof';
+      return cls.toLowerCase() === categoryOrClass.toLowerCase();
+    };
+
+    let targetGuids: string[] = [];
+    if (onlyInActiveView && sliced2D) {
+      const inViewGuids = new Set<string>();
+      sliced2D.cut_paths?.forEach((cp) => inViewGuids.add(cp.guid));
+      sliced2D.slabs?.forEach((s) => inViewGuids.add(s.guid));
+      sliced2D.roofs?.forEach((r) => inViewGuids.add(r.guid));
+      targetGuids = Array.from(inViewGuids).filter((g) => {
+        const el = elements[g];
+        const m = meshes.find((mesh) => mesh.guid === g);
+        const cls = el?.ifc_class || m?.ifc_class || '';
+        return matchesClass(cls);
+      });
+    } else {
+      const allGuids = Object.keys(elements);
+      for (const m of meshes) {
+        if (!allGuids.includes(m.guid)) allGuids.push(m.guid);
+      }
+      targetGuids = allGuids.filter((g) => {
+        const el = elements[g];
+        const m = meshes.find((mesh) => mesh.guid === g);
+        const cls = el?.ifc_class || m?.ifc_class || '';
+        return matchesClass(cls);
+      });
+    }
+
+    if (targetGuids.length > 0) {
+      get().setSelectedGuids(targetGuids);
+      get().setStatusMessage(`Selected ${targetGuids.length} instances of ${categoryOrClass} (${onlyInActiveView ? 'in active view' : 'in entire project'})`);
+    } else {
+      get().setStatusMessage(`No instances found for ${categoryOrClass}`);
+    }
+  },
+
   updateGeoreferencing: async (data) => {
     try {
       const res = await fetch(`${API_BASE}/georeference`, {
@@ -2048,6 +2223,16 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     } catch (e) {
       set({ statusMessage: `Failed to delete sheet: ${failureMessage(e)}` });
       console.error('Failed to delete sheet', e);
+      throw e;
+    }
+  },
+
+  updateSheet: async (sheetId, updates) => {
+    try {
+      await get().dispatchTransaction('updateSheet', { sheet_id: sheetId, updates }, `Update Sheet`);
+    } catch (e) {
+      set({ statusMessage: `Failed to update sheet: ${failureMessage(e)}` });
+      console.error('Failed to update sheet', e);
       throw e;
     }
   },
@@ -2177,6 +2362,60 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     } catch (e) {
       set({ statusMessage: `Export IFC failed: ${failureMessage(e)}` });
       console.error('Failed to export IFC', e);
+    }
+  },
+
+  fetchTypes: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/types`);
+      if (res.ok) {
+        const types = await res.json();
+        set({ types });
+      }
+    } catch (e) {
+      console.error('Failed to fetch types', e);
+    }
+  },
+
+  setElementType: async (guid: string, typeId: string) => {
+    try {
+      await get().dispatchTransaction(
+        'setElementType',
+        { guid, type_id: typeId },
+        `Set element type to ${typeId}`
+      );
+    } catch (e) {
+      set({ statusMessage: `Set element type failed: ${failureMessage(e)}` });
+      console.error('Failed to set element type', e);
+      throw e;
+    }
+  },
+
+  updateType: async (typeId: string, parameters: Record<string, any>) => {
+    try {
+      await get().dispatchTransaction(
+        'updateType',
+        { type_id: typeId, parameters },
+        `Update type ${typeId}`
+      );
+    } catch (e) {
+      set({ statusMessage: `Update type failed: ${failureMessage(e)}` });
+      console.error('Failed to update type', e);
+      throw e;
+    }
+  },
+
+  duplicateType: async (sourceTypeId: string, newTypeId: string, newName: string) => {
+    try {
+      await get().dispatchTransaction(
+        'duplicateType',
+        { source_type_id: sourceTypeId, new_type_id: newTypeId, new_name: newName },
+        `Duplicate type ${sourceTypeId}`
+      );
+    } catch (e) {
+      set({ statusMessage: `Duplicate type failed: ${failureMessage(e)}` });
+      console.error('Failed to duplicate type', e);
+      throw e;
     }
   },
 

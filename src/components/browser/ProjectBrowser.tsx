@@ -11,9 +11,12 @@ import {
   AppWindow,
   Square,
   Grid,
+  Plus,
+  Trash2,
 } from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
 import { formatLength } from '../../utils/units';
+import { ScheduleModal } from '../modals/ScheduleModal';
 
 export const ProjectBrowser: React.FC = () => {
   const {
@@ -25,8 +28,13 @@ export const ProjectBrowser: React.FC = () => {
     activeSheetId,
     setActiveViewId,
     setActiveSheetId,
+    createSheet,
+    deleteSheet,
     meshes,
   } = useBimStore();
+
+  const [isScheduleOpen, setIsScheduleOpen] = useState(false);
+  const [scheduleCategory, setScheduleCategory] = useState<'wall' | 'door' | 'window'>('wall');
 
   // Real IFC class inventory with instance counts, derived from the loaded model.
   // This block previously listed five fixed class/type names regardless of what
@@ -226,12 +234,35 @@ export const ProjectBrowser: React.FC = () => {
 
         {/* Sheets (All) */}
         <div>
-          <div
-            onClick={() => toggleSection('sheets')}
-            className="flex items-center space-x-1 py-1 px-1.5 hover:bg-[#f1f5f9] rounded cursor-pointer font-bold text-[#1e293b]"
-          >
-            {expandedSections.sheets ? <ChevronDown size={14} className="text-[#64748b]" /> : <ChevronRight size={14} className="text-[#64748b]" />}
-            <span>Sheets (all)</span>
+          <div className="flex items-center justify-between py-1 px-1.5 hover:bg-[#f1f5f9] rounded font-bold text-[#1e293b]">
+            <div
+              onClick={() => toggleSection('sheets')}
+              className="flex items-center space-x-1 cursor-pointer flex-1"
+            >
+              {expandedSections.sheets ? <ChevronDown size={14} className="text-[#64748b]" /> : <ChevronRight size={14} className="text-[#64748b]" />}
+              <span>Sheets (all)</span>
+            </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                let nextNum = 'A101';
+                const nums = sheets
+                  .map((s) => {
+                    const match = s.sheetNumber.match(/^([A-Za-z]+)(\d+)$/);
+                    return match ? { prefix: match[1], num: parseInt(match[2], 10) } : null;
+                  })
+                  .filter((n): n is { prefix: string; num: number } => n !== null);
+                if (nums.length > 0) {
+                  const max = Math.max(...nums.map((n) => n.num));
+                  nextNum = `${nums[0].prefix}${max + 1}`;
+                }
+                createSheet(nextNum, 'Unnamed Sheet', 'ARCH_D');
+              }}
+              title="New Sheet (Auto-numbered)"
+              className="p-0.5 hover:bg-[#e2e8f0] rounded text-[#007acc] hover:text-[#005a9e] transition-colors"
+            >
+              <Plus size={13} />
+            </button>
           </div>
 
           {expandedSections.sheets && (
@@ -241,18 +272,76 @@ export const ProjectBrowser: React.FC = () => {
                   key={s.id}
                   onDoubleClick={() => setActiveSheetId(s.id)}
                   onClick={() => setActiveSheetId(s.id)}
-                  className={`flex items-center space-x-1.5 py-1 px-1.5 rounded cursor-pointer ${
+                  className={`group flex items-center justify-between py-1 px-1.5 rounded cursor-pointer ${
                     activeSheetId === s.id
                       ? 'bg-[#cce8ff] border border-[#007acc] text-[#094771] font-semibold'
                       : 'hover:bg-[#f1f5f9] text-[#334155]'
                   }`}
                 >
-                  <FileSpreadsheet size={13} className="text-[#16a34a]" />
-                  <span>
-                    {s.sheetNumber} - {s.sheetTitle}
-                  </span>
+                  <div className="flex items-center space-x-1.5 truncate">
+                    <FileSpreadsheet size={13} className="text-[#16a34a] shrink-0" />
+                    <span className="truncate">
+                      {s.sheetNumber} - {s.sheetTitle}
+                    </span>
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteSheet(s.id);
+                    }}
+                    title="Delete Sheet"
+                    className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-100 text-red-600 rounded transition-opacity"
+                  >
+                    <Trash2 size={11} />
+                  </button>
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+
+        {/* Schedules / Quantities (P6) */}
+        <div>
+          <div
+            onClick={() => toggleSection('schedules')}
+            className="flex items-center space-x-1 py-1 px-1.5 hover:bg-[#f1f5f9] rounded cursor-pointer font-bold text-[#1e293b]"
+          >
+            {expandedSections.schedules ? <ChevronDown size={14} className="text-[#64748b]" /> : <ChevronRight size={14} className="text-[#64748b]" />}
+            <span>Schedules / Quantities</span>
+          </div>
+
+          {expandedSections.schedules && (
+            <div className="pl-4 space-y-0.5 mt-0.5 border-l border-[#e2e8f0] ml-2">
+              <div
+                onClick={() => {
+                  setScheduleCategory('wall');
+                  setIsScheduleOpen(true);
+                }}
+                className="flex items-center space-x-1.5 py-1 px-1.5 rounded cursor-pointer hover:bg-[#f1f5f9] text-[#334155]"
+              >
+                <FileText size={13} className="text-[#6366f1]" />
+                <span>Wall Schedule</span>
+              </div>
+              <div
+                onClick={() => {
+                  setScheduleCategory('door');
+                  setIsScheduleOpen(true);
+                }}
+                className="flex items-center space-x-1.5 py-1 px-1.5 rounded cursor-pointer hover:bg-[#f1f5f9] text-[#334155]"
+              >
+                <FileText size={13} className="text-[#f97316]" />
+                <span>Door Schedule</span>
+              </div>
+              <div
+                onClick={() => {
+                  setScheduleCategory('window');
+                  setIsScheduleOpen(true);
+                }}
+                className="flex items-center space-x-1.5 py-1 px-1.5 rounded cursor-pointer hover:bg-[#f1f5f9] text-[#334155]"
+              >
+                <FileText size={13} className="text-[#0284c7]" />
+                <span>Window Schedule</span>
+              </div>
             </div>
           )}
         </div>
@@ -324,6 +413,13 @@ export const ProjectBrowser: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Interactive Schedule / Quantities Modal */}
+      <ScheduleModal
+        isOpen={isScheduleOpen}
+        onClose={() => setIsScheduleOpen(false)}
+        initialCategory={scheduleCategory}
+      />
     </div>
   );
 };
