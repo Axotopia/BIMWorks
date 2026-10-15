@@ -79,6 +79,15 @@ class ViewCamera:
         """Distance along the view direction; larger is further from the viewer."""
         return -(p[0] * self.direction[0] + p[1] * self.direction[1] + p[2] * self.direction[2])
 
+    @property
+    def key(self) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]:
+        """Rounded camera orientation tuple used for projection caching."""
+        return (
+            (round(self.right[0], 6), round(self.right[1], 6), round(self.right[2], 6)),
+            (round(self.up[0], 6), round(self.up[1], 6), round(self.up[2], 6)),
+            (round(self.direction[0], 6), round(self.direction[1], 6), round(self.direction[2], 6)),
+        )
+
 
 @dataclass
 class ProjectedView:
@@ -103,11 +112,16 @@ class MeshHlrProjector:
     `guid`, `ifc_class` and flat `vertices` (xyz triples) and `indices` (triangles).
     """
 
-    def __init__(self, meshes: Sequence[Dict[str, Any]], tolerance: float = 1e-6):
+    def __init__(self, meshes: Sequence[Dict[str, Any]], tolerance: float = 1e-6,
+                 prepared_cache: Optional[Dict[Any, Any]] = None,
+                 cut_cache: Optional[Dict[Any, Any]] = None):
         self.meshes = list(meshes)
         self.tolerance = tolerance
+        self._prepared_cache = prepared_cache if prepared_cache is not None else {}
+        self._cut_cache = cut_cache if cut_cache is not None else {}
         # Cache: guid -> list of (triangle3d, polygon2d, min_depth)
         self._prepared: Optional[List[Dict[str, Any]]] = None
+        self._prepared_camera_key = None
         #: Number of occlusion candidates used by the last render, for diagnostics.
         self._last_occluder_candidates = 0
 
@@ -125,10 +139,20 @@ class MeshHlrProjector:
             yield a, b, c
 
     def _prepare(self, camera: ViewCamera) -> List[Dict[str, Any]]:
-        if self._prepared is not None:
+        cam_key = camera.key
+        if self._prepared is not None and self._prepared_camera_key == cam_key:
             return self._prepared
         prepared: List[Dict[str, Any]] = []
         for mesh in self.meshes:
+            guid = mesh.get("guid")
+            geom_rev = mesh.get("geom_rev")
+            verts = mesh.get("vertices")
+            geom_key = geom_rev if geom_rev is not None else (id(verts), len(verts) if verts else 0)
+            cache_key = (guid, geom_key, cam_key)
+            if self._prepared_cache is not None and cache_key in self._prepared_cache:
+                prepared.append(self._prepared_cache[cache_key])
+                continue
+
             polys = []
             min_depth = None
             z_lo = z_hi = None
@@ -171,7 +195,7 @@ class MeshHlrProjector:
             outline = self._safe_union([p for p, _ in polys])
             if outline is None or outline.is_empty:
                 continue
-            prepared.append({
+            entry = {
                 "guid": mesh.get("guid"),
                 "ifc_class": mesh.get("ifc_class"),
                 "name": mesh.get("name"),
@@ -182,10 +206,15 @@ class MeshHlrProjector:
                 # World Z extent, captured here because a prepared entry no longer
                 # carries the triangles the view range needs to test.
                 "z_range": (z_lo, z_hi),
-            })
+                "_verts_ref": verts,  # pin reference to prevent address reuse in CPython
+            }
+            if self._prepared_cache is not None:
+                self._prepared_cache[cache_key] = entry
+            prepared.append(entry)
         # Nearest first: an element's occluders are exactly the earlier entries.
         prepared.sort(key=lambda m: m["min_depth"])
         self._prepared = prepared
+        self._prepared_camera_key = cam_key
         return prepared
 
     def _apply_view_range(self, prepared, view_range: Dict[str, float]):
@@ -382,12 +411,25 @@ class MeshHlrProjector:
         afterwards cannot work, because a cut is usually parallel to the view
         direction, so every element's section lies at the same depth.
         """
+        cam_key = camera.key
+        pz_round = round(plane_z, 6)
         out: List[Dict[str, Any]] = []
         for mesh in (meshes if meshes is not None else self.meshes):
+            guid = mesh.get("guid")
+            geom_rev = mesh.get("geom_rev")
+            verts = mesh.get("vertices")
+            geom_key = geom_rev if geom_rev is not None else (id(verts), len(verts) if verts else 0)
+            cache_key = (guid, geom_key, pz_round, cam_key)
+            if self._cut_cache is not None and cache_key in self._cut_cache:
+                out.extend(self._cut_cache[cache_key])
+                continue
+
             segments: List[Tuple] = []
             for tri in self._triangles(mesh):
                 segments.extend(self._triangle_plane_segments(tri, plane_z))
             if not segments:
+                if self._cut_cache is not None:
+                    self._cut_cache[cache_key] = []
                 continue
             # Merge the individual crossing segments into the outline of the cut.
             lines = [LineString([camera.project(s[0]), camera.project(s[1])]) for s in segments]
@@ -396,24 +438,28 @@ class MeshHlrProjector:
             except Exception:
                 # Invalid input: keep every crossing segment rather than losing the cut.
                 merged = None
+            mesh_out = []
             if merged is None:
                 for line in lines:
-                    out.append({
+                    mesh_out.append({
                         "guid": mesh.get("guid"),
                         "ifc_class": mesh.get("ifc_class"),
                         "name": mesh.get("name"),
                         "coords": [(round(x, 6), round(y, 6)) for x, y in line.coords],
                     })
-                continue
-            for g in (merged.geoms if hasattr(merged, "geoms") else [merged]):
-                if g.is_empty or g.geom_type != "LineString":
-                    continue
-                out.append({
-                    "guid": mesh.get("guid"),
-                    "ifc_class": mesh.get("ifc_class"),
-                    "name": mesh.get("name"),
-                    "coords": [(round(x, 6), round(y, 6)) for x, y in g.coords],
-                })
+            else:
+                for g in (merged.geoms if hasattr(merged, "geoms") else [merged]):
+                    if g.is_empty or g.geom_type != "LineString":
+                        continue
+                    mesh_out.append({
+                        "guid": mesh.get("guid"),
+                        "ifc_class": mesh.get("ifc_class"),
+                        "name": mesh.get("name"),
+                        "coords": [(round(x, 6), round(y, 6)) for x, y in g.coords],
+                    })
+            if self._cut_cache is not None:
+                self._cut_cache[cache_key] = mesh_out
+            out.extend(mesh_out)
         return out
 
     # -- render -------------------------------------------------------------
@@ -438,7 +484,8 @@ class MeshHlrProjector:
         what the older callers expect.
         """
         camera = camera or ViewCamera()
-        self._prepared = None
+        if self._prepared_camera_key != camera.key:
+            self._prepared = None
         prepared = self._prepare(camera)
         # A VIEW is a selection of the model, not just a camera position: a floor plan
         # shows one storey. Filtering here means the cut, the projection and the hidden

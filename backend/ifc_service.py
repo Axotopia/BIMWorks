@@ -229,6 +229,10 @@ class BimModelManager:
         self.removed_items_by_rev: Dict[int, List[Dict[str, Any]]] = {}
         self._pending_removed_items: List[Dict[str, Any]] = []
 
+        # Mesh HLR projection caches (Phase 1.3c)
+        self._prepared_mesh_cache: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+        self._cut_mesh_cache: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
+
         # 1D/2D Parametric Constraints Manager
         self.constraints: Dict[str, Dict[str, Any]] = {}
         # Last over-constraint/conflict report from the solver (None when clean).
@@ -554,6 +558,7 @@ class BimModelManager:
                     meta.pop("cached_verts", None)
                     meta.pop("cached_faces", None)
                     meta.pop("bbox", None)
+                    meta["geom_rev"] = meta.get("geom_rev", 0) + 1
 
     def mark_element_removed(self, guid: str) -> None:
         """Records an element deletion so delta queries report remove_guids."""
@@ -564,6 +569,12 @@ class BimModelManager:
         self._pending_removed_items.append({"guid": guid, "level_id": lid})
         self.dirty_mesh_guids.discard(guid)
         self.mesh_revs.pop(guid, None)
+        if hasattr(self, "_prepared_mesh_cache"):
+            for k in [k for k in self._prepared_mesh_cache if k[0] == guid]:
+                self._prepared_mesh_cache.pop(k, None)
+        if hasattr(self, "_cut_mesh_cache"):
+            for k in [k for k in self._cut_mesh_cache if k[0] == guid]:
+                self._cut_mesh_cache.pop(k, None)
 
     def commit_revision(self, rev: int) -> None:
         """Advances dirty elements and removed elements to rev."""
@@ -2201,6 +2212,7 @@ class BimModelManager:
                     cv[i] + _dx if i % 3 == 0 else (cv[i] + _dy if i % 3 == 1 else cv[i] + _dz)
                     for i in range(len(cv))
                 ]
+                meta["geom_rev"] = meta.get("geom_rev", 0) + 1
             if "bbox" in meta and "min" in meta["bbox"]:
                 meta["bbox"]["min"][0] += dx
                 meta["bbox"]["min"][1] += dy
@@ -2267,6 +2279,7 @@ class BimModelManager:
                     cv[i] + _dx if i % 3 == 0 else (cv[i] + _dy if i % 3 == 1 else cv[i] + _dz)
                     for i in range(len(cv))
                 ]
+                meta["geom_rev"] = meta.get("geom_rev", 0) + 1
             if "bbox" in meta and "min" in meta["bbox"]:
                 meta["bbox"]["min"][0] += dx
                 meta["bbox"]["min"][1] += dy
@@ -3841,6 +3854,7 @@ class BimModelManager:
         meta["cached_verts"] = verts
         meta["cached_faces"] = faces
         meta["cached_verts_is_feet"] = False
+        meta["geom_rev"] = meta.get("geom_rev", 0) + 1
 
     def _meshes_for_projection(self) -> List[Dict[str, Any]]:
         """
@@ -3889,6 +3903,7 @@ class BimModelManager:
                 "name": meta.get("name"),
                 "vertices": verts,
                 "indices": faces,
+                "geom_rev": meta.get("geom_rev", 0),
             })
         return meshes
 
@@ -4474,7 +4489,11 @@ class BimModelManager:
                     "renderer": "mesh-hlr", "view_type": view_type,
                     "error": "no geometry"}
 
-        projector = MeshHlrProjector(meshes)
+        projector = MeshHlrProjector(
+            meshes,
+            prepared_cache=getattr(self, "_prepared_mesh_cache", None),
+            cut_cache=getattr(self, "_cut_mesh_cache", None),
+        )
         # A plan cuts; an elevation does not; a section does.
         cut_z = None
         if view_type in ("floor_plan", "plan", "section"):
@@ -4684,7 +4703,11 @@ class BimModelManager:
             # handing out the cached object would corrupt it for the next caller.
             return copy.deepcopy(cached[1])
 
-        projector = MeshHlrProjector(meshes)
+        projector = MeshHlrProjector(
+            meshes,
+            prepared_cache=getattr(self, "_prepared_mesh_cache", None),
+            cut_cache=getattr(self, "_cut_mesh_cache", None),
+        )
         # The lineweight table is applied here too, so the plan entry point and
         # `render_2d_view` produce identically styled output. Applying it on only one
         # of the two paths is the kind of inconsistency that makes the same drawing
