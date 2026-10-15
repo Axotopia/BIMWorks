@@ -1341,6 +1341,181 @@ class BimModelManager:
         converted[2, 3] = feet_to_metres(float(matrix[2, 3]))
         return converted
 
+    #: Vertical placement of a hosted child's own product, in feet of local Z, when
+    #: the record does not carry an explicit `sill_height`. Doors are made at floor
+    #: level and windows carry their sill explicitly, so 0.0 is the correct default
+    #: for both -- and it must match what `add_door` actually used at creation, or a
+    #: reseat would silently move every door.
+    _HOSTED_LOCAL_Z_DEFAULT = 0.0
+
+    def _reseat_hosted_openings(self, host_guid: str) -> int:
+        """
+        Re-asserts every door/window hosted on a wall from its wall-relative offset.
+
+        Why this exists
+        ---------------
+        A hosted child is a placed product whose position is defined relative to its
+        host, so it follows the host *provided the host's own placement is current*.
+        Nothing refreshed the host's placement on every edit path, and the child's
+        local offsets were written as world coordinates at creation, so in practice
+        the two frames disagreed and the opening stayed where it was made.
+
+        Measured before the fix: a wall moved +30 ft reported the wall solid at
+        9.144..15.240 m while its opening was still at 1.524..2.438 m -- the hole did
+        not move with the wall, because `IfcRelVoidsElement` kept cutting the wall with
+        a void that now floated in mid-air.
+
+        Idempotent: placement is recomputed from `offset_along_wall` alone, never
+        composed onto the previous position, so re-running it -- or running it on an
+        unmoved wall -- changes nothing.
+
+        Returns the number of children reseated, so tests and callers can assert on it.
+        """
+        host_meta = self.element_meta.get(host_guid)
+        if not host_meta:
+            return 0
+        reseated = 0
+        for child_guid in list(host_meta.get("hosted_openings") or []):
+            child = self.element_meta.get(child_guid)
+            if not child:
+                continue
+            offset = float(child.get("offset_along_wall", 0.0))
+            local_z = float(child.get("sill_height", self._HOSTED_LOCAL_Z_DEFAULT))
+            # Desired WORLD transform for each part, from the wall's current baseline.
+            # The opening box is nudged out of the wall face so the boolean cut is
+            # clean; the door/panel sits on the baseline. These two must match what
+            # creation used or the void drifts relative to its own door.
+            jobs = (
+                (child.get("opening_entity"), -INCHES_0_625, local_z),
+                (child.get("entity"), 0.0, local_z),
+            )
+            wrote = False
+            for entity, local_y, lz in jobs:
+                if entity is None:
+                    continue
+                desired = self._hosted_placement_matrix(
+                    host_meta, offset, local_y=local_y, local_z=lz
+                )
+                # The frame is read from the entity itself, never assumed: an opening
+                # is parented to its wall, but a door's placement is top-level even
+                # though it fills that opening (measured). Using the wrong frame puts
+                # the part out by exactly the parent's offset.
+                parent = self._placement_parent_entity(entity)
+                if self._write_relative_placement(entity, parent, desired):
+                    wrote = True
+            if wrote:
+                reseated += 1
+                # The child moved, so its own tessellation is stale. This is not a user
+                # edit, so it must not start a constraint solve (`_propagate=False`
+                # semantics); `mark_mesh_dirty` only flags geometry.
+                self.mark_mesh_dirty(child_guid)
+        return reseated
+
+    @staticmethod
+    def _placement_parent_entity(product):
+        """
+        The element that `product`'s ObjectPlacement is expressed relative to, or None
+        when the placement is top-level (i.e. the frame is the world).
+
+        This is read from `PlacementRelTo.PlacesObject`, NOT assumed. The assumption is
+        what makes this area treacherous: a door IS a filling of its opening, so
+        `edit_object_placement` parents it to the opening's placement, but only while
+        that call happens -- and `add_door` writes the door's placement with that call,
+        then `feature.add_filling` runs. Measured, a door's `PlacementRelTo` is None and
+        its placement is top-level, while its opening's IS the wall. So the door's
+        offset must be expressed in WORLD terms while the opening's is expressed in the
+        WALL's frame, and treating them the same is wrong in one direction or the other.
+
+        Reading the link also survives ifcopenshell re-parenting a product later.
+        """
+        placement = getattr(product, "ObjectPlacement", None)
+        if placement is None:
+            return None
+        rel_to = getattr(placement, "PlacementRelTo", None)
+        if rel_to is None:
+            return None
+        owners = getattr(rel_to, "PlacesObject", None)
+        if owners is None:
+            return None
+        if isinstance(owners, (tuple, list)):
+            owners = owners[0] if owners else None
+        return owners
+
+    @staticmethod
+    def _write_relative_placement(product, parent_entity, matrix_feet) -> bool:
+        """
+        Sets a product's local placement so its WORLD transform equals `matrix_feet`,
+        given that its `IfcLocalPlacement` hangs off `parent_entity`'s.
+
+        Why not `ifcopenshell.api.geometry.edit_object_placement`
+        --------------------------------------------------------
+        That usecase is unusable for a hosted child. It rewrites the product's OWN
+        children as a side effect: at the default `should_transform_children=False` it
+        rewrites them to hold their *world* position (documented), and at `True` it
+        treats their current local values as world positions and adds the parent's
+        motion. Both were measured on a +30 ft wall move -- the opening ended at local
+        x = -7.62, exactly `1.524 - 9.144`, the correct local value (5 ft) minus the
+        wall's displacement (30 ft). It also replaces the placement entity, so children
+        get re-parented to the new one.
+
+        This helper does only the `get_relative_placement` arithmetic, then writes the
+        existing placement entity in place. Children are never consulted, so nothing is
+        compensated or double-applied, and `ReferencedByPlacements` is preserved.
+
+        `matrix_feet` is the desired WORLD transform in decimal feet. The stored value
+        is relative to the parent, which is what `PlacementRelTo` means:
+
+            local = inverse(parent_world) @ desired_world
+
+        BOTH SIDES MUST BE IN THE SAME UNIT before that product. The parent's matrix
+        comes back from ifcopenshell in METRES (the IFC's unit) while `matrix_feet` is
+        in feet, so the feet translation is converted to metres FIRST. Composing
+        `inverse(metres) @ feet` is a silently plausible-looking bug: on a door slide it
+        produced `4.5 - 1.3716 = 3.1284` ft of local offset where the answer was
+        `1.3716 - 1.3716 = 0`, i.e. a 0.95 m error in the door's position.
+
+        The frame matters too, and getting it wrong is not cosmetic. A door is parented
+        to its OPENING, and that opening already carries the wall's rotation, so on a
+        90-degree wall the door's correct local offset is `(0, 1.524)` -- not
+        `(1.524, 0)`. Writing the wall-frame value straight through bends the model;
+        measured as test_hosted_openings.py "90 deg door slide" off by 1.293 ft.
+        """
+        placement = getattr(product, "ObjectPlacement", None)
+        if placement is None or not placement.is_a("IfcLocalPlacement"):
+            return False
+        axis = getattr(placement, "RelativePlacement", None)
+        if axis is None or not hasattr(axis, "Location") or axis.Location is None:
+            return False
+
+        # Bring the desired transform into the IFC's unit (metres). Only the translation
+        # is unit-bearing; the rotation is dimensionless, exactly as `_placement_for_ifc`
+        # assumes.
+        desired = np.array(matrix_feet, dtype=float)
+        desired[0, 3] = feet_to_metres(float(desired[0, 3]))
+        desired[1, 3] = feet_to_metres(float(desired[1, 3]))
+        desired[2, 3] = feet_to_metres(float(desired[2, 3]))
+
+        parent_world = np.identity(4)
+        if parent_entity is not None:
+            parent_placement = getattr(parent_entity, "ObjectPlacement", None)
+            if parent_placement is not None:
+                parent_world = np.array(
+                    plc.get_local_placement(parent_placement), dtype=float
+                )
+        # Both operands are now metres; the result is metres and is stored as-is.
+        local = np.linalg.inv(parent_world) @ desired
+
+        # Translation only: this module authors no rotation for a hosted child, so the
+        # existing axis directions are already right and are left alone. A caller needing
+        # a ROTATED child would have to rewrite RefDirection/Axis here too -- flagging it
+        # because silently omitting that is this helper's obvious future failure mode.
+        axis.Location.Coordinates = (
+            float(local[0, 3]),
+            float(local[1, 3]),
+            float(local[2, 3]),
+        )
+        return True
+
     def add_wall(
         self,
         start_pt: Tuple[float, float, float],
@@ -2034,6 +2209,15 @@ class BimModelManager:
                 meta["bbox"]["max"][1] += dy
                 meta["bbox"]["max"][2] += dz
             translated = True
+            # Order matters, and it is the whole fix:
+            #   1. refresh the WALL's own ObjectPlacement from its new baseline. The
+            #      wall's body profile is authored in wall-local XY, so this placement
+            #      is what positions it in the world.
+            #   2. re-assert each hosted child in that same (now current) local frame.
+            # Doing 2 before 1 was measured to put an opening at 19.8 m instead of
+            # 10.67 m on a +30 ft wall move.
+            self._refresh_wall_placement(guid)
+            self._reseat_hosted_openings(guid)
             # Rebuild join-trimmed geometry and placement from the new baseline, scoped
             # to this wall and the walls it joined before or joins now.
             _new_pts = [
@@ -2057,25 +2241,10 @@ class BimModelManager:
             host_angle = float(host_meta.get("angle", 0.0))
             ux, uy = math.cos(host_angle), math.sin(host_angle)
             meta["offset_along_wall"] += dx * ux + dy * uy
-            opening = meta["opening_entity"]
-            door_win = meta["entity"]
-            sill = float(meta.get("sill_height", 0.0))
-
-            op_matrix = self._hosted_placement_matrix(
-                host_meta, meta["offset_along_wall"], local_y=-INCHES_0_625, local_z=sill
-            )
-            ifcopenshell.api.run(
-                "geometry.edit_object_placement", self.model, product=opening,
-            matrix=self._placement_for_ifc(op_matrix), is_si=False
-            )
-
-            dw_matrix = self._hosted_placement_matrix(
-                host_meta, meta["offset_along_wall"], local_y=0.0, local_z=sill
-            )
-            ifcopenshell.api.run(
-                "geometry.edit_object_placement", self.model, product=door_win,
-            matrix=self._placement_for_ifc(dw_matrix), is_si=False
-            )
+            # One placement implementation for the opening/product pair, shared with
+            # the host-move path above. Duplicating the matrix maths here is how the
+            # two paths drifted apart in the first place.
+            self._reseat_hosted_openings(meta["host_wall_guid"])
             translated = True
 
         elif ifc_class == "IfcGrid":
@@ -2121,7 +2290,15 @@ class BimModelManager:
         # it, so it is truthy on the first call and the hook never ran.)
         if translated:
             self.mark_mesh_dirty(guid)
-            if ifc_class in ("IfcDoor", "IfcWindow"):
+            if ifc_class in ("IfcWall", "IfcWallStandardCase"):
+                # The wall's own mesh changed AND its hosted children moved with it
+                # (`_reseat_hosted_openings`, which dirties each child itself).
+                for child_guid in list(meta.get("hosted_openings") or []):
+                    self.mark_mesh_dirty(child_guid)
+            elif ifc_class in ("IfcDoor", "IfcWindow"):
+                # The host wall's solid is unchanged by a slide, but its cached
+                # tessellation and the plan slice derived from it are still keyed to
+                # the opening's old position, so re-send it.
                 self.mark_mesh_dirty(meta.get("host_wall_guid"))
         if translated and _propagate:
             try:
@@ -2385,6 +2562,11 @@ class BimModelManager:
             _new_ends = [
                 (float(p[0]), float(p[1])) for p in (sp, ep) if p
             ]
+            # A changed start/end moves the baseline, so refresh the wall's own
+            # placement and then re-assert its hosted openings in that frame. Without
+            # this, resizing a wall orphans its doors exactly as translating one did.
+            self._refresh_wall_placement(guid)
+            self._reseat_hosted_openings(guid)
             self._recompute_after_joined_edit(guid, old_points=_old_ends, new_points=_new_ends)
 
         # Case 3: Door / Window
@@ -2397,6 +2579,8 @@ class BimModelManager:
                 meta["height"] = float(updates["height"])
             if "swing_flipped" in updates and updates["swing_flipped"] is not None:
                 meta["swing_flipped"] = bool(updates["swing_flipped"])
+            # Any of these changes where the opening/product pair must sit.
+            self._reseat_hosted_openings(meta.get("host_wall_guid"))
 
         self.mark_mesh_dirty(guid, clear_cache=False)
         return {
@@ -3099,6 +3283,21 @@ class BimModelManager:
         return (p1[0] + d1[0] * t, p1[1] + d1[1] * t)
 
     def _refresh_wall_placement(self, guid):
+        """
+        Writes the wall's own ObjectPlacement from its baseline.
+
+        Children are deliberately NOT transformed here (`should_transform_children`
+        stays at its default). `_reseat_hosted_openings` is the single authority for
+        where a hosted opening sits: it writes each child's placement in the wall's
+        LOCAL frame, which is the frame ifcopenshell already parents them in (the
+        opening's `PlacementRelTo` is the wall's placement).
+
+        Passing `should_transform_children=True` here was tried and is WRONG: that flag
+        treats the children's current local values as world positions and adds the
+        wall's motion to them, so it double-applies the move. Measured on a +30 ft wall
+        move, the opening ended at local x = -7.62 -- exactly `1.524 - 9.144`, the
+        reseat's correct local value (5 ft) minus the wall's displacement (30 ft).
+        """
         meta = self.element_meta[guid]
         wall = meta.get("entity")
         if wall is None:
@@ -3118,7 +3317,7 @@ class BimModelManager:
         matrix[2, 3] = float(sp[2]) if len(sp) > 2 else 0.0
         ifcopenshell.api.run(
             "geometry.edit_object_placement", self.model, product=wall,
-            matrix=self._placement_for_ifc(matrix), is_si=False
+            matrix=self._placement_for_ifc(matrix), is_si=False,
         )
 
     def _invalidate_geometry_cache(self, *guids: str) -> None:
@@ -3178,6 +3377,9 @@ class BimModelManager:
             "geometry.assign_representation", self.model, product=wall, representation=rep
         )
         meta["representation_entity"] = rep
+        # Re-assert the placement from the (unchanged) baseline. Children are not
+        # transformed here -- `_reseat_hosted_openings` owns them, in the wall's local
+        # frame. See `_refresh_wall_placement` for why transforming them here is wrong.
         self._refresh_wall_placement(guid)
 
     def _detach_representations(self, product) -> int:
