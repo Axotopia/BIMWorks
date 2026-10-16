@@ -7,18 +7,22 @@ These are deliberately NOT the shipped assertions in `scratch/test_references.py
 key/identity semantics the plan (§5.1) calls the actual risk, plus the §3.3 decisions.
 
 Findings exercised here:
-  * `reference_key` for unresolved points: this probe asserted only that two inline dict literals
-    differ, which a memory-address-based key satisfies trivially. It therefore does NOT establish
-    the property the plan requires ("canonical, order-stable, for dedup + equality"). The key was
-    subsequently made non-deterministic via `str(id(ref))`; stability is covered by the dedicated
-    probe `scratch/_probe_reference_key_stability.py`, which is expected to fail until that is fixed.
+  * `reference_key` for unresolved points. An earlier revision of this probe asserted only that two
+    inline dict literals differ — which a memory-address-based key satisfies trivially — so it did not
+    establish the plan's contract ("canonical, order-stable, for dedup + equality"). That weakness is
+    recorded here deliberately: the key was briefly made non-deterministic via `str(id(ref))`, and
+    this probe did not catch it. Stability is asserted properly in the dedicated probe
+    `scratch/_probe_reference_key_stability.py`. The key is now a deterministic sentinel, and the
+    assertions below pin that behaviour down explicitly, including that identity comes from `guid`/`id`.
   * §3.3.1 is unresolved: 2D `level_plane` still returns (0.0, elevation) labelled "exact", while
     the axis form that fixes it is never called by production code.
   * §3.3.2: the level NAME fallback was retained (relabelled "repaired"), not dropped.
   * `wall_face_*` resolution ignores `ordinal` even though the key uses it.
   * A diagonal `grid_axis` asked for one axis returns the grid MIDPOINT labelled "exact".
 
-Expected at e4b9dd9: exits 1, with the unresolved-point collision and the semantic observations.
+The unresolved-point assertions below document INTENDED behaviour (they are not defect checks):
+hint-less points share one deterministic sentinel by design. The genuine findings are the §3.3 items,
+`wall_face_*` ordinal, and the diagonal-grid substitution.
 Run:  .venv/bin/python scratch/_probe_references_adversarial.py
 """
 
