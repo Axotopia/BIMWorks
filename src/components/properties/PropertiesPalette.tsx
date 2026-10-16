@@ -254,6 +254,12 @@ export const PropertiesPalette: React.FC = () => {
                 ? selectedMesh?.name || 'Selected Element'
                 : activeView?.type === '3d'
                 ? '3D View'
+                : activeView?.type === 'section'
+                ? 'Section'
+                : activeView?.type === 'elevation'
+                ? 'Elevation'
+                : activeView?.type === 'sheet'
+                ? 'Sheet'
                 : 'Floor Plan'}
             </div>
             {isElementSelected && matchingTypes.length > 0 ? (

@@ -777,13 +777,13 @@ export const PlanViewport2D: React.FC = () => {
 
   const fit2DToExtents = useCallback(() => {
     if (!sliced2D) return;
-    const pathsToFit = (sliced2D.cut_paths && sliced2D.cut_paths.length > 0)
-      ? sliced2D.cut_paths
-      : [
-          ...(sliced2D.projection_paths || []),
-          ...(sliced2D.roofs || []),
-          ...(sliced2D.slabs || []),
-        ];
+    const pathsToFit: Array<{ d?: string }> = [
+      ...(sliced2D.cut_paths || []),
+      ...(sliced2D.projection_paths || []),
+      ...(sliced2D.roofs || []),
+      ...(sliced2D.slabs || []),
+      ...(sliced2D.levels || []),
+    ];
 
     if (pathsToFit.length === 0) {
       setPan({ x: 350, y: 320 });
@@ -793,6 +793,7 @@ export const PlanViewport2D: React.FC = () => {
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     pathsToFit.forEach((p) => {
+      if (!p.d) return;
       const matches = p.d.matchAll(/([ML])\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/g);
       for (const m of matches) {
         const x = parseFloat(m[2]);
@@ -834,31 +835,25 @@ export const PlanViewport2D: React.FC = () => {
   }, [fit2DToExtents]);
 
   /**
-   * UI-P0-6: fit once per project, not after every edit.
-   *
-   * This used to run on every `sliced2D` identity change, and
-   * `executeTransaction` refetches the slice after every commit — so drawing a
-   * single wall re-fitted the view and threw away the user's pan and zoom. That is
-   * the 2D half of the camera-reset bug the 3D viewport had (U34).
+   * Track A5: Fit to extents on view switch and on first load with content.
+   * Preserves user pan/zoom across edits within the same active view.
    */
-  const planFitProjectRef = useRef<string | null>(null);
-  const planHadContentRef = useRef(false);
+  const lastFittedViewRef = useRef<string | null>(null);
   useEffect(() => {
     const hasContent = Boolean(
       sliced2D &&
         (sliced2D.cut_paths?.length ||
           sliced2D.projection_paths?.length ||
           sliced2D.roofs?.length ||
-          sliced2D.slabs?.length)
+          sliced2D.slabs?.length ||
+          sliced2D.levels?.length)
     );
-    const projectChanged = planFitProjectRef.current !== projectName;
-    const becameNonEmpty = hasContent && !planHadContentRef.current;
-    if (hasContent && (projectChanged || becameNonEmpty)) {
+    const viewKey = `${projectName}:${activeViewId}`;
+    if (hasContent && lastFittedViewRef.current !== viewKey) {
       fit2DToExtents();
-      planFitProjectRef.current = projectName;
+      lastFittedViewRef.current = viewKey;
     }
-    planHadContentRef.current = hasContent;
-  }, [sliced2D, fit2DToExtents, projectName]);
+  }, [activeViewId, projectName, sliced2D, fit2DToExtents]);
 
   const isDrawing = activeTool !== 'select' && activeTool !== 'AL';
 
@@ -1135,7 +1130,7 @@ export const PlanViewport2D: React.FC = () => {
                 vectorEffect="non-scaling-stroke"
                 strokeLinejoin="round"
                 strokeLinecap="round"
-                fill={isSelected ? '#bae6fd' : isHovered ? '#e0f2fe' : '#f1f5f9'}
+                fill={isSelected ? '#bae6fd' : isHovered ? '#e0f2fe' : '#cbd5e1'}
                 onMouseEnter={() => setHoveredGuid(p.guid)}
                 onMouseLeave={() => setHoveredGuid(null)}
                 onClick={(e) => {
@@ -2089,8 +2084,12 @@ export const PlanViewport2D: React.FC = () => {
             <span className="font-bold">
               {/* UI-P0-2: the cut plane is decimal feet, so this rendered the value
                   in feet AND converted it as if it were metres — "(4'-0" / 4m)"
-                  for a 4 ft cut. One number, one unit. */}
-              {currentView.name} (Cut Plane: {formatLength(currentView.viewRange?.cut ?? (currentView as any)?.view_range?.cut ?? 4.0, displayUnit)})
+                  for a 4 ft cut. One number, one unit.
+                  Track A6: An elevation is a projection with no cut plane, so suppress chip. */}
+              {currentView.name}
+              {(currentView as any).type !== 'elevation' && (
+                <> (Cut Plane: {formatLength(currentView.viewRange?.cut ?? (currentView as any)?.view_range?.cut ?? 4.0, displayUnit)})</>
+              )}
             </span>
             <span className="text-slate-400">|</span>
             <button
