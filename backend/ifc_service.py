@@ -80,8 +80,11 @@ from units import (  # noqa: E402  (kept beside the constants it documents)
 )
 from references import (
     normalize_reference,
+    reference_key,
     resolve_reference,
+    resolve_reference_axis,
     repair_reference,
+    referenceable_kinds,
     worst_outcome,
 )
 
@@ -1812,6 +1815,21 @@ class BimModelManager:
             record["sketch"] = self._jsonable(meta["sketch"])
         if meta.get("hosted_openings"):
             record["hosted_openings"] = list(meta["hosted_openings"])
+        if meta.get("refs"):
+            record["refs"] = self._jsonable(meta["refs"])
+        elif meta.get("ifc_class") in ("IfcWall", "IfcWallStandardCase") and meta.get("start") and meta.get("end"):
+            record["refs"] = [
+                {
+                    "kind": "wall_start",
+                    "sources": [{"element_guid": guid, "ordinal": 0}],
+                    "hint": {"point": list(meta["start"]), "normal": None},
+                },
+                {
+                    "kind": "wall_end",
+                    "sources": [{"element_guid": guid, "ordinal": 0}],
+                    "hint": {"point": list(meta["end"]), "normal": None},
+                },
+            ]
         record["join_policy"] = self._jsonable(self.join_policies.get(guid, {}))
         return record
 
@@ -2158,6 +2176,18 @@ class BimModelManager:
             "angle": angle,
             "level_id": storey.GlobalId,
             "hosted_openings": [],
+            "refs": [
+                {
+                    "kind": "wall_start",
+                    "sources": [{"element_guid": guid, "ordinal": 0}],
+                    "hint": {"point": list(start_pt), "normal": None},
+                },
+                {
+                    "kind": "wall_end",
+                    "sources": [{"element_guid": guid, "ordinal": 0}],
+                    "hint": {"point": list(end_pt), "normal": None},
+                },
+            ],
             "entity": wall,
             "type_properties": {
                 "Type Name": name,
@@ -2721,6 +2751,24 @@ class BimModelManager:
             for did in dead_dims:
                 self.delete_dimension(did)
 
+        if hasattr(self, "constraints") and self.constraints:
+            dead_constraints = [
+                cid for cid, c in self.constraints.items()
+                if (
+                    c.get("ref_guid") == guid
+                    or c.get("target_guid") == guid
+                    or c.get("guid_a") == guid
+                    or c.get("guid_b") == guid
+                    or c.get("span_start_guid") == guid
+                    or c.get("span_end_guid") == guid
+                    or guid in (c.get("interior_guids") or [])
+                )
+            ]
+            for cid in dead_constraints:
+                del self.constraints[cid]
+            if dead_constraints:
+                self.constraints_rev += 1
+
         meta = self.element_meta[guid]
         ifc_class = meta.get("ifc_class")
         if ifc_class == "IfcGrid":
@@ -2891,6 +2939,12 @@ class BimModelManager:
             meta["start"][1] += dy
             meta["end"][0] += dx
             meta["end"][1] += dy
+            entity = meta.get("entity")
+            if entity and hasattr(entity, "UAxes") and entity.UAxes:
+                axis_curve = entity.UAxes[0].AxisCurve
+                if axis_curve and hasattr(axis_curve, "Points") and len(axis_curve.Points) >= 2:
+                    axis_curve.Points[0].Coordinates = (feet_to_metres(meta["start"][0]), feet_to_metres(meta["start"][1]))
+                    axis_curve.Points[1].Coordinates = (feet_to_metres(meta["end"][0]), feet_to_metres(meta["end"][1]))
             translated = True
 
         elif ifc_class in ("IfcSlab", "IfcRoof"):
@@ -2943,7 +2997,9 @@ class BimModelManager:
         if translated and _propagate:
             try:
                 self._solve_constraints_after_move(guid)
-            except Exception as e:  # never let a solver problem corrupt an edit
+            except Exception as e:
+                if type(e).__name__ == "SolverUnavailable":
+                    raise
                 print(f"Notice: constraint solve after moving {guid} failed: {e}")
 
         if translated:
@@ -2980,8 +3036,11 @@ class BimModelManager:
                         "constraints": result.conflicting,
                         "triggered_by": moved_guid,
                     }
+        except SolverUnavailable:
+            # Solver unavailable (e.g. planegcs not installed): surfaced error per Gate 0
+            raise
         except Exception as e:
-            # Solver unavailable (e.g. planegcs not installed) or conflict: keep model intact
+            # conflict or other: keep model intact
             return
 
         # EQ is a relation over the whole span, so it is re-asserted last: if the
@@ -3605,6 +3664,99 @@ class BimModelManager:
         self.project_rev += 1
         return dim
 
+    def add_dimension(
+        self,
+        refs: List[Dict[str, Any]],
+        axis: str = "aligned",
+        offset: float = 1.0,
+        is_locked: bool = False,
+        binding: str = "literal",
+        label: Optional[str] = None,
+        eq_anchor: Optional[int] = None,
+        dimension_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Creates a dimension record taking an ordered reference list and deriving segment values from
+        current geometry. Takes NO value parameter (Phase 2.2 / §2 Rule 4).
+        """
+        if not refs or len(refs) < 2:
+            raise ValueError("add_dimension requires an ordered list of at least 2 references")
+
+        # Phase 5.2 binding validation: reject locked + label, and reject locked on len(refs) > 2 unless binding == 'equal'
+        if is_locked and label:
+            raise ValueError("Dimension binding error: cannot be both locked and labeled")
+        if is_locked and len(refs) > 2 and binding != "equal":
+            raise ValueError("Dimension binding error: cannot lock multi-segment dimension without equal binding")
+
+        norm_refs = [normalize_reference(r) for r in refs]
+        segments = []
+        for i in range(len(norm_refs) - 1):
+            ra, rb = norm_refs[i], norm_refs[i + 1]
+            pa, out_a = resolve_reference(self, ra)
+            pb, out_b = resolve_reference(self, rb)
+            if pa is not None and pb is not None:
+                if axis == "x":
+                    seg_val = abs(pb[0] - pa[0])
+                elif axis == "y":
+                    seg_val = abs(pb[1] - pa[1])
+                else:
+                    seg_val = float(math.hypot(pb[0] - pa[0], pb[1] - pa[1]))
+            else:
+                seg_val = 0.0
+            segments.append({
+                "value": seg_val,
+                "locked": bool(is_locked),
+                "value_override": None,
+            })
+
+        dim_id = dimension_id or f"dim_{uuid.uuid4().hex[:8]}"
+        dim = self.create_dimension(
+            ref_a=norm_refs[0],
+            ref_b=norm_refs[1],
+            axis=axis,
+            offset=offset,
+            is_locked=is_locked,
+            dimension_id=dim_id,
+            refs=norm_refs,
+        )
+        dim["segments"] = segments
+        dim["binding"] = binding
+        dim["label"] = label
+        dim["eq_anchor"] = eq_anchor
+        return dim
+
+    def resolve_dimension(self, dim_id: str, segment_index: int = 0) -> Optional[float]:
+        """
+        Recomputes a dimension segment's measured value from current reference positions (Phase 2.5).
+        Returns None if references cannot be resolved or dimension is not found.
+        """
+        if dim_id not in self.dimensions:
+            return None
+        dim = self.dimensions[dim_id]
+        refs = dim.get("refs")
+        if refs and len(refs) > segment_index + 1:
+            ra = refs[segment_index]
+            rb = refs[segment_index + 1]
+        else:
+            ra = dim.get("ref_a")
+            rb = dim.get("ref_b")
+
+        if not ra or not rb:
+            return None
+
+        pa, out_a = resolve_reference(self, ra)
+        pb, out_b = resolve_reference(self, rb)
+        if pa is None or pb is None or out_a == "lost" or out_b == "lost":
+            return None
+
+        axis = dim.get("axis", "aligned")
+        if axis == "x":
+            return abs(pb[0] - pa[0])
+        elif axis == "y":
+            return abs(pb[1] - pa[1])
+        else:
+            return float(math.hypot(pb[0] - pa[0], pb[1] - pa[1]))
+
     def delete_dimension(self, dimension_id: str) -> bool:
         """Deletes a dimension object and releases any associated constraint lock."""
         if dimension_id not in self.dimensions:
@@ -3618,17 +3770,204 @@ class BimModelManager:
         self.project_rev += 1
         return True
 
+    def referenceable_kinds(self, guid: str) -> List[str]:
+        """Returns the set of reference kinds an element publishes (Phase 4.1 / §2.1)."""
+        return referenceable_kinds(self, guid)
+
+    def move_reference(
+        self,
+        ref: Dict[str, Any],
+        axis: str,
+        new_coord: float,
+        *,
+        _propagate: bool = False,
+    ) -> bool:
+        """
+        Moves the geometry a reference designates so its coordinate on `axis` becomes
+        new_coord (Phase 3.2 & 4.2 / §3.3).
+        - wall_start/wall_end: adjust the baseline endpoint (changing length).
+        - wall_center: translates the wall along axis.
+        - wall_face_pos/wall_face_neg: offsets the baseline so the face lands at new_coord.
+        - host_offset: rewrites offset_along_wall.
+        - level_plane: rewrites the storey elevation.
+        - grid_axis: moves the axis curve and updates IFC entity.
+        """
+        norm = normalize_reference(ref)
+        kind = norm.get("kind")
+        sources = norm.get("sources", [])
+        if not sources and kind not in ("level_plane", "grid_axis"):
+            return False
+
+        axis = axis.lower()
+        val = float(new_coord)
+
+        if kind == "wall_start":
+            guid = sources[0]["element_guid"]
+            if guid not in self.element_meta:
+                return False
+            meta = self.element_meta[guid]
+            sp = list(meta.get("start", [0.0, 0.0, 0.0]))
+            if axis == "x":
+                sp[0] = val
+            elif axis == "y":
+                sp[1] = val
+            elif axis == "z":
+                if len(sp) > 2:
+                    sp[2] = val
+                else:
+                    sp.append(val)
+            self.update_element(guid, {"start": sp})
+            if _propagate:
+                self._solve_constraints_after_move(guid)
+            return True
+
+        elif kind == "wall_end":
+            guid = sources[0]["element_guid"]
+            if guid not in self.element_meta:
+                return False
+            meta = self.element_meta[guid]
+            ep = list(meta.get("end", [0.0, 0.0, 0.0]))
+            if axis == "x":
+                ep[0] = val
+            elif axis == "y":
+                ep[1] = val
+            elif axis == "z":
+                if len(ep) > 2:
+                    ep[2] = val
+                else:
+                    ep.append(val)
+            self.update_element(guid, {"end": ep})
+            if _propagate:
+                self._solve_constraints_after_move(guid)
+            return True
+
+        elif kind == "wall_center":
+            guid = sources[0]["element_guid"]
+            if guid not in self.element_meta:
+                return False
+            meta = self.element_meta[guid]
+            sp = meta.get("start", [0.0, 0.0, 0.0])
+            ep = meta.get("end", [0.0, 0.0, 0.0])
+            if axis == "x":
+                cur_c = (float(sp[0]) + float(ep[0])) / 2.0
+                dx = val - cur_c
+                dy = 0.0
+            elif axis == "y":
+                cur_c = (float(sp[1]) + float(ep[1])) / 2.0
+                dx = 0.0
+                dy = val - cur_c
+            else:
+                dx = dy = 0.0
+            return self.translate_element(guid, dx, dy, 0.0, _propagate=_propagate)
+
+        elif kind in ("wall_face_pos", "wall_face_neg"):
+            guid = sources[0]["element_guid"]
+            if guid not in self.element_meta:
+                return False
+            coords, outcome = resolve_reference(self, norm)
+            if coords is None:
+                return False
+            if axis == "x":
+                dx = val - coords[0]
+                dy = 0.0
+            elif axis == "y":
+                dx = 0.0
+                dy = val - coords[1]
+            else:
+                dx = dy = 0.0
+            return self.translate_element(guid, dx, dy, 0.0, _propagate=_propagate)
+
+        elif kind == "host_offset":
+            guid = sources[0]["element_guid"]
+            if guid not in self.element_meta:
+                return False
+            meta = self.element_meta[guid]
+            host_guid = meta.get("host_wall_guid")
+            if not host_guid or host_guid not in self.element_meta:
+                return False
+            hm = self.element_meta[host_guid]
+            sp, ep = hm.get("start"), hm.get("end")
+            if not sp or not ep:
+                return False
+            dx = float(ep[0]) - float(sp[0])
+            dy = float(ep[1]) - float(sp[1])
+            L = math.hypot(dx, dy)
+            if L < 1e-6:
+                return False
+            ux, uy = dx / L, dy / L
+            if axis == "x" and abs(ux) > 1e-6:
+                new_offset = (val - float(sp[0])) / ux
+            elif axis == "y" and abs(uy) > 1e-6:
+                new_offset = (val - float(sp[1])) / uy
+            else:
+                new_offset = val
+            self.update_element(guid, {"offset_along_wall": new_offset})
+            if _propagate:
+                self._solve_constraints_after_move(guid)
+            return True
+
+        elif kind == "level_plane":
+            lid = sources[0]["element_guid"] if sources else norm.get("guid")
+            if not lid or not hasattr(self, "levels"):
+                return False
+            target_lid = lid if lid in self.levels else None
+            if not target_lid:
+                for k, lv in self.levels.items():
+                    if k.lower() == str(lid).lower() or lv.get("name", "").lower() == str(lid).lower():
+                        target_lid = k
+                        break
+            if not target_lid:
+                return False
+            self.move_level(target_lid, val)
+            return True
+
+        elif kind == "grid_axis":
+            gid = sources[0]["element_guid"] if sources else norm.get("guid")
+            if not gid or gid not in self.element_meta:
+                return False
+            meta = self.element_meta[gid]
+            sp = list(meta.get("start", [0.0, 0.0]))
+            ep = list(meta.get("end", [0.0, 0.0]))
+            if axis == "x":
+                cur_x = (float(sp[0]) + float(ep[0])) / 2.0
+                dx = val - cur_x
+                dy = 0.0
+            elif axis == "y":
+                cur_y = (float(sp[1]) + float(ep[1])) / 2.0
+                dx = 0.0
+                dy = val - cur_y
+            else:
+                dx = dy = 0.0
+            meta["start"][0] += dx
+            meta["start"][1] += dy
+            meta["end"][0] += dx
+            meta["end"][1] += dy
+            entity = meta.get("entity")
+            if entity and hasattr(entity, "UAxes") and entity.UAxes:
+                axis_curve = entity.UAxes[0].AxisCurve
+                if axis_curve and hasattr(axis_curve, "Points") and len(axis_curve.Points) >= 2:
+                    axis_curve.Points[0].Coordinates = (feet_to_metres(meta["start"][0]), feet_to_metres(meta["start"][1]))
+                    axis_curve.Points[1].Coordinates = (feet_to_metres(meta["end"][0]), feet_to_metres(meta["end"][1]))
+            self.grids_rev += 1
+            self.project_rev += 1
+            if _propagate:
+                self._solve_constraints_after_move(gid)
+            return True
+
+        return False
+
     def set_dimension_value(
         self,
         dimension_id: str,
         value: float,
         anchor: str = "start",
+        segment_index: int = 0,
     ) -> Dict[str, Any]:
         """
-        Sets the value of a dimension and re-solves the geometry (Phase 2.5).
+        Sets the value of a dimension and re-solves the geometry (Phase 2.5 & Phase 3.3).
         Carries the TARGET VALUE (not a delta).
         - For a single-wall dimension (start <-> end), resizes the wall along its baseline.
-        - For a two-element dimension, translates the unanchored element and solves constraints.
+        - For a reference-driven dimension, solves via ConstraintSolver and moves references directly.
         """
         if value <= 0:
             raise ValueError(f"Dimension value must be positive, got {value}")
@@ -3658,10 +3997,14 @@ class BimModelManager:
         # Case 1: dimension_id exists in self.dimensions
         if dimension_id in self.dimensions:
             dim = self.dimensions[dimension_id]
-            ref_a = dim.get("ref_a", {})
-            ref_b = dim.get("ref_b", {})
-            guid_a = ref_a.get("guid") or ref_a.get("level_id")
-            guid_b = ref_b.get("guid") or ref_b.get("level_id")
+            ref_a = normalize_reference(dim.get("ref_a", {}))
+            ref_b = normalize_reference(dim.get("ref_b", {}))
+            refs = dim.get("refs")
+            if not refs:
+                refs = [ref_a, ref_b]
+            refs = [normalize_reference(r) for r in refs if r]
+            guid_a = ref_a.get("guid") or (ref_a.get("sources") and ref_a["sources"][0]["element_guid"])
+            guid_b = ref_b.get("guid") or (ref_b.get("sources") and ref_b["sources"][0]["element_guid"])
 
             # Check if this dimension targets a level
             lvl_b = _lookup_level(guid_b)
@@ -3676,55 +4019,124 @@ class BimModelManager:
                     target_elev = val_float
                 self.move_level(lvl_b, target_elev)
                 dim["value"] = val_float
+                if "segments" in dim and len(dim["segments"]) > segment_index:
+                    dim["segments"][segment_index]["value"] = val_float
                 self.dimensions_rev += 1
                 self.constraints_rev += 1
                 self.project_rev += 1
                 return {"status": "updated", "dimension_id": dimension_id, "value": val_float}
 
             if guid_a and (guid_a == guid_b or not guid_b):
+                # Single-wall dimension
+                from constraint_solver import ConstraintSolver
+                solver = ConstraintSolver(self)
+                dim_axis = dim.get("axis", "aligned")
+                meta = self.element_meta.get(guid_a, {})
+                sp, ep = meta.get("start", [0.0, 0.0]), meta.get("end", [0.0, 0.0])
+                if dim_axis in ("x", "y"):
+                    solve_axis = dim_axis
+                elif abs(ep[1] - sp[1]) < 1e-4:
+                    solve_axis = "x"
+                elif abs(ep[0] - sp[0]) < 1e-4:
+                    solve_axis = "y"
+                else:
+                    solve_axis = None
+
+                if solve_axis:
+                    temp_dim = copy.deepcopy(dim)
+                    temp_dim["value"] = val_float
+                    if "segments" in temp_dim and len(temp_dim["segments"]) > segment_index:
+                        temp_dim["segments"][segment_index]["value"] = val_float
+                    else:
+                        temp_dim["segments"] = [{"value": val_float, "locked": True}]
+                    pins = {}
+                    if anchor == "start":
+                        c_start, _ = resolve_reference_axis(self, ref_a, solve_axis)
+                        if c_start is not None:
+                            pins[reference_key(ref_a)] = float(c_start)
+                    elif anchor == "end":
+                        c_end, _ = resolve_reference_axis(self, ref_b, solve_axis)
+                        if c_end is not None:
+                            pins[reference_key(ref_b)] = float(c_end)
+
+                    solve_res = solver.solve_dimensions(solve_axis, temp_dim, pins)
+                    if solve_res.status == "conflict":
+                        return {
+                            "status": "conflict",
+                            "dimension_id": dimension_id,
+                            "value": val_float,
+                            "conflict": self.last_constraint_conflict,
+                        }
+
                 self._resize_wall_length(guid_a, val_float, anchor=anchor)
                 dim["value"] = val_float
+                if "segments" in dim and len(dim["segments"]) > segment_index:
+                    dim["segments"][segment_index]["value"] = val_float
                 self._solve_constraints_after_move(guid_a)
+
             elif guid_a and guid_b:
+                # Multi-element / reference-driven dimension (Phase 3.3)
+                from constraint_solver import ConstraintSolver
+                solver = ConstraintSolver(self)
                 pa, out_a = resolve_reference(self, ref_a)
                 pb, out_b = resolve_reference(self, ref_b)
-                if pa is None or pb is None:
+                if pa is None or pb is None or out_a == "lost" or out_b == "lost":
                     return {"status": "error", "error": "Dimension witness references lost"}
-                axis = dim.get("axis", "aligned")
-                if axis == "x":
-                    cur_diff = pb[0] - pa[0]
-                    sign = 1.0 if cur_diff >= 0 else -1.0
-                    target_x = pa[0] + sign * val_float
-                    dx = target_x - pb[0]
-                    dy = 0.0
-                elif axis == "y":
-                    cur_diff = pb[1] - pa[1]
-                    sign = 1.0 if cur_diff >= 0 else -1.0
-                    target_y = pa[1] + sign * val_float
-                    dx = 0.0
-                    dy = target_y - pb[1]
-                else:
-                    dist = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
-                    if dist > 1e-6:
-                        ux = (pb[0] - pa[0]) / dist
-                        uy = (pb[1] - pa[1]) / dist
-                        target_x = pa[0] + ux * val_float
-                        target_y = pa[1] + uy * val_float
-                        dx = target_x - pb[0]
-                        dy = target_y - pb[1]
-                    else:
-                        dx = val_float
-                        dy = 0.0
 
-                self.translate_element(guid_b, dx, dy, 0.0)
+                dim_axis = dim.get("axis", "aligned")
+                if dim_axis in ("x", "y"):
+                    solve_axis = dim_axis
+                else:
+                    solve_axis = "x" if abs(pb[0] - pa[0]) >= abs(pb[1] - pa[1]) else "y"
+
+                is_datum_a = ref_a.get("kind") in ("grid_axis", "level_plane")
+                is_datum_b = ref_b.get("kind") in ("grid_axis", "level_plane")
+                if is_datum_b and not is_datum_a:
+                    pin_ref, move_ref = ref_b, ref_a
+                elif is_datum_a and not is_datum_b:
+                    pin_ref, move_ref = ref_a, ref_b
+                elif anchor == "end":
+                    pin_ref, move_ref = ref_b, ref_a
+                else:
+                    pin_ref, move_ref = ref_a, ref_b
+
+                pin_coord, _ = resolve_reference_axis(self, pin_ref, solve_axis)
+                pins = {}
+                if pin_coord is not None:
+                    pins[reference_key(pin_ref)] = float(pin_coord)
+
+                temp_dim = copy.deepcopy(dim)
+                temp_dim["value"] = val_float
+                if "segments" in temp_dim and len(temp_dim["segments"]) > segment_index:
+                    temp_dim["segments"][segment_index]["value"] = val_float
+                else:
+                    temp_dim["segments"] = [{"value": val_float, "locked": True}]
+
+                solve_res = solver.solve_dimensions(solve_axis, temp_dim, pins)
+                if solve_res.status == "conflict":
+                    return {
+                        "status": "conflict",
+                        "dimension_id": dimension_id,
+                        "value": val_float,
+                        "conflict": self.last_constraint_conflict,
+                    }
+
+                if solve_res.status == "success":
+                    move_k = reference_key(move_ref)
+                    if move_k in solve_res.coordinates:
+                        target_coord = solve_res.coordinates[move_k]
+                        self.move_reference(move_ref, solve_axis, target_coord, _propagate=True)
+                    else:
+                        for k, coord in solve_res.coordinates.items():
+                            if k not in pins:
+                                self.move_reference(move_ref, solve_axis, coord, _propagate=True)
+
                 dim["value"] = val_float
+                if "segments" in dim and len(dim["segments"]) > segment_index:
+                    dim["segments"][segment_index]["value"] = val_float
                 cid = dim.get("constraint_id")
                 if cid and cid in self.constraints:
                     self.constraints[cid]["locked_distance"] = val_float
-                try:
-                    self._solve_constraints_after_move(guid_b)
-                except Exception:
-                    pass
 
         # Case 2: dimension_id is an element GUID directly in self.element_meta
         elif dimension_id in self.element_meta:
@@ -3733,6 +4145,8 @@ class BimModelManager:
             for d in self.dimensions.values():
                 if d.get("ref_a", {}).get("guid") == dimension_id and d.get("ref_b", {}).get("guid") == dimension_id:
                     d["value"] = val_float
+                    if "segments" in d and len(d["segments"]) > 0:
+                        d["segments"][0]["value"] = val_float
             try:
                 self._solve_constraints_after_move(dimension_id)
             except Exception:
@@ -4602,6 +5016,21 @@ class BimModelManager:
         # Restore the non-geometric payload the builders do not take.
         if rec.get("type_properties"):
             meta.setdefault("type_properties", {}).update(rec["type_properties"])
+
+        # Restore references from overlay (Phase 1.3)
+        if rec.get("refs") and isinstance(rec["refs"], list):
+            from references import ReferenceKind, normalize_reference
+            valid_refs = []
+            dropped_count = 0
+            for r in rec["refs"]:
+                if isinstance(r, dict) and r.get("kind") in ReferenceKind:
+                    valid_refs.append(normalize_reference(r))
+                else:
+                    dropped_count += 1
+            if dropped_count > 0:
+                print(f"Notice: dropped {dropped_count} unknown or invalid reference(s) for element {guid}")
+            if valid_refs:
+                meta["refs"] = valid_refs
         return True
 
     def rebuild_from_overlay(self, overlay: Dict[str, Any]) -> Dict[str, Any]:

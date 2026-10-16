@@ -21,6 +21,7 @@ const pyExe = getPythonPath();
 console.log(`Using Python executable: ${pyExe}`);
 
 const SUITES = [
+  'scratch/test_solver_capability.py',
   'scratch/test_container_fidelity.py',
   'scratch/test_dimensions_crud.py',
   'scratch/test_references.py',

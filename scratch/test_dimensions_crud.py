@@ -326,6 +326,120 @@ def run_tests():
     check("deleting referenced element yields 'lost'", out_p2b == "lost")
     check("deleting referenced element yields None coords (never 0.0, 0.0)", pt_p2b is None)
 
+    # 18. Phase 2: add_dimension and resolve_dimension (§2 Rule 4 / Phase 2.2 / Phase 2.5)
+    w_d1 = mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], height=10.0, thickness=0.5)
+    w_d2 = mgr.add_wall([10.0, 0.0, 0.0], [20.0, 0.0, 0.0], height=10.0, thickness=0.5)
+    refs_d = [
+        {"kind": "wall_start", "sources": [{"element_guid": w_d1["guid"], "ordinal": 0}], "hint": {"point": [0.0, 0.0, 0.0], "normal": None}},
+        {"kind": "wall_end", "sources": [{"element_guid": w_d1["guid"], "ordinal": 0}], "hint": {"point": [10.0, 0.0, 0.0], "normal": None}},
+        {"kind": "wall_end", "sources": [{"element_guid": w_d2["guid"], "ordinal": 0}], "hint": {"point": [20.0, 0.0, 0.0], "normal": None}},
+    ]
+    # 18a: add_dimension derives segment values without taking value
+    dim_multi = mgr.add_dimension(refs_d, axis="x")
+    check("add_dimension creates segments array of length 2", len(dim_multi.get("segments", [])) == 2)
+    check("segment 0 measured value is 10.0", abs(dim_multi["segments"][0]["value"] - 10.0) < 1e-4)
+    check("segment 1 measured value is 10.0", abs(dim_multi["segments"][1]["value"] - 10.0) < 1e-4)
+
+    # 18b: resolve_dimension reads model dynamically
+    init_res0 = mgr.resolve_dimension(dim_multi["id"], 0)
+    check("resolve_dimension segment 0 is 10.0", init_res0 is not None and abs(init_res0 - 10.0) < 1e-4)
+    mgr.translate_element(w_d2["guid"], 4.0, 0.0, 0.0)
+    updated_res1 = mgr.resolve_dimension(dim_multi["id"], 1)
+    check("resolve_dimension segment 1 updates to 14.0 after wall move", updated_res1 is not None and abs(updated_res1 - 14.0) < 1e-4)
+
+    # 18c: binding slot validations
+    val_err_lock_label = False
+    try:
+        mgr.add_dimension(refs_d[:2], is_locked=True, label="LengthParam")
+    except ValueError:
+        val_err_lock_label = True
+    check("validator rejects locked + label together", val_err_lock_label)
+
+    val_err_multi_locked = False
+    try:
+        mgr.add_dimension(refs_d, is_locked=True, binding="literal")
+    except ValueError:
+        val_err_multi_locked = True
+    check("validator rejects locked on multi-segment unless binding == 'equal'", val_err_multi_locked)
+
+    dim_eq = mgr.add_dimension(refs_d, is_locked=True, binding="equal")
+    check("multi-segment dimension with binding == 'equal' succeeds", dim_eq is not None and dim_eq.get("binding") == "equal")
+
+    # 19. Gate 3: The dimension drives geometry & conflict reporting (Phase 3 & 4)
+    # 19a. Referenceable kinds opt-in publication (Phase 4.1 / §2.1)
+    wall_kinds = mgr.referenceable_kinds(w_d1["guid"])
+    check("wall publishes wall_start", "wall_start" in wall_kinds)
+    check("wall publishes wall_end", "wall_end" in wall_kinds)
+    check("wall publishes wall_face_pos", "wall_face_pos" in wall_kinds)
+    grid_g3 = mgr.add_grid("G3", [15.0, 0.0], [15.0, 20.0])
+    grid_kinds = mgr.referenceable_kinds(grid_g3["guid"])
+    check("grid publishes grid_axis", "grid_axis" in grid_kinds)
+    level_kinds = mgr.referenceable_kinds("Level 1")
+    check("level publishes level_plane", "level_plane" in level_kinds)
+
+    # 19b. Gate 3 Case 1: Dimension wall_start <-> wall_end drives length to 12.0 ft
+    w_g3 = mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], height=10.0, thickness=0.5)
+    dim_g3_len = mgr.add_dimension([
+        {"kind": "wall_start", "sources": [{"element_guid": w_g3["guid"], "ordinal": 0}]},
+        {"kind": "wall_end", "sources": [{"element_guid": w_g3["guid"], "ordinal": 0}]},
+    ], axis="x")
+    check("initial wall length is 10.0", abs(mgr.element_meta[w_g3["guid"]]["length"] - 10.0) < 1e-4)
+    engine.execute_single_command("DimensionValueSet", {
+        "dimension_id": dim_g3_len["id"],
+        "value": 12.0,
+        "anchor": "start",
+    })
+    check("DimensionValueSet to 12.0 resizes wall to 12.0 ft", abs(mgr.element_meta[w_g3["guid"]]["length"] - 12.0) < 1e-4)
+    check("resolve_dimension returns 12.0 ft", abs(mgr.resolve_dimension(dim_g3_len["id"]) - 12.0) < 1e-4)
+
+    # 19c. Gate 3 Case 2: Dimension wall_start <-> grid_axis drives wall coordinate
+    dim_g3_grid = mgr.create_dimension(
+        ref_a={"guid": w_g3["guid"], "ref": "start"},
+        ref_b={"guid": grid_g3["guid"], "ref": "grid_axis"},
+        axis="x",
+    )
+    # Wall start is at 0.0, Grid is at 15.0. Set dimension to 5.0 ft -> wall start lands on 10.0 ft.
+    mgr.set_dimension_value(dim_g3_grid["id"], 5.0)
+    w_g3_start_x = mgr.element_meta[w_g3["guid"]]["start"][0]
+    check("wall start coordinate landed on 10.0 ft", abs(w_g3_start_x - 10.0) < 1e-4, f"got {w_g3_start_x}")
+    check("resolve_dimension to grid returns 5.0 ft", abs(mgr.resolve_dimension(dim_g3_grid["id"]) - 5.0) < 1e-4)
+
+    # 19d. Gate 3 Case 3: Deliberately over-constrain returns structured conflict with >=1 resolution and zero geometry change
+    w_oc1 = mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0])
+    w_oc2 = mgr.add_wall([10.0, 0.0, 0.0], [20.0, 0.0, 0.0])
+    dim_oc1 = mgr.create_dimension(
+        ref_a={"guid": w_oc1["guid"], "ref": "start"},
+        ref_b={"guid": w_oc2["guid"], "ref": "end"},
+        axis="x",
+        is_locked=True,
+    )
+    dim_oc2 = mgr.create_dimension(
+        ref_a={"guid": w_oc1["guid"], "ref": "start"},
+        ref_b={"guid": w_oc2["guid"], "ref": "end"},
+        axis="x",
+    )
+    # Attempt contradictory distance of 30.0 while dim_oc1 is locked at 20.0
+    pre_w1_start = list(mgr.element_meta[w_oc1["guid"]]["start"])
+    pre_w2_end = list(mgr.element_meta[w_oc2["guid"]]["end"])
+    oc_res = mgr.set_dimension_value(dim_oc2["id"], 30.0)
+    check("over-constraint returns conflict status", oc_res.get("status") == "conflict")
+    check("over-constraint returns conflict object", "conflict" in oc_res and oc_res["conflict"] is not None)
+    resolutions = oc_res.get("conflict", {}).get("resolutions", [])
+    check("conflict contains resolutions", len(resolutions) >= 1)
+    check("resolution offers unlock_dimension", any(r.get("kind") == "unlock_dimension" for r in resolutions))
+    check("geometry unchanged: w1 start untouched", mgr.element_meta[w_oc1["guid"]]["start"] == pre_w1_start)
+    check("geometry unchanged: w2 end untouched", mgr.element_meta[w_oc2["guid"]]["end"] == pre_w2_end)
+
+    # 19e. Phase 6.1: DimensionLockToggle via Command Bus with undo/redo
+    tx_lock = engine.execute_transaction([
+        CommandRequest(command="DimensionLockToggle", params={"dimension_id": dim_oc2["id"], "is_locked": True})
+    ], origin="ui", description="Lock dimension")
+    check("DimensionLockToggle executed", dim_oc2["id"] in mgr.dimensions and mgr.dimensions[dim_oc2["id"]].get("is_locked") is True)
+    engine.undo()
+    check("undo restores unlocked state", mgr.dimensions[dim_oc2["id"]].get("is_locked") is False)
+    engine.redo()
+    check("redo restores locked state", mgr.dimensions[dim_oc2["id"]].get("is_locked") is True)
+
     print(f"\nRESULTS: {passed} passed, {failed} failed")
     if failed > 0:
         sys.exit(1)

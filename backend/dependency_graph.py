@@ -210,6 +210,12 @@ class DependencyGraph:
             if walls_to_fix:
                 self.manager.recompute_wall_joins(only=walls_to_fix)
 
+        if "constraint" in kinds or not kinds:
+            # Re-resolve dimensions for affected nodes with constraint dependencies (Phase 3.4)
+            for node in affected:
+                if hasattr(self.manager, "_re_resolve_dimensions_after_move"):
+                    self.manager._re_resolve_dimensions_after_move(node)
+
         self.mark_dirty(*changed)
         stats["dirty"] = len(self._dirty)
         self.last_stats = stats

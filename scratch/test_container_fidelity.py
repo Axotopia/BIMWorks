@@ -390,6 +390,50 @@ def main():
     check("meta.json declares the same unit",
           json.loads(zipfile.ZipFile(p_u).read("meta.json"))["internal_units"] == "decimal_feet")
 
+    # 11. Gate 1: Reference round-trip and constraint pruning
+    print("11. Gate 1: Reference round-trip and constraint pruning ...")
+    from references import reference_key
+
+    m_ref = fresh()
+    w_ref = m_ref.add_wall((0, 0, 0), (20, 0, 0), height=10.0, thickness=0.8333, name="Ref Wall")
+    orig_refs = m_ref.element_meta[w_ref["guid"]].get("refs", [])
+    orig_keys = [reference_key(r) for r in orig_refs]
+    check("initial wall has dual-written references", len(orig_refs) == 2, len(orig_refs))
+
+    p_ref = save(m_ref)
+    loaded_mgr, _ = load(p_ref)
+    loaded_meta = loaded_mgr.element_meta.get(w_ref["guid"], {})
+    loaded_refs = loaded_meta.get("refs", [])
+    loaded_keys = [reference_key(r) for r in loaded_refs]
+
+    check("reference count survives round-trip", len(loaded_refs) == len(orig_refs), len(loaded_refs))
+    check("reference keys match exactly across round-trip", loaded_keys == orig_keys, (loaded_keys, orig_keys))
+
+    # Test constraint & dimension pruning on element deletion
+    w_a = m_ref.add_wall((0, 5, 0), (10, 5, 0), height=10.0, thickness=0.8333, name="WA")["guid"]
+    w_b = m_ref.add_wall((10, 5, 0), (20, 5, 0), height=10.0, thickness=0.8333, name="WB")["guid"]
+    c_align = m_ref.add_align_constraint(w_a, w_b, "x", True)
+    dim_ab = m_ref.create_dimension(
+        {"guid": w_a, "ref": "end"},
+        {"guid": w_b, "ref": "start"},
+        axis="x",
+        is_locked=True
+    )
+    check("align constraint exists before delete", c_align["id"] in m_ref.constraints)
+    check("dimension exists before delete", dim_ab["id"] in m_ref.dimensions)
+
+    m_ref.delete_element(w_a)
+    remaining_c = [cid for cid, c in m_ref.constraints.items() if c.get("ref_guid") == w_a or c.get("target_guid") == w_a]
+    check("align constraint referencing deleted element was pruned", len(remaining_c) == 0, remaining_c)
+    remaining_d = [did for did, d in m_ref.dimensions.items() if d.get("ref_a", {}).get("guid") == w_a or d.get("ref_b", {}).get("guid") == w_a]
+    check("dimension referencing deleted element was pruned", len(remaining_d) == 0, remaining_d)
+
+    # Gate 1 check: references.py has no import of ifc_service
+    ref_file_path = os.path.join(os.path.dirname(__file__), "..", "backend", "references.py")
+    with open(ref_file_path, "r", encoding="utf-8") as rf:
+        ref_src = rf.read()
+    check("references.py has no import of ifc_service", "ifc_service" not in ref_src)
+
     print(f"\nRESULT: {CHECKS['passed']} passed, {CHECKS['failed']} failed")
     if CHECKS["failed"]:
         return 1

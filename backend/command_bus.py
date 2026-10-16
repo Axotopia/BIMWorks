@@ -145,6 +145,11 @@ class DimensionDeleteParams(BaseModel):
     dimension_id: str = Field(..., description="Identifier of dimension to delete")
 
 
+class DimensionLockToggleParams(BaseModel):
+    dimension_id: str = Field(..., description="Identifier of dimension to lock/unlock")
+    is_locked: bool = Field(..., description="New lock padlock state")
+
+
 class ElementUpdateParams(BaseModel):
     guid: str = Field(..., description="GUID of element to update")
     updates: Dict[str, Any] = Field(..., description="Element property updates (polygon, thickness, elevation, pitch, etc.)")
@@ -429,6 +434,7 @@ COMMAND_REGISTRY = {
     "DimensionCreate": DimensionCreateParams,
     "DimensionValueSet": DimensionValueSetParams,
     "DimensionDelete": DimensionDeleteParams,
+    "DimensionLockToggle": DimensionLockToggleParams,
     "TypeCreate": TypeCreateParams,
     "TypeUpdate": TypeUpdateParams,
     "TypeDuplicate": TypeDuplicateParams,
@@ -847,6 +853,19 @@ class CommandBusEngine:
                 raise ValueError(f"Dimension {p.dimension_id} not found")
             return {"status": "deleted", "dimension_id": p.dimension_id}
 
+        elif cmd_name == "DimensionLockToggle":
+            p: DimensionLockToggleParams = validated
+            if p.dimension_id not in self.manager.dimensions:
+                raise ValueError(f"Dimension {p.dimension_id} not found")
+            dim = self.manager.dimensions[p.dimension_id]
+            dim["is_locked"] = p.is_locked
+            if "segments" in dim:
+                for s in dim["segments"]:
+                    s["locked"] = p.is_locked
+            self.manager.dimensions_rev += 1
+            self.manager.project_rev += 1
+            return {"status": "updated", "dimension_id": p.dimension_id, "is_locked": p.is_locked}
+
         elif cmd_name == "TypeCreate":
             p: TypeCreateParams = validated
             return self.manager.create_type(p.type_id, p.name, p.ifc_class, p.parameters)
@@ -1107,6 +1126,30 @@ class CommandBusEngine:
             def redo_fn(mgr):
                 mgr.delete_dimension(p.dimension_id)
             return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "deleted", "dimension_id": p.dimension_id}
+
+        elif cmd_name == "DimensionLockToggle":
+            p: DimensionLockToggleParams = validated
+            dim = self.manager.dimensions.get(p.dimension_id)
+            prev_locked = dim.get("is_locked", False) if dim else False
+            did = p.dimension_id
+            def undo_fn(mgr):
+                if did in mgr.dimensions:
+                    mgr.dimensions[did]["is_locked"] = prev_locked
+                    if "segments" in mgr.dimensions[did]:
+                        for s in mgr.dimensions[did]["segments"]:
+                            s["locked"] = prev_locked
+                    mgr.dimensions_rev += 1
+                    mgr.project_rev += 1
+            def redo_fn(mgr):
+                if did in mgr.dimensions:
+                    mgr.dimensions[did]["is_locked"] = p.is_locked
+                    if "segments" in mgr.dimensions[did]:
+                        for s in mgr.dimensions[did]["segments"]:
+                            s["locked"] = p.is_locked
+                    mgr.dimensions_rev += 1
+                    mgr.project_rev += 1
+            res = self.execute_single_command(cmd_name, p.model_dump())
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
 
         elif cmd_name == "LevelMove":
             p: LevelMoveParams = validated

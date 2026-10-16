@@ -492,3 +492,35 @@ def repair_reference(
         return (norm, "ambiguous")
 
     return (norm, "lost")
+
+
+def referenceable_kinds(manager: Any, guid: str) -> List[str]:
+    """
+    Returns the set of reference kinds an element publishes (Phase 4.1 / §2.1).
+    Elements opt-in to addressability:
+    - IfcBuildingStorey (level): ["level_plane"]
+    - IfcGrid: ["grid_axis"]
+    - IfcWall / IfcWallStandardCase: ["wall_start", "wall_end", "wall_center", "wall_face_pos", "wall_face_neg"]
+    - IfcDoor / IfcWindow: ["host_offset"]
+    """
+    if hasattr(manager, "levels") and manager.levels:
+        if guid in manager.levels:
+            return ["level_plane"]
+        for k, lv in manager.levels.items():
+            if k.lower() == str(guid).lower() or lv.get("name", "").lower() == str(guid).lower():
+                return ["level_plane"]
+    meta = getattr(manager, "element_meta", {}).get(guid)
+    if not meta:
+        return []
+    ifc_class = meta.get("ifc_class")
+    if ifc_class == "IfcBuildingStorey":
+        return ["level_plane"]
+    if ifc_class == "IfcGrid":
+        return ["grid_axis"]
+    if ifc_class in ("IfcWall", "IfcWallStandardCase"):
+        return ["wall_start", "wall_end", "wall_center", "wall_face_pos", "wall_face_neg"]
+    ifc_type = meta.get("type", "")
+    if ifc_class in ("IfcDoor", "IfcWindow") or ifc_type in ("door", "window"):
+        return ["host_offset"]
+    return []
+

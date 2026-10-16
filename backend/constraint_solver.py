@@ -39,6 +39,7 @@ model untouched, so a bad constraint set is visible rather than silently applied
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple, Set, Any
+from references import normalize_reference, reference_key, resolve_reference_axis
 
 try:
     from planegcs import Sketch, SolveStatus
@@ -543,4 +544,155 @@ class ConstraintSolver:
             pins=pins,
             scope=scope,
             pin_span_endpoints=False,   # already pinned explicitly above
+        )
+
+    def solve_dimensions(
+        self,
+        axis: str,
+        dimension: Dict[str, Any],
+        pins: Optional[Dict[str, float]] = None,
+    ) -> ConstraintSolve:
+        """
+        Solves geometry driven by a dimension object (Phase 3.1).
+        Builds a node table keyed by reference_key(ref), so distinct references
+        of the same element are distinct nodes.
+        """
+        self._require_solver()
+        pins = dict(pins or {})
+        refs = dimension.get("refs")
+        if not refs:
+            refs = [dimension.get("ref_a"), dimension.get("ref_b")]
+        refs = [normalize_reference(r) for r in refs if r]
+        if len(refs) < 2:
+            return ConstraintSolve(axis=axis, status="failed", conflicting=["insufficient_refs"])
+
+        # Collect coords and keys for each reference
+        coords: Dict[str, float] = {}
+        keys: List[str] = []
+        for r in refs:
+            k = reference_key(r)
+            keys.append(k)
+            coord, _status = resolve_reference_axis(self.manager, r, axis)
+            if coord is not None:
+                coords[k] = float(coord)
+
+        if len(coords) < 2:
+            return ConstraintSolve(axis=axis, status="failed", conflicting=["unresolved_coords"])
+
+        sketch = Sketch()
+        ids: Dict[str, int] = {}
+        for k in keys:
+            if k not in coords:
+                continue
+            if k in pins:
+                ids[k] = sketch.add_fixed_point(float(pins[k]), 0.0)
+            else:
+                ids[k] = sketch.add_point(float(coords[k]), 0.0)
+
+        # Apply target distance(s) for the driving dimension
+        segments = dimension.get("segments") or []
+        for i in range(len(keys) - 1):
+            k1, k2 = keys[i], keys[i + 1]
+            if k1 in ids and k2 in ids:
+                if i < len(segments) and segments[i].get("value") is not None:
+                    target_dist = float(segments[i]["value"])
+                else:
+                    target_dist = float(dimension.get("value", 0.0))
+                if target_dist > 0:
+                    sketch.set_p2p_distance(ids[k1], ids[k2], target_dist)
+
+        # Include any other locked dimensions sharing these references
+        overlapping_locked = []
+        for other_id, other_dim in getattr(self.manager, "dimensions", {}).items():
+            if other_id == dimension.get("id"):
+                continue
+            if other_dim.get("axis") not in (axis, "aligned"):
+                continue
+            is_locked = other_dim.get("is_locked") or any(s.get("locked") for s in other_dim.get("segments", []))
+            if not is_locked:
+                continue
+            o_refs = other_dim.get("refs") or [other_dim.get("ref_a"), other_dim.get("ref_b")]
+            o_refs = [normalize_reference(r) for r in o_refs if r]
+            if len(o_refs) < 2:
+                continue
+            o_keys = [reference_key(r) for r in o_refs]
+            if not any(k in ids for k in o_keys):
+                continue
+            overlapping_locked.append(other_id)
+            for r, k in zip(o_refs, o_keys):
+                if k not in ids:
+                    coord, _ = resolve_reference_axis(self.manager, r, axis)
+                    if coord is not None:
+                        coords[k] = float(coord)
+                        if k in pins:
+                            ids[k] = sketch.add_fixed_point(float(pins[k]), 0.0)
+                        else:
+                            ids[k] = sketch.add_point(float(coords[k]), 0.0)
+            o_segs = other_dim.get("segments") or []
+            for i in range(len(o_keys) - 1):
+                ok1, ok2 = o_keys[i], o_keys[i + 1]
+                if ok1 in ids and ok2 in ids:
+                    if i < len(o_segs) and o_segs[i].get("value") is not None:
+                        d_val = float(o_segs[i]["value"])
+                    else:
+                        d_val = float(other_dim.get("value", 0.0))
+                    if d_val > 0:
+                        sketch.set_p2p_distance(ids[ok1], ids[ok2], d_val)
+
+        # Equalize if equal binding
+        if dimension.get("binding") == "equal" and len(keys) >= 3:
+            line_segments = []
+            for a, b in zip(keys, keys[1:]):
+                if a in ids and b in ids:
+                    line_segments.append(sketch.add_line(ids[a], ids[b]))
+            for l1, l2 in zip(line_segments, line_segments[1:]):
+                sketch.equal_length(l1, l2)
+
+        try:
+            status = sketch.solve()
+        except Exception as e:
+            return ConstraintSolve(axis=axis, status="failed", conflicting=[str(e)])
+
+        name = getattr(status, "name", str(status))
+        if name not in ("Success", "Converged"):
+            # Over-constraint conflict
+            did = dimension.get("id", "unknown")
+            conflicting_dims = [did] + [od for od in overlapping_locked if od != did]
+            resolutions = [
+                {"kind": "unlock_dimension", "dimension_id": did, "segment_index": 0},
+                {"kind": "unlabel", "dimension_id": did},
+                {"kind": "release_eq", "dimension_id": did},
+            ]
+            for od in overlapping_locked:
+                resolutions.append({"kind": "unlock_dimension", "dimension_id": od, "segment_index": 0})
+            conflict_info = {
+                "status": "conflict",
+                "axis": axis,
+                "constraints": sorted(list(self.manager.constraints.keys())),
+                "dimensions": conflicting_dims,
+                "resolutions": resolutions,
+            }
+            self.manager.last_constraint_conflict = conflict_info
+            return ConstraintSolve(
+                axis=axis,
+                status="conflict",
+                conflicting=[did],
+                coordinates=dict(coords),
+                pinned=pins,
+            )
+
+        out: Dict[str, float] = {}
+        for k, pid in ids.items():
+            try:
+                x, _ = sketch.get_point(pid)
+            except Exception:
+                x = coords.get(k, 0.0)
+            out[k] = float(x)
+
+        return ConstraintSolve(
+            axis=axis,
+            status="success",
+            coordinates=out,
+            pinned=pins,
+            applied=[dimension.get("id", "dim")],
         )

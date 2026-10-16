@@ -76,6 +76,11 @@ def run_mutation(
     result["transaction_id"] = tx["transaction_id"]
     if include_transaction:
         result["transaction"] = tx
+    if any(
+        c.command.startswith("Constraint") or c.command.startswith("Dimension")
+        for c in commands
+    ):
+        result["conflict"] = getattr(bim_manager, "last_constraint_conflict", None)
     return result
 
 
@@ -705,6 +710,12 @@ def get_constraints():
     return list(bim_manager.constraints.values())
 
 
+@app.get("/api/constraints/conflict")
+def get_constraint_conflict():
+    """Returns the last constraint conflict report (Phase 3.6)."""
+    return getattr(bim_manager, "last_constraint_conflict", None)
+
+
 @app.post("/api/constraints/align")
 def create_align_constraint(req: AlignRequest):
     """Compatibility shim for ConstraintAlign (bus-backed, journaled)."""
@@ -855,6 +866,11 @@ def execute_transaction(req: TransactionRequest):
     """Executes a batched atomic transaction (used by UI & AI drivers)."""
     try:
         res = command_bus.execute_transaction(req.commands, origin=req.origin, description=req.description)
+        if any(
+            c.command.startswith("Constraint") or c.command.startswith("Dimension")
+            for c in req.commands
+        ):
+            res["conflict"] = getattr(bim_manager, "last_constraint_conflict", None)
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

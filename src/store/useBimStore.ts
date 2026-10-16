@@ -137,6 +137,7 @@ export const UI_ACTION_COMMANDS = {
   createDimension: 'DimensionCreate',
   setDimensionValue: 'DimensionValueSet',
   deleteDimension: 'DimensionDelete',
+  toggleDimensionLock: 'DimensionLockToggle',
   // Phase 5 type commands
   setElementType: 'ElementSetType',
   updateType: 'TypeUpdate',
@@ -599,6 +600,7 @@ interface BimStoreState {
     eq_group?: string;
   }) => Promise<void>;
   deleteDimension: (dimensionId: string) => Promise<void>;
+  toggleDimensionLock: (dimensionId: string, isLocked: boolean) => Promise<void>;
   undo: () => Promise<void>;
   redo: () => Promise<void>;
 
@@ -1467,6 +1469,20 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     }
   },
 
+  toggleDimensionLock: async (dimensionId: string, isLocked: boolean) => {
+    try {
+      await get().dispatchTransaction(
+        'toggleDimensionLock',
+        { dimension_id: dimensionId, is_locked: isLocked },
+        `${isLocked ? 'Lock' : 'Unlock'} dimension`
+      );
+    } catch (e) {
+      set({ statusMessage: `Toggle dimension lock failed: ${failureMessage(e)}` });
+      console.error('Failed to toggle dimension lock', e);
+      throw e;
+    }
+  },
+
   undo: async () => {
     try {
       const res = await fetch('/api/transaction/undo', { method: 'POST' });
@@ -1517,7 +1533,60 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       .map((w) => w.guid);
     const targets = hostedWindows.length >= 2 ? hostedWindows : windows.map((w) => w.guid);
 
-    await get().equalizeSpan(southWall, southWall, targets, 'x');
+    // Phase 0.1: Ensure distinct span endpoints. If distinct boundary walls join
+    // southWall at its endpoints, use them as span_start and span_end so the targets
+    // equalize across the host wall's full span. Otherwise, if targets has at least 3
+    // elements, equalize between the first and last target. If neither, find distinct walls
+    // in the model to avoid a degenerate 0-length span (pos_start == pos_end).
+    const sWall = elements[southWall];
+    let startGuid: string | undefined;
+    let endGuid: string | undefined;
+    let interiorGuids = targets;
+
+    if (sWall?.start && sWall?.end) {
+      const otherWalls = meshes
+        .filter((m) => WALL_CLASSES.includes(m.ifc_class) && m.guid !== southWall)
+        .map((m) => m.guid);
+
+      for (const og of otherWalls) {
+        const oe = elements[og];
+        if (!oe?.start || !oe?.end) continue;
+        const dStart = Math.min(
+          Math.hypot(oe.start[0] - sWall.start[0], oe.start[1] - sWall.start[1]),
+          Math.hypot(oe.end[0] - sWall.start[0], oe.end[1] - sWall.start[1])
+        );
+        const dEnd = Math.min(
+          Math.hypot(oe.start[0] - sWall.end[0], oe.start[1] - sWall.end[1]),
+          Math.hypot(oe.end[0] - sWall.end[0], oe.end[1] - sWall.end[1])
+        );
+        if (dStart < 0.5 && !startGuid) startGuid = og;
+        if (dEnd < 0.5 && !endGuid && og !== startGuid) endGuid = og;
+      }
+
+      if (!startGuid || !endGuid) {
+        for (const og of otherWalls) {
+          if (!startGuid && og !== endGuid) startGuid = og;
+          else if (!endGuid && og !== startGuid) endGuid = og;
+        }
+      }
+    }
+
+    if (!startGuid || !endGuid || startGuid === endGuid) {
+      if (targets.length >= 3) {
+        const sorted = [...targets].sort((a, b) => {
+          const ax = elements[a]?.offset_along_wall ?? elements[a]?.start?.[0] ?? 0;
+          const bx = elements[b]?.offset_along_wall ?? elements[b]?.start?.[0] ?? 0;
+          return ax - bx;
+        });
+        startGuid = sorted[0];
+        endGuid = sorted[sorted.length - 1];
+        interiorGuids = sorted.slice(1, -1);
+      } else {
+        return;
+      }
+    }
+
+    await get().equalizeSpan(startGuid, endGuid, interiorGuids, 'x');
   },
 
   // API Callbacks
