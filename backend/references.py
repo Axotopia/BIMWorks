@@ -235,11 +235,15 @@ def resolve_reference(
         if not sources:
             return (None, "lost")
         gid = sources[0]["element_guid"]
-        if hasattr(manager, "grids") and gid in manager.grids:
+        meta = getattr(manager, "element_meta", {})
+        gr = meta.get(gid)
+        if not gr and hasattr(manager, "grids") and gid in manager.grids:
             gr = manager.grids[gid]
-            if "p1" in gr and "p2" in gr:
-                p1, p2 = gr["p1"], gr["p2"]
-                return (((p1[0] + p2[0]) / 2.0, (p1[1] + p2[1]) / 2.0), "exact")
+        if gr:
+            sp = gr.get("start") or gr.get("p1")
+            ep = gr.get("end") or gr.get("p2")
+            if sp and ep:
+                return (((float(sp[0]) + float(ep[0])) / 2.0, (float(sp[1]) + float(ep[1])) / 2.0), "exact")
         return (None, "lost")
 
     # 4. Derived: Intersection (multi-source)
@@ -375,6 +379,26 @@ def resolve_reference_axis(
         else:
             # A level plane spans all X and Y; resolving along X/Y is ambiguous
             return (None, "ambiguous")
+
+    if kind == "grid_axis":
+        if not sources:
+            return (None, "lost")
+        gid = sources[0]["element_guid"]
+        meta = getattr(manager, "element_meta", {})
+        gr = meta.get(gid)
+        if not gr and hasattr(manager, "grids") and gid in manager.grids:
+            gr = manager.grids[gid]
+        if gr:
+            sp = gr.get("start") or gr.get("p1")
+            ep = gr.get("end") or gr.get("p2")
+            if sp and ep:
+                x1, y1 = float(sp[0]), float(sp[1])
+                x2, y2 = float(ep[0]), float(ep[1])
+                ax = axis.lower()
+                if ax == "x" and abs(x1 - x2) < 1e-4:
+                    return (x1, "exact")
+                elif ax == "y" and abs(y1 - y2) < 1e-4:
+                    return (y1, "exact")
 
     coords, outcome = resolve_reference(manager, norm)
     if coords is None:

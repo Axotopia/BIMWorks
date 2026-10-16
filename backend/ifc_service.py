@@ -2816,11 +2816,17 @@ class BimModelManager:
             if "start" in meta and meta["start"]:
                 meta["start"][0] += dx
                 meta["start"][1] += dy
-                meta["start"][2] = (meta["start"][2] if len(meta["start"]) > 2 else 0.0) + dz
+                if len(meta["start"]) > 2:
+                    meta["start"][2] += dz
+                elif dz != 0.0:
+                    meta["start"].append(dz)
             if "end" in meta and meta["end"]:
                 meta["end"][0] += dx
                 meta["end"][1] += dy
-                meta["end"][2] = (meta["end"][2] if len(meta["end"]) > 2 else 0.0) + dz
+                if len(meta["end"]) > 2:
+                    meta["end"][2] += dz
+                elif dz != 0.0:
+                    meta["end"].append(dz)
             if "cached_verts" in meta and meta["cached_verts"]:
                 # The cache is in the FILE's unit (metres); dx/dy/dz are decimal feet.
                 _mpu = self._metres_per_unit()

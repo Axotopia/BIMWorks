@@ -61,6 +61,7 @@ class ConstraintSolve:
     pinned: Dict[str, float] = field(default_factory=dict)
     conflicting: List[str] = field(default_factory=list)
     moved: List[str] = field(default_factory=list)
+    applied: List[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -218,11 +219,24 @@ class ConstraintSolver:
             sketch.set_p2p_distance(ids[a], ids[b], float(distance))
             return True
 
+        coincident_pairs: Set[Tuple[str, str]] = set()
+
         for kind, payload in extras:
             if kind == "equalize":
                 start, end, interiors = payload
                 self._apply_equalize(sketch, ids, start, end, interiors, conflicting, add_p2p)
                 applied.append("extra:equalize")
+            elif kind == "align":
+                ref_g, tgt_g = payload
+                pair = tuple(sorted((ref_g, tgt_g)))
+                if ref_g in ids and tgt_g in ids and pair not in coincident_pairs:
+                    sketch.coincident(ids[ref_g], ids[tgt_g])
+                    coincident_pairs.add(pair)
+                    applied.append("extra:align")
+            elif kind == "dimension_lock":
+                a, b, dist = payload
+                if add_p2p(a, b, float(dist)):
+                    applied.append("extra:dimension_lock")
 
         for cid, c in sorted(self.manager.constraints.items()):
             if not c.get("is_locked", True):
@@ -232,9 +246,11 @@ class ConstraintSolver:
             ctype = c.get("type")
             if ctype == "align":
                 ref, target = c.get("ref_guid"), c.get("target_guid")
-                if ref in ids and target in ids:
+                pair = tuple(sorted((ref, target)))
+                if ref in ids and target in ids and pair not in coincident_pairs:
                     # Rigid: the target sits exactly on the reference's coordinate.
                     sketch.coincident(ids[ref], ids[target])
+                    coincident_pairs.add(pair)
                     applied.append(cid)
             elif ctype == "dimension_lock":
                 a, b = c.get("guid_a"), c.get("guid_b")
@@ -261,7 +277,7 @@ class ConstraintSolver:
             )
 
         name = getattr(status, "name", str(status))
-        if name != "Success":
+        if name not in ("Success", "Converged"):
             # Over-constrained or inconsistent: report the constrained elements so
             # the caller can surface a conflicting set instead of guessing.
             return ConstraintSolve(
@@ -281,7 +297,7 @@ class ConstraintSolver:
         moved = [g for g, v in out.items() if abs(v - coords.get(g, v)) > 1e-9]
         return ConstraintSolve(
             axis=axis, status="success", coordinates=out, pinned=pins,
-            conflicting=conflicting, moved=sorted(moved),
+            conflicting=conflicting, moved=sorted(moved), applied=sorted(set(applied)),
         )
 
     def _solve_pure_python(
@@ -311,6 +327,23 @@ class ConstraintSolver:
                     "span_start_guid": start,
                     "span_end_guid": end,
                     "interior_guids": interiors,
+                })
+            elif kind == "align":
+                ref_g, tgt_g = payload
+                active_constraints.append({
+                    "id": "extra:align",
+                    "type": "align",
+                    "ref_guid": ref_g,
+                    "target_guid": tgt_g,
+                })
+            elif kind == "dimension_lock":
+                a, b, dist = payload
+                active_constraints.append({
+                    "id": "extra:dimension_lock",
+                    "type": "dimension_lock",
+                    "guid_a": a,
+                    "guid_b": b,
+                    "locked_distance": float(dist),
                 })
 
         for cid, c in sorted(self.manager.constraints.items()):
@@ -411,6 +444,7 @@ class ConstraintSolver:
             pinned=pins,
             conflicting=[],
             moved=sorted(moved),
+            applied=sorted(set(applied)),
         )
 
     def _apply_equalize(self, sketch, ids, start, end, interiors, conflicting, add_p2p) -> None:

@@ -106,6 +106,7 @@ export const UI_ACTION_COMMANDS = {
   updateElement: 'ElementUpdate',
   deleteElement: 'DeleteElement',
   translateElement: 'WallMove',
+  moveReference: 'ReferenceMove',
   setWallJoin: 'SetWallJoin',
   createAlignConstraint: 'ConstraintAlign',
   lockDimension: 'ConstraintLockDim',
@@ -623,6 +624,7 @@ interface BimStoreState {
   updateElement: (guid: string, updates: Partial<BimElement>) => Promise<void>;
   deleteElement: (guid: string) => Promise<void>;
   translateElement: (guid: string, dx: number, dy: number, dz?: number) => Promise<void>;
+  moveReference: (source: any, target: any, axis?: string) => Promise<void>;
   updateGeoreferencing: (data: BimStoreState['georeference']) => Promise<void>;
   createSheet: (sheetNumber: string, sheetTitle: string, paperSize?: 'ARCH_D' | 'ARCH_C' | 'ISO_A1') => Promise<void>;
   deleteSheet: (sheetId: string) => Promise<void>;
@@ -2070,6 +2072,15 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     } catch (e) {
       set({ statusMessage: `Translate element failed: ${failureMessage(e)}` });
       console.error('Failed to translate element', e);
+    }
+  },
+
+  moveReference: async (source, target, axis = 'aligned') => {
+    try {
+      await get().dispatchTransaction('moveReference', { source, target, axis }, 'Move reference');
+    } catch (e) {
+      set({ statusMessage: `Move reference failed: ${failureMessage(e)}` });
+      console.error('Failed to move reference', e);
     }
   },
 

@@ -13,6 +13,7 @@ from typing import Dict, List, Any, Optional, Literal, Tuple
 from pydantic import BaseModel, Field, model_validator
 
 from ifc_service import bim_manager
+from references import normalize_reference, resolve_reference, ReferenceKind
 
 
 # ============================================================================
@@ -33,6 +34,13 @@ class WallMoveParams(BaseModel):
     dx: float = Field(..., description="Delta X translation")
     dy: float = Field(..., description="Delta Y translation")
     dz: float = Field(default=0.0, description="Delta Z translation")
+
+
+class ReferenceMoveParams(BaseModel):
+    source: Dict[str, Any] = Field(..., description="Source geometric reference to move")
+    target: Dict[str, Any] = Field(..., description="Target geometric reference to place onto")
+    axis: str = Field(default="aligned", description="Movement constraint axis: 'x', 'y', 'z', or 'aligned'")
+    extras: Optional[List[Tuple[str, Any]]] = Field(default=None, description="Optional drag-time extra constraints")
 
 
 class DoorInsertParams(BaseModel):
@@ -425,6 +433,7 @@ COMMAND_REGISTRY = {
     "TypeUpdate": TypeUpdateParams,
     "TypeDuplicate": TypeDuplicateParams,
     "ElementSetType": ElementSetTypeParams,
+    "ReferenceMove": ReferenceMoveParams,
 }
 
 
@@ -518,6 +527,57 @@ class CommandBusEngine:
             if not ok:
                 raise ValueError(f"Element {p.guid} could not be moved")
             return {"status": "moved", "guid": p.guid}
+
+        elif cmd_name == "ReferenceMove":
+            p: ReferenceMoveParams = validated
+            norm_src = normalize_reference(p.source)
+            norm_tgt = normalize_reference(p.target)
+
+            src_pt, out_src = resolve_reference(self.manager, norm_src)
+            tgt_pt, out_tgt = resolve_reference(self.manager, norm_tgt)
+
+            if src_pt is None or tgt_pt is None:
+                raise ValueError(
+                    f"ReferenceMove could not resolve references: source={out_src}, target={out_tgt}"
+                )
+
+            dx = tgt_pt[0] - src_pt[0]
+            dy = tgt_pt[1] - src_pt[1]
+
+            if p.axis == "x":
+                dy = 0.0
+            elif p.axis == "y":
+                dx = 0.0
+
+            src_guid = norm_src.get("sources", [{}])[0].get("element_guid") or norm_src.get("guid")
+            if not src_guid:
+                raise ValueError("Source reference has no element guid to move")
+
+            if p.extras:
+                try:
+                    from constraint_solver import ConstraintSolver
+                    solver = ConstraintSolver(self.manager)
+                    scope = solver.affected_guids([src_guid])
+                    for ax in ("x", "y"):
+                        pins = {src_guid: self.manager.get_element_coord(src_guid, ax)}
+                        res = solver.solve(axis=ax, pins=pins, scope=scope, extras=p.extras)
+                        if res.ok:
+                            solver.apply_solve(res)
+                except Exception:
+                    pass
+
+            ok = self.manager.translate_element(src_guid, dx, dy, 0.0)
+            if not ok:
+                raise ValueError(f"Element {src_guid} could not be moved to reference target")
+
+            return {
+                "status": "moved",
+                "guid": src_guid,
+                "source": norm_src,
+                "target": norm_tgt,
+                "dx": dx,
+                "dy": dy,
+            }
 
         elif cmd_name == "DoorInsert":
             p: DoorInsertParams = validated
@@ -817,6 +877,17 @@ class CommandBusEngine:
             def redo_fn(mgr):
                 mgr.translate_element(guid, dx, dy, dz)
             return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "moved", "guid": guid, "dx": dx, "dy": dy, "dz": dz}
+
+        elif cmd_name == "ReferenceMove":
+            res = self.execute_single_command(cmd_name, params)
+            src_guid = res["guid"]
+            dx = res["dx"]
+            dy = res["dy"]
+            def undo_fn(mgr):
+                mgr.translate_element(src_guid, -dx, -dy, 0.0)
+            def redo_fn(mgr):
+                mgr.translate_element(src_guid, dx, dy, 0.0)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
 
         elif cmd_name == "DoorInsert":
             p: DoorInsertParams = validated
