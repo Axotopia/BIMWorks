@@ -277,6 +277,31 @@ def run_tests():
     # Clean up test dimension
     mgr.delete_dimension(dim_dangling["id"])
 
+    # 17. Witness Move Repair & Element Deletion (Phase 2 Gate)
+    # 17a. Witness moves: dimension reports 'repaired' and updates value to 15.0, not a wrong number
+    w_p2a = mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], height=10.0, thickness=0.5)
+    w_p2b = mgr.add_wall([0.0, 10.0, 0.0], [10.0, 10.0, 0.0], height=10.0, thickness=0.5)
+    dim_p2 = mgr.create_dimension(
+        ref_a={"guid": w_p2a["guid"], "ref": "start"},
+        ref_b={"guid": w_p2b["guid"], "ref": "start"},
+        axis="y",
+    )
+    check("dim_p2 initial status is exact", dim_p2.get("status") == "exact")
+    check("dim_p2 initial value is 10.0", abs(dim_p2["value"] - 10.0) < 1e-4)
+
+    # Translate w_p2b by +5.0 in Y
+    mgr.translate_element(w_p2b["guid"], 0.0, 5.0, 0.0)
+    check("dim_p2 reports repaired after witness moves", dim_p2.get("status") == "repaired")
+    check("dim_p2 value updated to 15.0 (not a wrong number)", abs(dim_p2["value"] - 15.0) < 1e-4)
+
+    # 17b. Delete referenced element: reference resolution yields 'lost', never (0.0, 0.0)
+    p2b_guid = w_p2b["guid"]
+    mgr.delete_element(p2b_guid)
+    p2b_ref = {"guid": p2b_guid, "ref": "start"}
+    pt_p2b, out_p2b = resolve_reference(mgr, p2b_ref)
+    check("deleting referenced element yields 'lost'", out_p2b == "lost")
+    check("deleting referenced element yields None coords (never 0.0, 0.0)", pt_p2b is None)
+
     print(f"\nRESULTS: {passed} passed, {failed} failed")
     if failed > 0:
         sys.exit(1)

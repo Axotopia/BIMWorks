@@ -2937,6 +2937,9 @@ class BimModelManager:
             except Exception as e:  # never let a solver problem corrupt an edit
                 print(f"Notice: constraint solve after moving {guid} failed: {e}")
 
+        if translated:
+            self._re_resolve_dimensions_after_move(guid)
+
         return translated
 
     def _solve_constraints_after_move(self, moved_guid: str) -> None:
@@ -3001,6 +3004,51 @@ class BimModelManager:
                         solver.apply_solve(eq)
             except Exception as e:
                 print(f"Notice: re-equalizing span {c.get('id')} failed: {e}")
+
+    def _re_resolve_dimensions_after_move(self, moved_guid: str) -> None:
+        """
+        Re-resolves affected dimensions after translate_element.
+        Surfaces outcomes: 'repaired', 'ambiguous', 'lost'.
+        Updates dimension values so they do not report wrong numbers (Phase 2).
+        """
+        if not hasattr(self, "dimensions") or not self.dimensions:
+            return
+
+        for did, d in self.dimensions.items():
+            ref_a = d.get("ref_a") or {}
+            ref_b = d.get("ref_b") or {}
+            srcs_a = [s.get("element_guid") for s in ref_a.get("sources", [])]
+            srcs_b = [s.get("element_guid") for s in ref_b.get("sources", [])]
+            is_affected = (
+                moved_guid in srcs_a
+                or moved_guid in srcs_b
+                or ref_a.get("guid") == moved_guid
+                or ref_b.get("guid") == moved_guid
+            )
+            if not is_affected:
+                continue
+
+            pa, out_a = resolve_reference(self, ref_a)
+            pb, out_b = resolve_reference(self, ref_b)
+            if out_a == "lost" or out_b == "lost" or pa is None or pb is None:
+                d["status"] = "lost"
+            elif out_a == "ambiguous" or out_b == "ambiguous":
+                d["status"] = "ambiguous"
+            else:
+                axis = d.get("axis", "aligned")
+                if axis == "x":
+                    val = abs(pb[0] - pa[0])
+                elif axis == "y":
+                    val = abs(pb[1] - pa[1])
+                else:
+                    val = float(math.hypot(pb[0] - pa[0], pb[1] - pa[1]))
+                d["value"] = val
+                d["status"] = "repaired"
+                if "hint" in ref_a and isinstance(ref_a["hint"], dict):
+                    ref_a["hint"]["point"] = [pa[0], pa[1], 0.0]
+                if "hint" in ref_b and isinstance(ref_b["hint"], dict):
+                    ref_b["hint"]["point"] = [pb[0], pb[1], 0.0]
+                self.dimensions_rev += 1
 
     @staticmethod
     def _triangulate_polygon_2d(poly):
@@ -3515,6 +3563,7 @@ class BimModelManager:
             "constraint_id": constraint_id,
             "eq_group": eq_group,
             "refs": norm_refs,
+            "status": "exact",
         }
         self.dimensions[dim_id] = dim
         self.dimensions_rev += 1
