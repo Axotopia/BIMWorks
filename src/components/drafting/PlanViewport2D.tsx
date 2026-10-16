@@ -172,6 +172,8 @@ export const PlanViewport2D: React.FC = () => {
     moveLevel,
     flipElementOrientation,
     setActiveViewId,
+    interactionSession,
+    dispatchInteraction,
   } = useBimStore();
 
   const currentView = views.find((v) => v.id === activeViewId) || {
@@ -461,6 +463,7 @@ export const PlanViewport2D: React.FC = () => {
 
     // LMB
     if (e.button === 0) {
+      dispatchInteraction({ type: 'pointer_down', screenPoint: [e.clientX, e.clientY] });
       if (activeTool === 'select') {
         const raw = getRawModelCoords(e.clientX, e.clientY);
         if (raw) {
@@ -501,13 +504,17 @@ export const PlanViewport2D: React.FC = () => {
       }
 
       if (activeTool === 'WA') {
-        if (!firstPoint) {
+        const start = interactionSession.picks[0] ?? firstPoint;
+        if (!start) {
+          dispatchInteraction({ type: 'point', point: [x, y] });
           setFirstPoint([x, y]);
         } else {
-          if (Math.hypot(x - firstPoint[0], y - firstPoint[1]) >= 0.5) {
-            createWall([firstPoint[0], firstPoint[1], 0], [x, y, 0]);
+          if (Math.hypot(x - start[0], y - start[1]) >= 0.5) {
+            createWall([start[0], start[1], 0], [x, y, 0]);
           }
+          dispatchInteraction({ type: 'commit' });
           if (chainTools) {
+            dispatchInteraction({ type: 'point', point: [x, y] });
             setFirstPoint([x, y]);
           } else {
             setFirstPoint(null);
@@ -558,10 +565,12 @@ export const PlanViewport2D: React.FC = () => {
           setStatusMessage('No wall within reach — click on or near a wall to host the element.');
         }
       } else if (activeTool === 'DI') {
-        if (!firstPoint) {
+        const start = interactionSession.picks[0] ?? firstPoint;
+        if (!start) {
+          dispatchInteraction({ type: 'point', point: [x, y] });
           setFirstPoint([x, y]);
         } else {
-          const distA = Math.hypot(x - firstPoint[0], y - firstPoint[1]);
+          const distA = Math.hypot(x - start[0], y - start[1]);
           if (distA >= 0.1) {
             const findNearestRef = (pt: [number, number]) => {
               let nearestGuid: string | undefined = undefined;
@@ -590,7 +599,8 @@ export const PlanViewport2D: React.FC = () => {
                 point: pt,
               };
             };
-            const refA = findNearestRef(firstPoint);
+            const start2D: [number, number] = [start[0], start[1]];
+            const refA = findNearestRef(start2D);
             const refB = findNearestRef([x, y]);
             createDimension({
               ref_a: refA,
@@ -599,7 +609,9 @@ export const PlanViewport2D: React.FC = () => {
               offset: 1.5,
             });
           }
+          dispatchInteraction({ type: 'commit' });
           if (chainTools) {
+            dispatchInteraction({ type: 'point', point: [x, y] });
             setFirstPoint([x, y]);
           } else {
             setFirstPoint(null);
@@ -607,10 +619,12 @@ export const PlanViewport2D: React.FC = () => {
           }
         }
       } else if (activeTool === 'SEC') {
-        if (!firstPoint) {
+        const start = interactionSession.picks[0] ?? firstPoint;
+        if (!start) {
+          dispatchInteraction({ type: 'point', point: [x, y] });
           setFirstPoint([x, y]);
         } else {
-          const secDist = Math.hypot(x - firstPoint[0], y - firstPoint[1]);
+          const secDist = Math.hypot(x - start[0], y - start[1]);
           if (secDist >= 1.0) {
             const secNum = views.filter((v) => v.type === 'section').length + 1;
             const newId = `view-section-${Date.now()}`;
@@ -622,10 +636,11 @@ export const PlanViewport2D: React.FC = () => {
               detailLevel: 'fine',
               visualStyle: 'hidden_line',
               viewRange: { top: 8.0, cut: 4.0, bottom: 0.0, viewDepth: 0.0 },
-              line: { start: firstPoint, end: [x, y] },
+              line: { start: [start[0], start[1]], end: [x, y] },
             });
             setStatusMessage(`Created Building Section ${secNum}`);
           }
+          dispatchInteraction({ type: 'commit' });
           setFirstPoint(null);
           setCurrentPoint(null);
         }
@@ -649,6 +664,7 @@ export const PlanViewport2D: React.FC = () => {
 
     const rawCoords = getRawModelCoords(e.clientX, e.clientY);
     if (!rawCoords) return;
+    dispatchInteraction({ type: 'pointer_move', screenPoint: [e.clientX, e.clientY], point: [rawCoords[0], rawCoords[1]] });
 
     if (selectionBox) {
       setSelectionBox((prev) => (prev ? { ...prev, currX: rawCoords[0], currY: rawCoords[1] } : null));
@@ -712,6 +728,7 @@ export const PlanViewport2D: React.FC = () => {
 
   const handleMouseUp = (e: React.MouseEvent) => {
     isPanningRef.current = false;
+    dispatchInteraction({ type: 'pointer_up', screenPoint: [e.clientX, e.clientY] });
 
     if (selectionBox) {
       const dist = Math.hypot(e.clientX - selectionBox.startClientX, e.clientY - selectionBox.startClientY);

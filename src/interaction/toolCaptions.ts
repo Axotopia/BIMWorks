@@ -1,4 +1,5 @@
 import { ActiveTool } from '../types/bim';
+import { InteractionPhase } from './session';
 
 /**
  * Human captions for the armed tool.
@@ -56,32 +57,50 @@ export function isToolImplemented(tool: ActiveTool): boolean {
   return TOOL_CAPTIONS[tool]?.implemented ?? false;
 }
 
-/** The tool's own instruction line, in place of a generic "click to place". */
-export function toolPrompt(tool: ActiveTool): string {
+/** The tool's own instruction line, with per-phase and pick sensitivity. */
+export function toolPrompt(
+  tool: ActiveTool,
+  phase: InteractionPhase = 'armed',
+  picksCount: number = 0
+): string {
+  if (!isToolImplemented(tool)) {
+    return `${toolCaption(tool)} is not available yet.`;
+  }
   switch (tool) {
     case 'WA':
+      if (phase === 'dragging') return 'Drag to set wall length, or type a value.';
+      if (phase === 'picking' || picksCount >= 1) return 'Specify end point of wall, or type a length.';
       return 'Click the wall start point, then the end point. The tool stays armed — Esc to finish.';
     case 'DR':
       return 'Click a wall to place a door on it.';
     case 'WN':
       return 'Click a wall to place a window on it.';
+    case 'RF':
+    case 'SB':
+      if (phase === 'picking' || picksCount >= 1) return 'Specify opposite corner, or type dimensions.';
+      return `Click first corner of ${toolCaption(tool).toLowerCase()} boundary.`;
     case 'AL':
+      if (phase === 'picking' || picksCount >= 1) return 'Pick the element to align and lock.';
       return 'Pick the reference element, then the element to align and lock.';
     case 'TR':
+      if (phase === 'picking' || picksCount >= 1) return 'Pick the second element to form a corner.';
       return 'Pick the first element to keep, then pick the second element to form a corner.';
     case 'SL':
       return 'Click a wall at the cut location to split it into two segments.';
     case 'SO':
       return 'Click a wall to split with a 6" joint gap.';
     case 'DI':
+      if (phase === 'picking' || picksCount >= 1) return 'Click second reference point to place dimension.';
       return 'Click first reference point, then click second point to place dimension.';
     case 'SEC':
+      if (phase === 'picking' || picksCount >= 1) return 'Click second point to place section cut line.';
       return 'Click first point, then click second point to place section cut line.';
+    case 'sketch':
+      return 'Draw sketch boundary lines. Press Enter to finish, Esc to cancel.';
     case 'select':
       return '';
     default:
-      return isToolImplemented(tool)
-        ? 'Click in the viewport to use this tool. Press Esc to exit.'
-        : `${toolCaption(tool)} is not available yet.`;
+      return 'Click in the viewport to use this tool. Press Esc to exit.';
   }
 }
+

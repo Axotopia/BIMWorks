@@ -131,6 +131,8 @@ export const Viewport3D: React.FC = () => {
     interactionResetToken,
     setStatusMessage,
     displayUnit,
+    interactionSession,
+    dispatchInteraction,
   } = useBimStore();
 
   // Internal Three.js state
@@ -565,6 +567,7 @@ export const Viewport3D: React.FC = () => {
 
     // Left Mouse Button: Selection or Drawing Tool
     if (e.button === 0) {
+      dispatchInteraction({ type: 'pointer_down', screenPoint: [e.clientX, e.clientY] });
       const rect = canvasRef.current?.getBoundingClientRect();
       if (!rect || !cameraRef.current || !sceneRef.current) return;
 
@@ -582,17 +585,20 @@ export const Viewport3D: React.FC = () => {
         const intersectPt = new THREE.Vector3();
         raycaster.ray.intersectPlane(groundPlane, intersectPt);
 
-        if (!wallStartPoint) {
+        const start = (interactionSession.picks[0] as [number, number, number] | undefined) ?? wallStartPoint;
+        if (!start) {
           const [x, y] = getSnappedPoint3D(intersectPt.x, intersectPt.y, null, e.shiftKey);
+          dispatchInteraction({ type: 'point', point: [x, y, 0] });
           setWallStartPoint([x, y, 0]);
         } else {
           const [x, y] = getSnappedPoint3D(
             intersectPt.x,
             intersectPt.y,
-            [wallStartPoint[0], wallStartPoint[1]],
+            [start[0], start[1]],
             e.shiftKey
           );
-          createWall(wallStartPoint, [x, y, 0]);
+          createWall(start, [x, y, 0]);
+          dispatchInteraction({ type: 'commit' });
           setWallStartPoint(null);
           setWallCurrentPoint(null);
         }
@@ -605,18 +611,21 @@ export const Viewport3D: React.FC = () => {
         const intersectPt = new THREE.Vector3();
         raycaster.ray.intersectPlane(groundPlane, intersectPt);
 
-        if (!boxStartPoint) {
+        const start = (interactionSession.picks[0] as [number, number] | undefined) ?? boxStartPoint;
+        if (!start) {
           const [x, y] = getSnappedPoint3D(intersectPt.x, intersectPt.y, null, e.shiftKey);
+          dispatchInteraction({ type: 'point', point: [x, y] });
           setBoxStartPoint([x, y]);
         } else {
-          const [x2, y2] = getSnappedPoint3D(intersectPt.x, intersectPt.y, boxStartPoint, e.shiftKey);
-          const minX = Math.min(boxStartPoint[0], x2);
-          const maxX = Math.max(boxStartPoint[0], x2);
-          const minY = Math.min(boxStartPoint[1], y2);
-          const maxY = Math.max(boxStartPoint[1], y2);
+          const [x2, y2] = getSnappedPoint3D(intersectPt.x, intersectPt.y, start, e.shiftKey);
+          const minX = Math.min(start[0], x2);
+          const maxX = Math.max(start[0], x2);
+          const minY = Math.min(start[1], y2);
+          const maxY = Math.max(start[1], y2);
           if (maxX - minX >= 0.5 && maxY - minY >= 0.5) {
             createRoof([[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]], 0.3, 6.0, 15.0);
           }
+          dispatchInteraction({ type: 'commit' });
           setBoxStartPoint(null);
           setBoxCurrentPoint(null);
         }
@@ -629,18 +638,21 @@ export const Viewport3D: React.FC = () => {
         const intersectPt = new THREE.Vector3();
         raycaster.ray.intersectPlane(groundPlane, intersectPt);
 
-        if (!boxStartPoint) {
+        const start = (interactionSession.picks[0] as [number, number] | undefined) ?? boxStartPoint;
+        if (!start) {
           const [x, y] = getSnappedPoint3D(intersectPt.x, intersectPt.y, null, e.shiftKey);
+          dispatchInteraction({ type: 'point', point: [x, y] });
           setBoxStartPoint([x, y]);
         } else {
-          const [x2, y2] = getSnappedPoint3D(intersectPt.x, intersectPt.y, boxStartPoint, e.shiftKey);
-          const minX = Math.min(boxStartPoint[0], x2);
-          const maxX = Math.max(boxStartPoint[0], x2);
-          const minY = Math.min(boxStartPoint[1], y2);
-          const maxY = Math.max(boxStartPoint[1], y2);
+          const [x2, y2] = getSnappedPoint3D(intersectPt.x, intersectPt.y, start, e.shiftKey);
+          const minX = Math.min(start[0], x2);
+          const maxX = Math.max(start[0], x2);
+          const minY = Math.min(start[1], y2);
+          const maxY = Math.max(start[1], y2);
           if (maxX - minX >= 0.5 && maxY - minY >= 0.5) {
             createSlab([[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]], 0.25, 0.0);
           }
+          dispatchInteraction({ type: 'commit' });
           setBoxStartPoint(null);
           setBoxCurrentPoint(null);
         }
@@ -718,6 +730,7 @@ export const Viewport3D: React.FC = () => {
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
+    dispatchInteraction({ type: 'pointer_move', screenPoint: [e.clientX, e.clientY] });
     // UI-P0-13: a navigation mode with no button held means the gesture's mouse-up
     // was missed (released off-canvas before capture existed, or a blink). Ending it
     // here is what stops the "the model pans whenever I move the mouse" state.
@@ -796,6 +809,7 @@ export const Viewport3D: React.FC = () => {
 
   const handleMouseUp = (e: React.MouseEvent) => {
     isNavigatingRef.current.mode = null;
+    dispatchInteraction({ type: 'pointer_up', screenPoint: [e.clientX, e.clientY] });
     // UI-P0-13: release the capture taken on mousedown.
     const target = e.currentTarget as CaptureTarget;
     const id = pointerIdOf(e);

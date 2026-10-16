@@ -21,6 +21,12 @@ import {
   SketchDrawTool,
 } from '../types/bim';
 import { UnitSystem, formatLength } from '../utils/units';
+import {
+  InteractionSessionState,
+  InteractionAction,
+  createInitialSession,
+  interactionReducer,
+} from '../interaction/session';
 
 const API_BASE = '/api';
 
@@ -467,6 +473,11 @@ interface BimStoreState {
   setChainTools: (enabled: boolean) => void;
   /** Applied after a placement completes; honours `chainTools` (UI-P0-1). */
   completePlacement: () => void;
+  /**
+   * Unified Interaction Session (Track B Phase 1)
+   */
+  interactionSession: InteractionSessionState;
+  dispatchInteraction: (action: InteractionAction) => void;
   /**
    * UI-P0-9: the Delete/Backspace key. Lives here rather than in `App.tsx` so the
    * sketch-vs-model decision is in one place and is unit-testable.
@@ -944,11 +955,19 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   // Sketch Mode Subsystem State
   sketchSession: null,
 
+  // Unified Interaction Session (Track B Phase 1)
+  interactionSession: createInitialSession('select'),
+  dispatchInteraction: (action: InteractionAction) =>
+    set((state) => ({
+      interactionSession: interactionReducer(state.interactionSession, action),
+    })),
+
   // Actions
   setActiveRibbonTab: (tab) => set({ activeRibbonTab: tab }),
   setActiveTool: (tool, ribbonTab) => {
     const previous = get().activeTool;
     const base = ribbonTab ? { activeRibbonTab: ribbonTab } : {};
+    get().dispatchInteraction({ type: 'begin', tool });
     if (tool === 'AL') {
       set({ ...base, activeTool: 'AL', alignPickState: { step: 'pick_ref', refGuid: null }, trimPickState: { step: null, firstGuid: null, firstPoint: null } });
     } else if (tool === 'TR') {
@@ -962,11 +981,13 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     if (previous !== tool) get().resetInteraction('tool-change');
   },
 
-  resetInteraction: (reason) =>
+  resetInteraction: (reason) => {
+    get().dispatchInteraction({ type: 'cancel' });
     set((state) => ({
       interactionResetToken: state.interactionResetToken + 1,
       interactionResetReason: reason,
-    })),
+    }));
+  },
 
   // Revit Two-Letter Non-Modifier Hotkey Engine (1000ms debounce)
   handleKeyStroke: (key) => {
@@ -984,6 +1005,15 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         get().cancelSketchMode();
         return;
       }
+      const isMidGesture =
+        state.interactionSession.picks.length > 0 ||
+        state.interactionSession.phase === 'picking' ||
+        state.interactionSession.phase === 'dragging';
+      if (isMidGesture && state.activeTool !== 'select') {
+        get().resetInteraction('escape');
+        return;
+      }
+      get().dispatchInteraction({ type: 'begin', tool: 'select' });
       set({
         activeTool: 'select',
         selectedGuid: null,
@@ -2035,6 +2065,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
    * behaviour, including the reset that discards the completed interaction's state.
    */
   completePlacement: () => {
+    get().dispatchInteraction({ type: 'commit' });
     if (get().chainTools) return;
     set({ activeTool: 'select' });
     get().resetInteraction('tool-change');

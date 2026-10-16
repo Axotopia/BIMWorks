@@ -27,6 +27,7 @@ export const StatusBar: React.FC = () => {
     tempIsolateSelected,
     selectedGuid,
     activeTool,
+    interactionSession,
     keyBuffer,
     setViewRangeModalOpen,
     statusMessage,
@@ -152,7 +153,7 @@ export const StatusBar: React.FC = () => {
           <span className="text-[#38bdf8] font-semibold">
             {/* UI-P0-14: say the command's name, not its tool code, and never claim a
                 placement is in progress for a tool no viewport implements. */}
-            {toolCaption(activeTool)} — {toolPrompt(activeTool)}
+            {toolCaption(activeTool)} — {toolPrompt(activeTool, interactionSession?.phase, interactionSession?.picks.length)}
           </span>
         ) : selectedGuid ? (
           // UI-P0-18: this used to promise "Spacebar to flip orientation", which was
