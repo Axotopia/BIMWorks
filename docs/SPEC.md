@@ -326,7 +326,7 @@ OpenAI/Anthropic/local-vLLM behind one adapter interface; schema-constrained dec
 - **Revit itself:** closed, no file-format borrowing possible — clone *behavior*, not bytes.
 
 ## 11. Resolved decisions (signed off 2026-10-13)
-1. **Project format: HYBRID CONTAINER — LOCKED.** `.bimworks` zip = `model.ifc` (model of record) + `parametric.json` overlay + views/journal/cache. All downstream design (recompute, joins, constraints, stale-overlay detection) proceeds on this basis.
+1. **Project format: HYBRID CONTAINER — LOCKED.** `.bimworks` zip = `model.ifc` (model of record) + `parametric.json` overlay + views/journal/cache. All downstream design (recompute, joins, constraints, stale-overlay detection) proceeds on this basis. *Unchanged by the later decision on the **unit of a live edit** — `docs/DECISION-live-edit-transaction-unit.md` — which amends how an edit is rolled back, not what the record is.*
 2. **License: GPL-3.0 — LOCKED.** BIMWorks is GPL-3.0. Consequences: we may take code directly from Bonsai, SolveSpace, and the GPL portions of IfcOpenShell; the LGPL IfcOpenShell library may be linked and, if helpful, upgraded to GPL linking for simplicity. Every borrowed file keeps its origin header. OCCT's LGPL-with-exception remains compatible.
 3. **Internal units: DECIMAL FEET — LOCKED.** Matches Revit's internal representation exactly (muscle memory + clean imperial math: `12' 6"` = 12.5 ft, no fractional rounding). Consequences:
    - The overlay, journals, and IPC carry feet (doubles); the UI formats per project units (feet-inches fractional, mm, etc.).

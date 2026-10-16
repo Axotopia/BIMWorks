@@ -75,6 +75,7 @@ It also records three defects found since, one of which violates an **existing**
 | D8 | Grip intent payload is **reference-shaped from day one** | §10 | §25 |
 | D9 | Verification additions: reference round-trip, snap multi-source, refusal | §20 | §29.2 |
 | D10 | §23's stated limits of the REA corpus are **superseded** | §23 | §0.4.1 |
+| D11 | The **undo unit** is the command-scoped memento; a silent full-state fallback is prohibited, and no command may capture O(model) state for undo | §6 | §24.3 |
 
 ### 0.4 New gaps found since v0.2
 
@@ -83,7 +84,7 @@ It also records three defects found since, one of which violates an **existing**
 | **The embedded solver is not installed.** `planegcs>=0.9.6` is declared in `requirements.txt` but `import planegcs` raises `ImportError`. `_require_solver()` (`backend/constraint_solver.py:96-102`) raises `SolverUnavailable`, and `_solve_constraints_after_move` (`backend/ifc_service.py:2964-2966`) catches every exception and **returns silently**. The constraint system is therefore **inert and reporting nothing**. | `[OBS]` execution; also `docs/REFACTOR-PLAN.md:75-77` | **High** — violates v0.2 §12 |
 | **An open boundary passes sketch validation.** An open 3-segment chain returns `is_closed() == True` and `validate() == None`, and the missing edge is **invented**. The only gate on the commit path (`backend/ifc_service.py:644-649`) therefore admits a boundary that was never closed. | `[OBS]` in `review/REVIEW-ingetrazo-…md` §4.2, reproduced by `review/probe-sketch-validation.py` | **High** |
 | **An invalid polygon degrades silently.** `_triangulate_polygon_2d` swallows a Shapely failure or an invalid polygon and returns a fan (`backend/ifc_service.py:2188-2211`) — wrong area, no diagnostic. | `[OBS]` as above | Medium |
-| **`ElementUpdate` silently ignores what it does not understand.** `updates: Dict[str, Any]` (`backend/command_bus.py:140-142`) is untyped, and `update_element` applies recognised keys and **still reports `"updated"`** for the rest (`backend/ifc_service.py:2303-2417`). | `[OBS]` | Medium |
+| **`ElementUpdate` silently ignores what it does not understand.** `updates: Dict[str, Any]` (`backend/command_bus.py:189-191`) is untyped, and `update_element` applies recognised keys and **still reports `"updated"`** for the rest (`backend/ifc_service.py:3279-3404`). | `[OBS]` | Medium |
 | **Two independent dependency walks.** `ConstraintSolver.affected_guids` (`backend/constraint_solver.py:110-137`) and `DependencyGraph.recompute` (`backend/dependency_graph.py:160-216`). The latter builds `constraint` edges (`:71-87`) but acts only through `recompute_wall_joins`; `affected` is counted, never re-solved. Nothing keeps them consistent. | `[OBS]` | Medium |
 | **The drag-time constraint hook is dead.** `solve(..., extras=...)` is documented as *"the delta of an in-progress drag"* (`backend/constraint_solver.py:145,153-155`) and **no caller passes it** — the only occurrence in the repository is the parameter default at `:158`. | `[OBS]` | Low |
 
@@ -152,11 +153,74 @@ dispatches through it (`src/store/useBimStore.ts:2067-2069`). There is no intent
 **[REQ]** Every command in the registry MUST have a typed parameter model. `Dict[str, Any]` is
 permitted only where the schema genuinely cannot be expressed.
 
-**[GAP]** `ElementUpdateParams.updates: Dict[str, Any]` (`backend/command_bus.py:140-142`) is untyped,
+**[GAP]** `ElementUpdateParams.updates: Dict[str, Any]` (`backend/command_bus.py:189-191`) is untyped,
 and unrecognised keys are silently discarded while `"updated"` is returned
-(`backend/ifc_service.py:2303-2417`).
+(`backend/ifc_service.py:3279-3404`).
 
----
+### 24.3 The edit path's undo unit — finish the migration
+
+**This sharpens §6's `[REQ — undo shape]`; it does not replace it, and it does not change §11's locked
+container decision.** The decision record is
+[`docs/DECISION-live-edit-transaction-unit.md`](DECISION-live-edit-transaction-unit.md).
+
+**[ADOPTED]** The command-scoped memento IS the undo mechanism: one journal step and one undo entry per
+transaction, each command returning an inverse operation or a prior-value capture
+(`backend/command_bus.py:991`, `:1536`). 31 of 41 registered commands implement it, and the drag path is
+O(1) — `WallMove`'s memento is `translate_element(guid, -dx, -dy, -dz)`, with no snapshot at all.
+
+**[REQ]** The two jobs a snapshot can do MUST NOT share a mechanism:
+
+| Job | Guarantee | Cost obligation |
+|---|---|---|
+| Durability / diffability | A complete, persistable, diffable state — what the replay journal and the delta protocol trust | Serialisation is permitted, and MUST occur **at most once per committed gesture** |
+| Rollback of a live edit | The pre-edit state returns exactly, in-process | MUST be proportional to **what changed**, never to model size |
+
+**[REQ — no fallback]** Every registered command MUST declare a memento. A full-state snapshot MUST NOT
+be a **silent fallback** for commands that do not. The fallback at `backend/command_bus.py:1519-1523` —
+`pre_snap = self.manager.snapshot_state()`, with `undo_fn` calling `restore_state` — MUST be removed, and
+its absence MUST be asserted. It is removed for a specific reason: it is invisible. It does not fail; it
+degrades in proportion to model size, which is how it survived an audit, a plan and a green gate suite.
+
+**[REQ — no O(model) capture]** No command may capture state proportional to model size for undo, even
+when memento-shaped. `ReferenceMove` currently walks **every** element to record its coordinates — and it
+is the drag verb that §25's gesture path depends on
+(`pre_coords = {g: (…get_element_coord(g, "x"), …) for g in self.manager.element_meta}`).
+
+**[REQ]** Undo of a live edit MUST preserve **object identity**. `restore_state` re-parses the whole
+document of record — `self.model = ifcopenshell.file.from_string(snap["ifc_text"])`
+(`backend/ifc_service.py:754`) — invalidating every IFC entity handle in the process. It is reachable
+from exactly one place (`command_bus.py:1523`), so `[REQ — no fallback]` above is also how this is
+satisfied. A reference held across an undo MUST still be valid afterwards.
+
+**[REQ]** The undo stack MUST be capped by **bytes**, not by entry count. It is capped at 200 entries
+today (`command_bus.py:526`, `:1583`), and an entry's size varies by orders of magnitude between a
+memento and a fallback snapshot.
+
+**[REQ — invariant]** The `parametrized` / `unparametrized` / `rebuilt` / `stale` reconciliation report
+MUST be asserted by a gate, not merely produced (`backend/ifc_service.py:5380`, `:5502`). Cheaper
+live-edit state MUST NOT be permitted to let the document of record and the overlay diverge silently.
+
+**[GAP — measured]** Where the fallback is still taken, `snapshot_state()` is O(model) and **66% of it is
+`model.to_string()`** — serialising the document of record for a job that does not need it: 15.5 ms at 86
+walls, of which 10.2 ms is STEP, linear at ≈0.12 ms per wall for the serialisation alone; independently
+≈83 ms per snapshot at N = 1000 (`review/AUDIT-engine-performance-vs-revit.md` §2).
+
+> **Note — a stale figure in circulation.** "Snapshot twice per transaction, ≈66 ms per edit at 86 walls"
+> describes the **pre-memento** bus and is no longer true. `WallMove` does not call `snapshot_state()` at
+> all; the measured cost applies to the ten fallback commands below and to `ReferenceMove`'s coordinate
+> capture. `scratch/_probe_snapshot_cost.py` still models the old two-snapshot transaction and cites
+> dead line numbers.
+
+**[GAP]** Ten registered commands have no memento and take the fallback: `ConstraintAlign`,
+`ConstraintDelete`, `ConstraintEqualize`, `ConstraintLockDim`, `ConstraintLockToggle`, `SetWallJoin`,
+`SketchCurveAdd`, `SketchCurveMoveEdge`, `SketchCurveMoveVertex`, `SketchCurveSetSlope`.
+
+**[REQ]** Verification MUST include the assertions V1–V6 of the decision record §8 — in particular that
+**zero** commands fall back to `snapshot_state()`, that no command captures O(model) state for undo, that
+an entity reference survives an undo, and that the reconciliation report stays clean across an
+edit/undo/redo cycle. V1 is executable today in `scratch/_probe_engine_smoke.py` and currently reports
+**10 of 41**.
+
 
 ## 25. Amendments to §10 — direct manipulation
 
@@ -314,8 +378,8 @@ including the pure-Python fallback (`backend/constraint_solver.py:287`).
 | V6 | A committed edit returns a delta, and the delta applies identically | `npm run check:delta` |
 
 **[REQ]** The gate set is `npm run check` — `check:bus`, `check:ui`, `check:state`, `check:delta`,
-`check:snap`, then `tsc --noEmit`. **The UI gate makes real HTTP calls to the engine; the backend MUST be
-running first** (`docs/REFACTOR-PLAN.md:67`).
+`check:snap`, `check:py`, then `tsc --noEmit`. **The UI gate makes real HTTP calls to the engine; the
+backend MUST be running first** (`docs/REFACTOR-PLAN.md:67`).
 
 ---
 

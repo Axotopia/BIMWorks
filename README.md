@@ -42,6 +42,7 @@ wrong.
 | [`docs/IMPLEMENTATION-PLAN-2026-10-14.md`](docs/IMPLEMENTATION-PLAN-2026-10-14.md) | **When and in what order.** P0–P7, status tables, risk register. | Sequencing |
 | [`review/`](review/) | **Where we are heading, and what has been verified.** The forward plans: `direct-manipulation` (the current one — see below), `dimension-as-control`, `geometric-references`, `revit-feel`. The verification record: `REVIEW-*` and `RECONCILIATION-*`. The measured `AUDIT-*-vs-revit.md` evidence. Superseded material is in `review/archive/`. | Plans and evidence |
 | [`docs/SPEC.md`](docs/SPEC.md) | **Why.** Master specification v2.3 — research rationale, Revit/IFC ground truth, sourced quotations. | Non-normative |
+| [`docs/`](docs/) `DECISION-*.md` | **What has been decided, and why** — one record per architectural decision, carrying the measurements it rests on and the alternatives it rejected. | Decisions |
 | `README.md` (this) | Orientation and how to run it. | Non-normative |
 
 ### The rule that keeps this file honest
@@ -77,6 +78,7 @@ row names the document that owns the claim; read that, not this.
 | **Track B — direct manipulation** | The "IngeTrazo feel": one interaction session, a drag session on the bus (one snapshot per gesture), grips that emit parameters, value entry and hot retype, inference, and validity predicates with clamping | The same plan, §5 — its §1.1 is the evidence-graded record of which phases have landed |
 | **Semantics** | Dimensions as driving constraints, and the geometric-reference primitive (witness points, re-resolution, conflict reporting) they rest on | [`IMPLEMENTATION-PLAN-dimension-as-control.md`](review/IMPLEMENTATION-PLAN-dimension-as-control.md) and [`IMPLEMENTATION-PLAN-geometric-references.md`](review/IMPLEMENTATION-PLAN-geometric-references.md); the `REVIEW-*` rounds are the verification record |
 | **Revit-parity UI** | Ribbon, palettes, project browser, status bar — chrome, deliberately orthogonal to both tracks above | [`IMPLEMENTATION-PLAN-revit-feel.md`](review/IMPLEMENTATION-PLAN-revit-feel.md), measured in the `AUDIT-*-vs-revit.md` set |
+| **Edit path / transaction unit** | What a single live edit *is*, and separating the two jobs one snapshot was doing — durability versus rollback — so per-edit cost stops scaling with model size. This is what makes a per-frame drag affordable | [`docs/DECISION-live-edit-transaction-unit.md`](docs/DECISION-live-edit-transaction-unit.md); work ordered by [`docs/REFACTOR-PLAN.md`](docs/REFACTOR-PLAN.md) §9 |
 | **Sequencing** | Order P0–P7, status tables, risk register | [`docs/IMPLEMENTATION-PLAN-2026-10-14.md`](docs/IMPLEMENTATION-PLAN-2026-10-14.md) |
 
 Two habits keep the tracks honest. **Findings are re-verified against the current tree before they are
@@ -302,6 +304,11 @@ Each is recorded with its rationale in [`docs/SPEC.md`](docs/SPEC.md) §11 and s
   only reports. A dimension that drives geometry must also be able to refuse and explain — the solver
   reports conflicts through the same structured path as the rest of the bus. What the locked path does
   today is Track A's business, not this file's; see "Where the work is going".
+- **A live edit is rolled back by what changed, not by re-serialising the document.** Serialisation is
+  reserved for durability — the journal and the delta protocol — and happens once per committed gesture;
+  rollback captures the records a command mutated and preserves object identity, so a held entity
+  reference survives an undo. Rationale, measurements and the rejected alternatives:
+  [`docs/DECISION-live-edit-transaction-unit.md`](docs/DECISION-live-edit-transaction-unit.md).
 
 ---
 

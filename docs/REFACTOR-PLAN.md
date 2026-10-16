@@ -356,6 +356,24 @@ Do not tidy this up into a success narrative. A logged dead end is more useful t
 
 Not part of this refactor. Do not begin it. Recorded so the next agent has the context.
 
+> **Update 2026-10-16 — the shape landed while this was filed as optional; the remaining scope is
+> narrower than written below, and the ordering is unchanged.**
+> The command-scoped memento is now the undo mechanism (`backend/command_bus.py:991`, `:1536`): **31 of
+> 41 registered commands** return one, and `WallMove` — the drag path — is an O(1) inverse operation
+> with no snapshot at all. What is left is not a rewrite but a completion, and it is decided in
+> [`docs/DECISION-live-edit-transaction-unit.md`](DECISION-live-edit-transaction-unit.md), stated
+> normatively as `SPECIFICATION-v0.3.md` §24.3 (delta D11):
+> 1. remove the silent full-state fallback (`command_bus.py:1519-1523`) and assert that **zero**
+>    commands take it — **10 of 41 do today**: the five `Constraint*`, `SetWallJoin` and four
+>    `SketchCurve*` commands;
+> 2. stop `ReferenceMove` capturing every element's coordinates for undo — it is the drag verb, and it
+>    is O(model) per invocation despite being memento-shaped;
+> 3. cap the undo stack by bytes, not by 200 entries.
+> The gate above stands unchanged: **do not begin it before Phase 1 is green and merged**, because the
+> remaining mementos depend on the engine being able to say what changed (D2). Note also that the
+> "full-state snapshot twice per transaction" description below is the **pre-memento** design and is no
+> longer what the bus does.
+
 **N10's other half: incremental undo.** The transaction engine takes a full-state snapshot before
 every transaction — complete IFC STEP text plus tracking state, deep-copying meshes. That is
 O(model) per edit, and it contradicts the same 16 ms budget Phase 1 is attacking.
