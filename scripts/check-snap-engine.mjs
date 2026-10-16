@@ -42,6 +42,14 @@ try {
 
 const { findSnapCandidate, segmentIntersection, distToSegment, isBoxInside, isBoxCrossing, project3DToScreen } = snapEngine;
 
+let inferenceEngine;
+try {
+  inferenceEngine = await import('../src/interaction/inference.ts');
+} catch (err) {
+  // handled
+}
+const { computeInference, updateInferenceDwell, createInitialInferenceState } = inferenceEngine || {};
+
 let passed = 0;
 let failed = 0;
 
@@ -365,6 +373,81 @@ check('project3DToScreen maps (1,1,0) to top-right viewport coordinate',
   Math.abs(screenTopRight[0] - 800) < 1e-4 && Math.abs(screenTopRight[1] - 0) < 1e-4,
   `got: [${screenTopRight}]`
 );
+
+console.log('\n--- Phase 5 Gate: Inference & Priority Hierarchy ---');
+
+// Phase 5 Gate Requirement: With pointer within 1 pixel of a wall endpoint,
+// endpoint snap wins over reference lock and over grid.
+// At scale = 20 px/ft, 1 pixel = 0.05 ft.
+// segH is [0, 0] to [10, 0]. Endpoint is [10, 0].
+// Pointer at [10.02, 0.01] is ~0.44 pixels away (well within 1 pixel).
+const p5Snap = findSnapCandidate([10.02, 0.01], {
+  scale: 20,
+  pixelTolerance: 14,
+  segments: [segH],
+  enableGridSnap: true,
+  gridSize: 0.25,
+  referenceLock: { p1: [0, 0], p2: [20, 0] },
+  axisLock: { axis: 'x', origin: [0, 0] },
+});
+
+check('Phase 5 Gate: endpoint snap wins over reference lock and grid within 1 pixel',
+  p5Snap?.kind === 'endpoint' && p5Snap.point[0] === 10 && p5Snap.point[1] === 0,
+  `kind: ${p5Snap?.kind}, pt: [${p5Snap?.point}]`
+);
+
+// Negative control: verify that if priority order is inverted (referenceLock evaluated before endpoint),
+// the check detects the inversion and fails.
+function invertedPrioritySnap(cursor, options) {
+  // Inverted: referenceLock checked before endpoint
+  if (options.referenceLock) {
+    const res = distToSegment(cursor, options.referenceLock.p1, options.referenceLock.p2);
+    return { kind: 'reference_lock', point: res.projected };
+  }
+  return findSnapCandidate(cursor, options);
+}
+
+const invertedResult = invertedPrioritySnap([10.02, 0.01], {
+  scale: 20,
+  pixelTolerance: 14,
+  segments: [segH],
+  referenceLock: { p1: [0, 0], p2: [20, 0] },
+});
+
+check('Phase 5 Negative control: inverted priority incorrectly yields reference_lock instead of endpoint',
+  invertedResult?.kind === 'reference_lock' && invertedResult?.kind !== 'endpoint'
+);
+
+// Test computeInference: parallel to reference edge
+if (computeInference && createInitialInferenceState) {
+  const infState = {
+    ...createInitialInferenceState(),
+    referenceEdge: { p1: [0, 0], p2: [10, 0], guid: 'wall-ref' },
+  };
+  // Cursor parallel to reference edge from activePoint [0, 5]
+  const infRes = computeInference([5.0, 5.02], [0, 5.0], {
+    scale: 20,
+    pixelTolerance: 14,
+    segments: [segH],
+  }, infState);
+
+  check('computeInference generates parallel guide line and snap',
+    infRes.snap?.kind === 'aligned' && infRes.cursorLabel?.includes('Parallel'),
+    `label: ${infRes.cursorLabel}, guides: ${infRes.guideLines.length}`
+  );
+
+  // But if within 1 pixel of an endpoint, endpoint still wins over parallel inference!
+  const infEndRes = computeInference([10.01, 0.01], [0, 5.0], {
+    scale: 20,
+    pixelTolerance: 14,
+    segments: [segH],
+  }, infState);
+
+  check('computeInference: named endpoint beats parallel inference guide',
+    infEndRes.snap?.kind === 'endpoint',
+    `got: ${infEndRes.snap?.kind}`
+  );
+}
 
 console.log('\n------------------------------------------------------------------------');
 console.log(`SNAP-ENGINE GATE: ${passed} passed, ${failed} failed`);

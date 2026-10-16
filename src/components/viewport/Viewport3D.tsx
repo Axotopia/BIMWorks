@@ -4,7 +4,7 @@ import { useBimStore, ZOOM_EXTENTS_EVENT } from '../../store/useBimStore';
 import { formatLength, tryParseLength } from '../../utils/units';
 import { Scissors, Maximize, RotateCw, Move, Lock } from 'lucide-react';
 import { ContextMenu } from '../common/ContextMenu';
-import { findSnapCandidate, SnapSegment } from '../../interaction/snapEngine';
+import { findSnapCandidate, SnapSegment, SnapCandidate } from '../../interaction/snapEngine';
 import { gripsFor, computeGripDragCommand, Grip } from '../../interaction/grips';
 import { ValueControlBox } from './ValueControlBox';
 
@@ -172,6 +172,7 @@ export const Viewport3D: React.FC = () => {
   const [editingDimValue, setEditingDimValue] = useState<string>('');
   const [cameraTick, setCameraTick] = useState(0);
   const [hoveredGripId, setHoveredGripId] = useState<string | null>(null);
+  const [activeSnapCandidate, setActiveSnapCandidate] = useState<SnapCandidate | null>(null);
   const activeDragGripRef = useRef<{ grip: Grip; element: any } | null>(null);
   const [liveGripValue, setLiveGripValue] = useState<{ label: string; value: number } | null>(null);
   const [isEditingDim, setIsEditingDim] = useState<boolean>(false);
@@ -270,6 +271,7 @@ export const Viewport3D: React.FC = () => {
         forceOrtho,
       });
 
+      setActiveSnapCandidate(snap);
       return snap ? snap.point : [rawX, rawY];
     },
     [snapSegments]
@@ -295,6 +297,7 @@ export const Viewport3D: React.FC = () => {
     setBoxCurrentPoint(null);
     setIsEditingDim(false);
     setEditingDimValue('');
+    setActiveSnapCandidate(null);
     isNavigatingRef.current.mode = null;
     // `activeTool` is a belt-and-braces dependency: `setActiveTool` also bumps the
     // token, but a tool armed by any route must clear a half-finished pick.
@@ -1201,6 +1204,32 @@ export const Viewport3D: React.FC = () => {
         onCommitLiveValue={handleCommitLiveValue}
         className="absolute top-14 left-1/2 -translate-x-1/2 z-20"
       />
+
+      {/* Phase 5: 3D Snap Indicator & Cursor Label */}
+      {(() => {
+        if (!activeSnapCandidate || !cameraRef.current || !canvasRef.current) return null;
+        const rect = canvasRef.current.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return null;
+        const v = new THREE.Vector3(activeSnapCandidate.point[0], activeSnapCandidate.point[1], 0);
+        v.project(cameraRef.current);
+        if (v.z > 1.0) return null;
+        const screenX = ((v.x + 1) / 2) * rect.width;
+        const screenY = ((-v.y + 1) / 2) * rect.height;
+
+        return (
+          <div
+            style={{ left: `${screenX}px`, top: `${screenY}px` }}
+            className="absolute -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none select-none flex items-center space-x-1.5"
+          >
+            <div className="w-3.5 h-3.5 border-2 border-[#ec4899] rounded-sm bg-[#ec4899]/20 shadow flex items-center justify-center">
+              <div className="w-1 h-1 bg-[#ec4899] rounded-full" />
+            </div>
+            <span className="px-1.5 py-0.5 bg-black/85 text-[#f472b6] font-mono text-[10px] rounded border border-[#ec4899]/40 whitespace-nowrap shadow-md">
+              {activeSnapCandidate.description}
+            </span>
+          </div>
+        );
+      })()}
 
       {/* Wall Placement Status Banner */}
       {activeTool === 'WA' && (
