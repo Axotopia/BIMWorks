@@ -78,6 +78,13 @@ from units import (  # noqa: E402  (kept beside the constants it documents)
     format_feet_inches,
     feet_to_metres,
 )
+from references import (
+    normalize_reference,
+    resolve_reference,
+    resolve_reference_axis,
+    repair_reference,
+    reference_key,
+)
 
 
 
@@ -3428,37 +3435,15 @@ class BimModelManager:
     # =========================================================================
 
     def _resolve_ref_coords(self, ref: Dict[str, Any]) -> Tuple[float, float]:
-        """Resolves 2D coordinates [x, y] in decimal feet for a dimension witness reference."""
+        """
+        Resolves 2D coordinates [x, y] in decimal feet for a dimension witness reference.
+        Delegates to references.resolve_reference.
+        """
         if not isinstance(ref, dict):
             return (0.0, 0.0)
-        guid = ref.get("guid") or ref.get("level_id")
-        if guid and hasattr(self, "levels"):
-            if guid in self.levels:
-                elev = float(self.levels[guid].get("elevation", 0.0))
-                return (0.0, elev)
-            for lid, lv in self.levels.items():
-                if lv.get("name", "").lower() == str(guid).lower() or lid.lower() == str(guid).lower():
-                    return (0.0, float(lv.get("elevation", 0.0)))
-        if not guid or guid not in self.element_meta:
-            if "point" in ref and len(ref["point"]) >= 2:
-                return (float(ref["point"][0]), float(ref["point"][1]))
-            return (0.0, 0.0)
-
-        meta = self.element_meta[guid]
-        target_ref = ref.get("ref", "center")
-        if target_ref == "start" and "start" in meta and meta["start"]:
-            return (float(meta["start"][0]), float(meta["start"][1]))
-        if target_ref == "end" and "end" in meta and meta["end"]:
-            return (float(meta["end"][0]), float(meta["end"][1]))
-        if target_ref in ("center", "midpoint"):
-            if "start" in meta and "end" in meta and meta["start"] and meta["end"]:
-                sp, ep = meta["start"], meta["end"]
-                return ((float(sp[0]) + float(ep[0])) / 2.0, (float(sp[1]) + float(ep[1])) / 2.0)
-            if "bbox" in meta and "min" in meta["bbox"] and "max" in meta["bbox"]:
-                b = meta["bbox"]
-                return ((float(b["min"][0]) + float(b["max"][0])) / 2.0, (float(b["min"][1]) + float(b["max"][1])) / 2.0)
-        if "start" in meta and meta["start"]:
-            return (float(meta["start"][0]), float(meta["start"][1]))
+        pt, outcome = resolve_reference(self, ref)
+        if pt is not None:
+            return pt
         return (0.0, 0.0)
 
     def create_dimension(
@@ -3477,32 +3462,37 @@ class BimModelManager:
         """
         Creates a persistent parametric dimension object in the overlay (A4).
         If `is_locked` is True, registers an active distance constraint lock.
+        References are normalized to the canonical Reference schema (Phase 1).
         """
         dim_id = dimension_id or f"dim_{uuid.uuid4().hex[:8]}"
+        norm_ref_a = normalize_reference(ref_a)
+        norm_ref_b = normalize_reference(ref_b)
+        norm_refs = [normalize_reference(r) for r in refs] if refs else None
 
         # Derive initial value if not explicitly passed
         if value is None:
-            if ref_a.get("guid") == ref_b.get("guid") and ref_a.get("guid") in self.element_meta:
-                meta = self.element_meta[ref_a["guid"]]
+            if norm_ref_a.get("guid") == norm_ref_b.get("guid") and norm_ref_a.get("guid") in self.element_meta:
+                meta = self.element_meta[norm_ref_a["guid"]]
                 if "start" in meta and "end" in meta and meta["start"] and meta["end"]:
                     sp, ep = meta["start"], meta["end"]
                     value = float(math.hypot(ep[0] - sp[0], ep[1] - sp[1]))
             if value is None:
-                pa = self._resolve_ref_coords(ref_a)
-                pb = self._resolve_ref_coords(ref_b)
-                if axis == "x":
-                    value = abs(pb[0] - pa[0])
-                elif axis == "y":
-                    value = abs(pb[1] - pa[1])
-                else:
-                    value = float(math.hypot(pb[0] - pa[0], pb[1] - pa[1]))
+                pa, out_a = resolve_reference(self, norm_ref_a)
+                pb, out_b = resolve_reference(self, norm_ref_b)
+                if pa is not None and pb is not None:
+                    if axis == "x":
+                        value = abs(pb[0] - pa[0])
+                    elif axis == "y":
+                        value = abs(pb[1] - pa[1])
+                    else:
+                        value = float(math.hypot(pb[0] - pa[0], pb[1] - pa[1]))
 
         val_float = float(value if value is not None else 10.0)
 
         constraint_id = None
         if is_locked:
-            guid_a = ref_a.get("guid")
-            guid_b = ref_b.get("guid")
+            guid_a = norm_ref_a.get("guid")
+            guid_b = norm_ref_b.get("guid")
             if guid_a and guid_b and guid_a != guid_b and guid_a in self.element_meta and guid_b in self.element_meta:
                 c = self.add_dimension_lock(
                     guid_a=guid_a,
@@ -3516,15 +3506,15 @@ class BimModelManager:
         dim = {
             "id": dim_id,
             "kind": kind,
-            "ref_a": copy.deepcopy(ref_a),
-            "ref_b": copy.deepcopy(ref_b),
+            "ref_a": norm_ref_a,
+            "ref_b": norm_ref_b,
             "axis": axis,
             "offset": float(offset),
             "value": val_float,
             "is_locked": bool(is_locked),
             "constraint_id": constraint_id,
             "eq_group": eq_group,
-            "refs": copy.deepcopy(refs) if refs else None,
+            "refs": norm_refs,
         }
         self.dimensions[dim_id] = dim
         self.dimensions_rev += 1
@@ -3613,8 +3603,10 @@ class BimModelManager:
                 dim["value"] = val_float
                 self._solve_constraints_after_move(guid_a)
             elif guid_a and guid_b:
-                pa = self._resolve_ref_coords(ref_a)
-                pb = self._resolve_ref_coords(ref_b)
+                pa, out_a = resolve_reference(self, ref_a)
+                pb, out_b = resolve_reference(self, ref_b)
+                if pa is None or pb is None:
+                    return {"status": "error", "error": "Dimension witness references lost"}
                 axis = dim.get("axis", "aligned")
                 if axis == "x":
                     cur_diff = pb[0] - pa[0]
@@ -4650,9 +4642,24 @@ class BimModelManager:
             if isinstance(raw_dims, list):
                 for d in raw_dims:
                     did = d.get("id") or f"dim_{uuid.uuid4().hex[:8]}"
-                    self.dimensions[did] = copy.deepcopy(d)
+                    d_copy = copy.deepcopy(d)
+                    if "ref_a" in d_copy:
+                        d_copy["ref_a"] = normalize_reference(d_copy["ref_a"])
+                    if "ref_b" in d_copy:
+                        d_copy["ref_b"] = normalize_reference(d_copy["ref_b"])
+                    if "refs" in d_copy and isinstance(d_copy["refs"], list):
+                        d_copy["refs"] = [normalize_reference(r) for r in d_copy["refs"]]
+                    self.dimensions[did] = d_copy
             elif isinstance(raw_dims, dict):
-                self.dimensions = copy.deepcopy(raw_dims)
+                for did, d in raw_dims.items():
+                    d_copy = copy.deepcopy(d)
+                    if "ref_a" in d_copy:
+                        d_copy["ref_a"] = normalize_reference(d_copy["ref_a"])
+                    if "ref_b" in d_copy:
+                        d_copy["ref_b"] = normalize_reference(d_copy["ref_b"])
+                    if "refs" in d_copy and isinstance(d_copy["refs"], list):
+                        d_copy["refs"] = [normalize_reference(r) for r in d_copy["refs"]]
+                    self.dimensions[did] = d_copy
 
         if reported_ifc_guids:
             overlay_guids = set(elements.keys())
@@ -6037,8 +6044,10 @@ class BimModelManager:
             for did, d in self.dimensions.items():
                 ref_a = d.get("ref_a", {})
                 ref_b = d.get("ref_b", {})
-                pa = self._resolve_ref_coords(ref_a)
-                pb = self._resolve_ref_coords(ref_b)
+                pa, out_a = resolve_reference(self, ref_a)
+                pb, out_b = resolve_reference(self, ref_b)
+                if pa is None or pb is None:
+                    continue
                 dx, dy = pb[0] - pa[0], pb[1] - pa[1]
                 dist = _math.hypot(dx, dy)
                 if dist > 1e-6:
@@ -6528,9 +6537,29 @@ class BimModelManager:
             # Legacy container: no parametric geometry in the overlay. Keep the
             # tessellation import and only re-attach metadata that is GUID-gated.
             self.constraints = self._jsonable(overlay.get("constraints", {}) or {})
-            self.join_policies = self._jsonable(overlay.get("join_policies", {}) or {})
-            self.dimensions = self._jsonable(overlay.get("dimensions", {}) or {})
-            elements_overlay = overlay.get("elements", {}) or {}
+            legacy_dims = self._jsonable(overlay.get("dimensions", {}) or {})
+            self.dimensions = {}
+            if isinstance(legacy_dims, list):
+                for d in legacy_dims:
+                    did = d.get("id") or f"dim_{uuid.uuid4().hex[:8]}"
+                    d_copy = copy.deepcopy(d)
+                    if "ref_a" in d_copy:
+                        d_copy["ref_a"] = normalize_reference(d_copy["ref_a"])
+                    if "ref_b" in d_copy:
+                        d_copy["ref_b"] = normalize_reference(d_copy["ref_b"])
+                    if "refs" in d_copy and isinstance(d_copy["refs"], list):
+                        d_copy["refs"] = [normalize_reference(r) for r in d_copy["refs"]]
+                    self.dimensions[did] = d_copy
+            elif isinstance(legacy_dims, dict):
+                for did, d in legacy_dims.items():
+                    d_copy = copy.deepcopy(d)
+                    if "ref_a" in d_copy:
+                        d_copy["ref_a"] = normalize_reference(d_copy["ref_a"])
+                    if "ref_b" in d_copy:
+                        d_copy["ref_b"] = normalize_reference(d_copy["ref_b"])
+                    if "refs" in d_copy and isinstance(d_copy["refs"], list):
+                        d_copy["refs"] = [normalize_reference(r) for r in d_copy["refs"]]
+                    self.dimensions[did] = d_copy
             applied, stale = [], []
             for g, o_meta in elements_overlay.items():
                 if g in self.element_meta:

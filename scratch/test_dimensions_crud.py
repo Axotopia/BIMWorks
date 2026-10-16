@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.abspath("backend"))
 from ifc_service import BimModelManager
 from command_bus import CommandBusEngine, CommandRequest
 from units import format_feet_inches
+from references import resolve_reference
 
 passed = 0
 failed = 0
@@ -246,6 +247,35 @@ def run_tests():
     )
     check("chained dimension created with refs", dim_chain.get("refs") is not None and len(dim_chain["refs"]) == 3)
     check("chained dimension has eq_group", dim_chain.get("eq_group") == "chain_1")
+
+    # 16. Geometric References & Lost Reference Assertions (Phase 1)
+    # 16a. Verify ref_a and ref_b are normalized on create
+    check("dim_chain ref_a is canonical wall_start", dim_chain["ref_a"]["kind"] == "wall_start")
+    check("dim_chain ref_b is canonical wall_end", dim_chain["ref_b"]["kind"] == "wall_end")
+    check("dim_chain refs[1] is canonical wall_center", dim_chain["refs"][1]["kind"] == "wall_center")
+
+    # 16b. Lost reference returns 'lost' outcome and None coords, NEVER (0.0, 0.0)
+    lost_ref = {"guid": "deleted-or-invalid-guid", "ref": "start"}
+    pt_lost, outcome_lost = resolve_reference(mgr, lost_ref)
+    check("lost reference outcome is 'lost'", outcome_lost == "lost")
+    check("lost reference coords is None (never silent 0,0)", pt_lost is None)
+
+    # 16c. Creating / updating dimension with lost reference handled gracefully
+    dim_dangling = mgr.create_dimension(
+        ref_a={"guid": w3_guid, "ref": "start"},
+        ref_b=lost_ref,
+        value=15.0,
+    )
+    edit_dangling = mgr.set_dimension_value(dim_dangling["id"], 20.0)
+    check("set_dimension_value on lost reference returns error", edit_dangling.get("status") == "error")
+
+    # 16d. Plan contract does not emit dangling dimensions anchored to (0,0)
+    plan_with_dangling = mgr.slice_2d_vector_plan(cut_elevation=4.0)
+    dangling_emitted = any(d.get("id") == dim_dangling["id"] for d in plan_with_dangling.get("dimensions", []))
+    check("lost reference dimension excluded from plan contract (not anchored to 0,0)", not dangling_emitted)
+
+    # Clean up test dimension
+    mgr.delete_dimension(dim_dangling["id"])
 
     print(f"\nRESULTS: {passed} passed, {failed} failed")
     if failed > 0:
