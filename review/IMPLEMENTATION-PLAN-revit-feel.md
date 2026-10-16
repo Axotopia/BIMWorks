@@ -429,17 +429,17 @@ recomputes the dirty closure only; the transport ships deltas. No engine path ma
 ## 2b. One owner per item — how the four plans divide
 
 Four plans were live at once, and they overlap where the same feature is both *semantics* and *gesture*.
-One owner per item, so a reader never has to reconcile two statuses. **Two of the four have since been
-completed and their plan files removed from the tree at `d54f9b1`** — the dimension-as-control and
-geometric-references plans below are recorded here for ownership history, and their work is subsumed by
-this plan's Phase 2 and by direct-manipulation Track A. The links are intentionally not live:
+One owner per item, so a reader never has to reconcile two statuses. **Two of the four are completed and
+their plan files live in `review/archive/`** — the dimension-as-control and geometric-references plans below
+are recorded here for ownership history, and their work is subsumed by this plan's Phase 2 and by
+direct-manipulation Track A. The links point at the archived copies:
 
 | Plan | Owns | Does not own |
 |---|---|---|
 | **`IMPLEMENTATION-PLAN-revit-feel.md`** (this) | Editing *semantics* and the performance that makes them usable: trim/split/extend, the type layer, sheets, chrome, and the dimension overlay's persistence and round-trip. Phases 0–7. | The gesture layer (no drag, grips or inference), and first-run testability |
 | **[`IMPLEMENTATION-PLAN-direct-manipulation.md`](IMPLEMENTATION-PLAN-direct-manipulation.md)** | **Track A** — first-run and UI-surfacing blockers (§4, A1–A7). **Track B** — the IngeTrazo-style gesture layer: interaction session, drag session on the bus, grips, value entry and hot retype, inference, validity predicates (§5) | Dimension *semantics* (it consumes them), and the trim/split semantics of §20 |
-| **`IMPLEMENTATION-PLAN-dimension-as-control.md`** *(archived — file removed at `d54f9b1`)* | Dimensions as **driving** objects: conflict reporting, the locked path, EQ/chains, the solver's refusal channel | The dimension *overlay* (this plan, 2.2–2.3, done) and the `DI` tool (direct-manipulation A7) |
-| **`IMPLEMENTATION-PLAN-geometric-references.md`** *(archived — file removed at `d54f9b1`)* | The shared **reference primitive** — witness points, re-resolution, `reference_key` stability — consumed by all three | Anything with a viewport |
+| **[`IMPLEMENTATION-PLAN-dimension-as-control.md`](archive/IMPLEMENTATION-PLAN-dimension-as-control.md)** *(archived)* | Dimensions as **driving** objects: conflict reporting, the locked path, EQ/chains, the solver's refusal channel | The dimension *overlay* (this plan, 2.2–2.3, done) and the `DI` tool (direct-manipulation A7) |
+| **[`IMPLEMENTATION-PLAN-geometric-references.md`](archive/IMPLEMENTATION-PLAN-geometric-references.md)** *(archived)* | The shared **reference primitive** — witness points, re-resolution, `reference_key` stability — consumed by all three | Anything with a viewport |
 
 Three consequences worth stating, because they were live contradictions:
 
