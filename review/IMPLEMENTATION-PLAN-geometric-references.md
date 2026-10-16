@@ -1,14 +1,10 @@
 # IMPLEMENTATION PLAN — geometric references (and the drag path they enable)
 
-**Companion to** `Revit-Parametric-Architecture-Map.md` (the mechanism, evidenced from Revit 2025/2027).
-**Relates to** `IMPLEMENTATION-PLAN-dimension-as-control.md` — which this plan **amends**, not supersedes (§7).
-**Applies to** `C:\Users\desig\Documents\GitHub\BIMWorks`.
+**Companion to** [`IMPLEMENTATION-PLAN-dimension-as-control.md`](IMPLEMENTATION-PLAN-dimension-as-control.md)
+and [`revit-dimension-as-control.md`](revit-dimension-as-control.md) — which this plan **amends**, not supersedes (§7).
+**Evidence** `Revit-Parametric-Architecture-Map.md` (research workspace, not tracked in this repository).
+**Applies to** the BIMWorks repository root.
 **Status** proposed — not started. Authored 2026-10-15, 20:53.
-
-> **Where the companions live.** Both companion documents are part of the research workspace
-> (`C:\Users\desig\Documents\DSH\BIMWorks\`) and are **not** tracked in this repository, so they are named
-> rather than linked. `Revit-Parametric-Architecture-Map.md` supplies the Revit evidence; the dimension plan is
-> the sibling deliverable this plan amends.
 
 ---
 
@@ -177,6 +173,37 @@ pointing at restored-away geometry.
 ---
 
 ## 4. Phases
+
+### 4.0 Prerequisite and gate commands
+
+**`planegcs` must be installed before any solver-dependent gate can run.** It is declared in `requirements.txt`
+(`planegcs>=0.9.6`) but **is not installed** in the current environment (`import planegcs` raises
+`ImportError`). `docs/REFACTOR-PLAN.md:75-77` records the same fact, together with four pre-existing failures in
+`scratch/test_dependency_graph.py`.
+
+This is more than a missing test dependency. `ConstraintSolver._require_solver()`
+(`constraint_solver.py:96-102`) raises `SolverUnavailable`, and `_solve_constraints_after_move`
+(`ifc_service.py:2964-2966`) catches every exception and **returns silently**. So with `planegcs` absent the
+constraint system is **inert**: a move that should trigger a solve does nothing, and reports nothing. Two
+consequences for anyone executing this plan:
+
+- Do not measure, tune or "fix" solver behaviour before installing it — you would be measuring the absence.
+- Never read "no error" as "no constraint applied." Check `SolverUnavailable` reachability explicitly in
+  Phase 1's gate.
+
+`_solve_pure_python` (`constraint_solver.py:287`) exists as a fallback and should be exercised deliberately,
+not assumed.
+
+**Gate commands.** Run the affected gate after **each** work item, not at the end (per `GEMINI.md` Phase 3).
+
+| Command | Expected |
+|---|---|
+| `npm run check` | `check:bus`, `check:ui`, `check:state`, `check:delta`, `check:snap` all pass, then `tsc --noEmit` clean |
+| `npm run check:snap` | passes now; **extended in Phase 3** to assert an `intersection` candidate carries *both* source guids |
+| `python scratch/test_dimensions_crud.py` | passes now; **extended in Phase 1** with a `lost`-reference assertion |
+
+> **Trap.** `npm run check` includes the UI gate, which makes **real HTTP calls** to the engine — start the
+> backend first. `docs/REFACTOR-PLAN.md:67` records this; it is the most common way a gate run is misread here.
 
 | # | Change | Gate |
 |---|---|---|
