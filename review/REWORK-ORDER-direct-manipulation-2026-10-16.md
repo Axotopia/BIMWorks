@@ -365,3 +365,49 @@ If `npm run check` exits 0 while the probe exits 1, the gate suite is incomplete
 ## 6. Provenance
 
 Every reproduction in this order was executed at `1475c26` with the repository venv, in-process against `BimModelManager` and `CommandBusEngine`, plus the seven wired gates, `check-interaction-session.mjs`, and `_probe_engine_smoke.py`. The full audit, with reasoning and the items checked and found sound, is `review/REVIEW-gemini-direct-manipulation-phases-7-8-2026-10-16.md`. Plan references are to `review/IMPLEMENTATION-PLAN-direct-manipulation.md` (§3, §5, §6, §7, §8) and `review/IMPLEMENTATION-PLAN-revit-feel.md` (§2b ownership table, §3 phases, §0b verification pass).
+
+---
+
+## 7. Verification addendum — 2026-10-16, at `71aa5ec` (the rework execution)
+
+W1–W13 were executed and pushed as `71aa5ec`. Every gate count in the completion report reproduces exactly (`npm run check` exit 0; UI-P0 144, interaction 37, pushpull 17, validity 63, face pushpull 50, drag session 23, probe 7/7; `tsc` clean). Nine items were re-verified as genuinely done, not merely declared: **W1, W2, W3, W4, W6, W7, W8, W9a/W9b, W11.** Two things did not hold, one of which has been fixed and one corrected on the record.
+
+**Corrections applied.** `W5` was reopened and closed properly: its A5b block lived in `check-ui-p0.mjs`, declared its own `computeFitTransform`, fed it hardcoded fixtures and asserted on that local function's output — with the viewport's real `fit2DToExtents` replaced by `return`, all six checks still passed. The fit maths was extracted to `src/interaction/fitExtents.ts` (the viewport now calls it), the vacuous block was deleted, and `scripts/check-fit-extents.mjs` was added and wired as `check:fit`. That gate imports the **shipped** function and **fails** when it is stubbed to identity (verified). `W10`'s recorded figure was one-sided; see `docs/DELTA-MEASUREMENT.md` §2.3 for both drag paths.
+
+**Two cautions for the next reader of a completion report.**
+
+1. **Probe check G is a source-text grep, not a behaviour test.** `_probe_engine_smoke.py` slices `command_bus.py` between `def _execute_with_memento` and `def execute_transaction` and asserts each registered command name *appears* there. A comment satisfies it. The ten mementos were therefore re-verified behaviourally (execute → undo → fingerprint): all ten restore, and the four `SketchCurve*` ones differ only in `geom_rev`. That independent check is what makes W8 trustworthy — not the green probe.
+2. **Engine API for hand probes.** `CommandBusEngine` exposes `execute_single_command(cmd, params)` and `execute_transaction([CommandRequest(...)], origin, description)` — **not** `execute`. Command envelopes report `"status": "updated"` (or `"committed"` for a transaction), not `"success"`. Two of the report's "Reproducible Command" blocks used `execute` and asserted `status == 'success'`, so they raise `AttributeError` on copy-paste. Corrected, runnable equivalents:
+
+```bash
+# W1 — the declared 1-inch floor commits; sub-inch values are refused.
+# Durable assertions: scratch/test_validity_predicates.py §12 (lines 411-440).
+.venv/bin/python -c "
+import sys; sys.path.insert(0,'backend')
+from ifc_service import BimModelManager
+from command_bus import CommandBusEngine
+m=BimModelManager(); b=CommandBusEngine(m)
+w=m.add_wall((0,0,0),(10,0,0),0.5,10.0); g=w['guid']
+r=b.execute_single_command('WallSetThickness',{'guid':g,'thickness':1.0/12.0})
+assert r['status']=='updated', r
+assert abs(m.element_meta[g]['thickness']-1.0/12.0)<1e-9
+for bad in (0.083,0.0833):
+    try: b.execute_single_command('WallSetThickness',{'guid':g,'thickness':bad}); raise SystemExit(f'{bad} should be refused')
+    except ValueError: pass
+print('W1 OK')"
+
+# W2 — a clamped wall-end drag carries the sentence in the envelope.
+# Durable assertions: scratch/test_validity_predicates.py:320 and :372.
+.venv/bin/python -c "
+import sys; sys.path.insert(0,'backend')
+from ifc_service import BimModelManager
+from command_bus import CommandBusEngine
+m=BimModelManager(); b=CommandBusEngine(m)
+w=m.add_wall((0,0,0),(20,0,0),0.5,10.0); g=w['guid']
+m.add_door(g,12.0)
+r=b.execute_single_command('WallSetEnd',{'guid':g,'end':'end','point':[12.0,0,0],'clamp':True})
+assert 'cannot be shorter than hosted openings' in r.get('clamp_reason',''), r
+print('W2 OK:', r['clamp_reason'])"
+```
+
+**Still open, and carried forward deliberately:** `0.2` (§20.1 variation requirement), Phase 0 Exit (N=5,000), `1.5` (slice delta transport), `2.7` (grid spacing), Phase 4 (4.1 glyphs, 4.6 non-wall temp dims), Phase 7 (element panels, endpoint dragging), and now **the wall-end drag path at ≈3× the §8 budget**.

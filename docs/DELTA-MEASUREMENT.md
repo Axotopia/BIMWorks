@@ -62,20 +62,19 @@ Payload measurements demonstrate sustained ~72% to 77% payload compression acros
 
 ### 2.3 Drag Session Latency & Direct Manipulation Gesture Budget (Phase 7 / W10)
 
-During an active drag gesture (`/drag/update`), revision incrementation and 2D HLR plan slicing are suppressed (`slice2d: null`). Only modified element meshes are returned, satisfying the 8 ms frame budget on large models:
+During an active drag gesture (`/drag/update`), revision incrementation and 2D HLR plan slicing are suppressed (`slice2d: null`), and only modified element meshes are returned. **The 8 ms §8 budget is met by the parameter-only path and NOT by the baseline-moving path**, so both are recorded. The distinction matters because the two paths do different work, and only one of them carries the budget assertion.
 
-- **Corpus:** 250-Wall Fixture (25 rows of 10 walls each, 250 elements)
-- **Gesture:** Phase 7 Face Push/Pull parameter modification (`WallSetHeight`, N=60 frames)
-- **`slice2d` State:** Suppressed (`null`)
-- **Engine Latency (N=60 frames):**
-  - **p50:** `0.105 ms`
-  - **p95:** `0.155 ms` (budget: `< 8.0 ms`)
-  - **max:** `0.360 ms`
-- **Client Latency:**
-  - In-process / Localhost round-trip: `1.2 ms` to `2.4 ms`
-  - Client and engine reported separately per `REFACTOR-PLAN.md` §2.4.
-- **Verification Gate:** `scratch/test_drag_session.py` section 7 asserts `p95 < 8.0 ms` on 250-wall fixture with `slice2d` suppressed.
-- **Negative Control:** 10x stricter budget (`< 0.01 ms`) asserted to fail.
+**Corpus:** 250-wall fixture (25 × 10 grid, 250 elements, `height=10.0 ft`, `thickness=0.67 ft`).
+**State:** `slice2d` suppressed on both paths. 60 frames each, in-process `update_drag`.
+
+| Gesture | What it does | p50 | p95 | max | §8 budget (8 ms) |
+| :--- | :--- | ---: | ---: | ---: | :--- |
+| `WallSetHeight` — top-face push/pull (W10) | parameter only: height does not change the 2D footprint, so the join recompute is skipped by design (`ifc_service.py:3409`) | `0.133 ms` | **`0.158 ms`** | `0.279 ms` | **met** (≈51× inside) |
+| `WallSetEnd` — end grips (Phases 3/6) | moves the baseline: pays `_recompute_after_joined_edit` plus `_refresh_wall_placement` / `_reseat_hosted_openings` | `8.475 ms` | **`24.053 ms`** | `24.438 ms` | **not met — ≈3× over** |
+
+- **Gate:** `scratch/test_drag_session.py` section 7 measures both. It asserts `p95 < 8.0 ms` for `WallSetHeight` and a deliberately loose **600 ms anti-regression guard** for `WallSetEnd` (loose so it does not flake; a regression tripwire, not a passing budget), and it asserts the wall-end path is the more expensive one so the two figures cannot be confused. Negative controls: a 10× stricter budget fails for each.
+- **Open item.** §8's gate reads "during a drag … `engine.p95` stays under 8 ms". On the wall-end path it is ≈3× over at N=250, and the rework order's W10 recorded only the height figure. Whoever owns Phase 7's performance claim should either scope the budget to the parameter path in the plan's own words, or bring the baseline path inside it.
+- **Client latency is not recorded here.** The instrumentation separates `client` from `engine` (`REFACTOR-PLAN.md` §2.4). The figures above are **engine-only**, measured in-process; a browser-side client measurement has not been taken and must not be inferred from these.
 
 ---
 

@@ -238,84 +238,11 @@ section('A5. resetInteraction — one cancel path, and it is observable');
   store.setState({ activeTool: 'select' });
 }
 
-section('A5b. Track A5 Gate — Content occupies 60-90% and is centred after view switch');
-{
-  function computeFitTransform(paths, containerW = 800, containerH = 600) {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    paths.forEach((p) => {
-      if (!p.d) return;
-      const matches = p.d.matchAll(/([ML])\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/g);
-      for (const m of matches) {
-        const x = parseFloat(m[2]);
-        const y = parseFloat(m[3]);
-        if (!isNaN(x) && !isNaN(y)) {
-          minX = Math.min(minX, x);
-          maxX = Math.max(maxX, x);
-          minY = Math.min(minY, y);
-          maxY = Math.max(maxY, y);
-        }
-      }
-    });
-    if (minX === Infinity) return { scale: 1, pan: { x: 0, y: 0 }, bbox: null };
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    const w = Math.max(maxX - minX, 1);
-    const h = Math.max(maxY - minY, 1);
-    const fitScale = Math.min((containerW * 0.78) / w, (containerH * 0.78) / h);
-    const newScale = Math.max(10, Math.min(150, fitScale));
-    return {
-      scale: newScale,
-      pan: {
-        x: containerW / 2 - cx * newScale,
-        y: containerH / 2 + cy * newScale,
-      },
-      bbox: { minX, maxX, minY, maxY, cx, cy, w, h },
-    };
-  }
-
-  // Test across plan, section, and elevation fixtures
-  const fixtures = {
-    floor_plan: [
-      { d: 'M 0.0 0.0 L 30.0 0.0 L 30.0 20.0 L 0.0 20.0 Z' },
-      { d: 'M 5.0 5.0 L 15.0 5.0 L 15.0 15.0 L 5.0 15.0 Z' },
-    ],
-    section: [
-      { d: 'M 0.0 0.0 L 30.0 0.0 L 30.0 10.0 L 0.0 10.0 Z' },
-    ],
-    elevation: [
-      { d: 'M -5.0 0.0 L 25.0 0.0 L 25.0 12.0 L -5.0 12.0 Z' },
-    ],
-  };
-
-  const containerW = 800;
-  const containerH = 600;
-
-  for (const [vType, paths] of Object.entries(fixtures)) {
-    const { scale, pan, bbox } = computeFitTransform(paths, containerW, containerH);
-    check(`${vType}: content bbox found`, bbox !== null);
-
-    // Screen center of content
-    const screenCenterX = pan.x + bbox.cx * scale;
-    const screenCenterY = pan.y - bbox.cy * scale;
-    const isCentred = Math.abs(screenCenterX - containerW / 2) < 1.0 && Math.abs(screenCenterY - containerH / 2) < 1.0;
-    check(`${vType}: content is centred in viewport (${screenCenterX.toFixed(1)}, ${screenCenterY.toFixed(1)})`, isCentred);
-
-    // Fraction occupied on screen
-    const screenW = bbox.w * scale;
-    const screenH = bbox.h * scale;
-    const fraction = Math.max(screenW / containerW, screenH / containerH);
-    const inRange = fraction >= 0.60 && fraction <= 0.90;
-    check(`${vType}: content occupies 60-90% of viewport (${(fraction * 100).toFixed(1)}%)`, inRange);
-
-    // Negative control: identity transform (scale=1, pan={x:0, y:0}) must FAIL both
-    const idCenterX = 0 + bbox.cx * 1;
-    const idCenterY = 0 - bbox.cy * 1;
-    const idIsCentred = Math.abs(idCenterX - containerW / 2) < 1.0 && Math.abs(idCenterY - containerH / 2) < 1.0;
-    const idFraction = Math.max((bbox.w * 1) / containerW, (bbox.h * 1) / containerH);
-    const idInRange = idFraction >= 0.60 && idFraction <= 0.90;
-    check(`${vType} negative control: identity transform fails centring and fraction`, !idIsCentred && !idInRange);
-  }
-}
+// Track A5 ("fit on view switch") was removed from this gate on 2026-10-16. Its
+// assertions now live in scripts/check-fit-extents.mjs, which imports the shipped
+// src/interaction/fitExtents.ts. The block that used to sit here declared its own
+// computeFitTransform, fed it hardcoded fixtures, and asserted on that function's
+// output, so it passed even with the viewport's real fit replaced by `return`.
 
 section('A6. handleDeleteKey — Delete belongs to the sketch while a sketch is open');
 {

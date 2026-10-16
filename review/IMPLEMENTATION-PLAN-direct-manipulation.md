@@ -61,13 +61,13 @@ able to fail" exists to prevent; W7 and W8 of the rework order close it.
 ### 0b. Post-Rework Audit — 2026-10-16 (Rework Order W1–W13 Complete)
 
 Following execution of `review/REWORK-ORDER-direct-manipulation-2026-10-16.md`:
-- **A5 is ✅ gated (W5)**: Section A5b in `scripts/check-ui-p0.mjs` asserts drawn content occupies 60–90% of viewport and is centered across plan, section, and elevation fixtures. Negative control verifies identity transform fails the gate.
+- **A5 is ✅ gated (W5) — after a correction (§0c).** The original W5 gate (section A5b of `scripts/check-ui-p0.mjs`) declared its own `computeFitTransform`, fed it hardcoded fixtures and asserted on that local function, so it passed with the viewport's real `fit2DToExtents` replaced by `return`. The fit maths now lives in `src/interaction/fitExtents.ts`, the viewport calls it, the vacuous block was removed, and `scripts/check-fit-extents.mjs` (wired as `check:fit`) asserts the 60–90% occupancy and centring **on the shipped function** — verified to fail when that function is stubbed to identity.
 - **A7 is ✅ DONE (W4)**: Added elevation tool (`EL`) to `ActiveTool` in `src/types/bim.ts`, `toolCaptions.ts:46` (`implemented: true`), Ribbon, and pick gesture in `PlanViewport2D.tsx`.
 - **P1 is ✅ DONE (W6)**: Retired local `useState` for tool-points in `Viewport3D.tsx` and `PlanViewport2D.tsx`; single source of truth is `interactionSession`. Asserted in `scripts/check-interaction-session.mjs` Section 5 with negative control.
 - **P7 is ✅ DONE (W9, W10, W11)**:
   - W9a: Raycasts all scene meshes before classification; nearest object selected.
   - W9b: Wobble threshold (>5px) delays drag session initiation; fast clicks release cleanly without stranding session.
-  - W10: Drag update p95 on 250-wall fixture measured at 0.155 ms (< 8.0 ms budget), recorded in `docs/DELTA-MEASUREMENT.md` §2.3.
+  - W10: Drag update measured on the 250-wall fixture, both paths, in `docs/DELTA-MEASUREMENT.md` §2.3 — `WallSetHeight` p95 **0.158 ms** (inside the 8 ms §8 budget; this is the figure originally recorded) and `WallSetEnd` p95 **24.053 ms** (**≈3× over** the same budget). The budget is met only on the parameter-only path; the baseline-moving path used by Phase 3/6 end grips is an open item.
   - W11: Node gate `scripts/check-pushpull-engine.mjs` imports shipped `pushpull.ts` directly; `scratch/test_face_pushpull.py` verifies exact `MIN_THICKNESS_FT = 1.0/12.0` round-trip through `WallSetThickness`.
 - **P8 is ✅ DONE (W1, W2, W3)**:
   - W1: `MIN_THICKNESS_FT = 1.0 / 12.0` floor is committable from both grips and pushpull without lossy rounding; engine comparison relaxed to `float(thickness) < min_thickness - 1e-6`.
@@ -76,6 +76,38 @@ Following execution of `review/REWORK-ORDER-direct-manipulation-2026-10-16.md`:
 - **Gates Wired (W7, W8)**:
   - W7: `"check:interaction": "node scripts/check-interaction-session.mjs"` wired into `package.json` and `npm run check`.
   - W8: All 50 registered commands declare a `CommandMemento` (probe check G: 0 of 50 fall back to snapshot). `scratch/_probe_engine_smoke.py` is wired into `scripts/check-python-suites.mjs` and verified by `npm run check`.
+
+### 0c. Independent verification of the rework — 2026-10-16 at `71aa5ec`
+
+`71aa5ec` executed the rework order. Every gate count it reports reproduces exactly (`npm run check` exit 0;
+UI-P0 144 → 132 after §0c's correction, interaction 37, pushpull 17, validity 63, face pushpull 50, drag
+session 27, probe 7/7; `tsc` clean). **Nine items were re-verified as genuinely done rather than declared:
+W1, W2, W3, W4, W6, W7, W8, W9a/W9b, W11.** Two claims did not survive, and both are corrected above and
+below:
+
+1. **W5's gate was vacuous** and has been replaced (§0b, A5). The old A5b block passed with the viewport's
+   real fit function deleted — verified by experiment, not inference.
+2. **W10's figure was one-sided** and is now recorded for both drag paths, with the wall-end path ≈3× over
+   the §8 budget (§0b, W10; `docs/DELTA-MEASUREMENT.md` §2.3).
+
+**Two cautions for whoever reads the next completion report.**
+
+- **Probe check G is a source-text grep, not a behaviour test.** `_probe_engine_smoke.py` slices
+  `command_bus.py` between `def _execute_with_memento` and `def execute_transaction` and asserts each
+  registered command name *appears* in that region; a comment would satisfy it. The ten mementos were
+  therefore re-verified behaviourally (execute → undo → state fingerprint): all ten restore correctly, and
+  the four `SketchCurve*` ones differ only by the `geom_rev` counter. That check, not the green probe, is
+  what makes W8 trustworthy.
+- **Engine API for hand probes.** Use `execute_single_command(cmd, params)` or
+  `execute_transaction([CommandRequest(...)], origin, description)` — there is no `execute`. Envelopes carry
+  `"status": "updated"` (or `"committed"`), never `"success"`. Two "Reproducible Command" blocks in the
+  completion report used the non-existent API and therefore raised `AttributeError` on copy-paste.
+  Corrected, runnable equivalents are in `review/REWORK-ORDER-direct-manipulation-2026-10-16.md` §7.
+
+**Still open after the rework** (carried deliberately, not silently): A7's elevation tool is now done, so the
+remaining items are `0.2` (§20.1 variation), Phase 0 Exit (N=5,000), `1.5` (slice delta transport), `2.7`
+(grid spacing), Phase 4 (4.1 glyphs, 4.6 non-wall temp dims), Phase 7 (element panels, endpoint dragging),
+and **the wall-end drag path at ≈3× the §8 budget**.
 
 ---
 

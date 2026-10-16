@@ -14,6 +14,11 @@ import {
   BoundingBox2D,
   distToSegment,
 } from '../../interaction/snapEngine';
+import {
+  collectFitPaths,
+  computeFitTransform,
+  EMPTY_FIT,
+} from '../../interaction/fitExtents';
 
 // ---------------------------------------------------------------------------
 // Alignment-guide geometry
@@ -892,50 +897,22 @@ export const PlanViewport2D: React.FC = () => {
 
   const fit2DToExtents = useCallback(() => {
     if (!sliced2D) return;
-    const pathsToFit: Array<{ d?: string }> = [
-      ...(sliced2D.cut_paths || []),
-      ...(sliced2D.projection_paths || []),
-      ...(sliced2D.roofs || []),
-      ...(sliced2D.slabs || []),
-      ...(sliced2D.levels || []),
-    ];
+    const pathsToFit = collectFitPaths(sliced2D);
 
     if (pathsToFit.length === 0) {
-      setPan({ x: 350, y: 320 });
-      setScale(40);
+      setPan({ ...EMPTY_FIT.pan });
+      setScale(EMPTY_FIT.scale);
       return;
     }
 
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    pathsToFit.forEach((p) => {
-      if (!p.d) return;
-      const matches = p.d.matchAll(/([ML])\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/g);
-      for (const m of matches) {
-        const x = parseFloat(m[2]);
-        const y = parseFloat(m[3]);
-        if (!isNaN(x) && !isNaN(y)) {
-          minX = Math.min(minX, x);
-          maxX = Math.max(maxX, x);
-          minY = Math.min(minY, y);
-          maxY = Math.max(maxY, y);
-        }
-      }
-    });
-
-    if (minX !== Infinity && maxX > minX && maxY > minY) {
-      const cx = (minX + maxX) / 2;
-      const cy = (minY + maxY) / 2;
-      const w = Math.max(maxX - minX, 1);
-      const h = Math.max(maxY - minY, 1);
-      const containerW = containerRef.current?.clientWidth || 800;
-      const containerH = containerRef.current?.clientHeight || 600;
-      const fitScale = Math.min((containerW * 0.78) / w, (containerH * 0.78) / h);
-      const newScale = Math.max(10, Math.min(150, fitScale));
-      setScale(newScale);
-      setPan({
-        x: containerW / 2 - cx * newScale,
-        y: containerH / 2 + cy * newScale,
-      });
+    const containerW = containerRef.current?.clientWidth || 800;
+    const containerH = containerRef.current?.clientHeight || 600;
+    // The maths lives in src/interaction/fitExtents.ts so check-fit-extents.mjs can
+    // exercise the shipped function instead of a re-implementation (Track A5).
+    const fit = computeFitTransform(pathsToFit, containerW, containerH);
+    if (fit.bbox) {
+      setScale(fit.scale);
+      setPan(fit.pan);
     }
   }, [sliced2D]);
 

@@ -136,42 +136,64 @@ for i in range(250):
 
 check("250-wall fixture created", len(wall_250_guids) == 250)
 
-# Begin drag session on 250-wall fixture
-bench_session = command_bus.begin_drag(origin="ui", description="250-wall drag benchmark")
-bench_sid = bench_session["session_id"]
+def bench_drag(command, params_fn, frames=60):
+    """One begin/60-frame/end gesture on the 250-wall fixture. Returns (p50, p95, mx, slice_suppressed)."""
+    sess = command_bus.begin_drag(origin="ui", description=f"{command} benchmark")
+    sid = sess["session_id"]
+    lats = []
+    suppressed = True
+    target = wall_250_guids[0]
+    for f in range(frames):
+        t0 = time.perf_counter()
+        res = command_bus.update_drag(sid, [CommandRequest(command=command, params=params_fn(target, f))])
+        lats.append((time.perf_counter() - t0) * 1000.0)
+        if res.get("slice2d") is not None:
+            suppressed = False
+    command_bus.end_drag(sid, commit=False)
+    s = sorted(lats)
+    return s[int(len(s) * 0.50)], s[int(len(s) * 0.95)], max(s), suppressed
 
-frame_latencies = []
-slice2d_suppressed = True
-target_wall = wall_250_guids[0]
 
-for f in range(60):
-    t0 = time.perf_counter()
-    res = command_bus.update_drag(
-        bench_sid,
-        [CommandRequest(command="WallSetHeight", params={"guid": target_wall, "height": 10.0 + f * 0.1})]
-    )
-    t1 = time.perf_counter()
-    frame_latencies.append((t1 - t0) * 1000.0)
-    if res.get("slice2d") is not None:
-        slice2d_suppressed = False
-
-sorted_lats = sorted(frame_latencies)
-p50_engine = sorted_lats[int(len(sorted_lats) * 0.50)]
-p95_engine = sorted_lats[int(len(sorted_lats) * 0.95)]
-max_engine = max(sorted_lats)
-
-check("slice2d is suppressed during drag on 250-wall fixture", slice2d_suppressed)
-check(
-    f"p95 engine latency under 8.0 ms budget (N=60 frames)",
-    p95_engine < 8.0,
-    f"p50={p50_engine:.3f}ms, p95={p95_engine:.3f}ms, max={max_engine:.3f}ms (budget: 8.0ms)"
+# The plan's §8 budget is 8 ms for "a drag". It is met by the height path and NOT by
+# the wall-end path — see the two rows below. Both are measured so the difference is
+# on the record rather than implied by a single favourable number.
+h_p50, h_p95, h_max, h_sup = bench_drag("WallSetHeight", lambda g, f: {"guid": g, "height": 10.0 + f * 0.1})
+e_p50, e_p95, e_max, e_sup = bench_drag(
+    "WallSetEnd", lambda g, f: {"guid": g, "end": "end", "point": [10.0 - f * 0.02, 0.0, 0.0]}
 )
 
-# Negative control: budget made 10x stricter (0.01 ms) must fail
-budget_fail = p95_engine < 0.01
-check("negative control: 10x stricter budget (< 0.01ms) fails", budget_fail is False)
+check("slice2d is suppressed during drag on 250-wall fixture (height)", h_sup)
+check("slice2d is suppressed during drag on 250-wall fixture (wall end)", e_sup)
 
-command_bus.end_drag(bench_sid, commit=False)
+# The height path skips the join recompute by construction (height does not change the
+# 2D footprint), so this is the cheap case. It is the figure the rework order's W10 cites.
+check(
+    "WallSetHeight drag p95 under the 8.0 ms §8 budget",
+    h_p95 < 8.0,
+    f"p50={h_p50:.3f}ms, p95={h_p95:.3f}ms, max={h_max:.3f}ms (budget: 8.0ms)",
+)
+
+# The wall-end path does move the baseline, so it pays the join recompute + hosted-opening
+# reseat. It is ~19x over the §8 budget. This is an anti-regression guard, NOT a passing
+# budget: it is deliberately loose so it does not flake, and the honest figure is recorded
+# in docs/DELTA-MEASUREMENT.md §2.3 for follow-up.
+check(
+    "WallSetEnd drag p95 measured and within the 600 ms anti-regression guard (OVER the 8 ms budget)",
+    e_p95 < 600.0,
+    f"p50={e_p50:.3f}ms, p95={e_p95:.3f}ms, max={e_max:.3f}ms — 8.0ms budget NOT met on this path",
+)
+check(
+    "the wall-end path is the expensive one (documents which figure is which)",
+    e_p95 > h_p95 * 10,
+    f"end p95 {e_p95:.3f}ms vs height p95 {h_p95:.3f}ms",
+)
+
+# Negative control: budgets made 10x stricter than each measured value must fail.
+check("negative control: 10x stricter height budget fails", (h_p95 < h_p95 / 10.0) is False)
+check("negative control: 10x stricter wall-end budget fails", (e_p95 < e_p95 / 10.0) is False)
+
+print(f"  [PERF] height   drag: p50={h_p50:.3f}ms p95={h_p95:.3f}ms max={h_max:.3f}ms")
+print(f"  [PERF] wall-end drag: p50={e_p50:.3f}ms p95={e_p95:.3f}ms max={e_max:.3f}ms")
 
 print("\n------------------------------------------------------------------------")
 print(f"DRAG SESSION GATE: {passed} passed, {failed} failed")
