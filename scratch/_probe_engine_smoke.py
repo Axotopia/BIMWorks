@@ -16,14 +16,17 @@ Six checks, each independently falsifiable:
   D. DIM LOCKED      driving a *locked* dimension moves the geometry to match
   E. FAILURE HONESTY a failed solve does not report success
   F. VIEWS           section and elevation return linework
+  G. UNDO UNIT       no registered command silently falls back to a full-state
+                     snapshot (V1 of docs/DECISION-live-edit-transaction-unit.md)
 
-Expected on the current tree (2026-10-16, 7a36697+):
-  A FAIL  sample walls are 3.0 "ft" — the sample is authored in metres
-  B FAIL  default 4.0 ft cut passes above the 3.0 ft sample walls -> 0 cut paths
+Expected on the current tree (2026-10-16, db10611):
+  A FAIL  the startup model is the legacy generator: 3.0 ft walls
+  B FAIL  the default 4.0 ft cut therefore yields 0 cut paths
   C PASS
-  D FAIL  locked dimension: asked 14.0 ft, geometry ends 2.0 ft apart
-  E FAIL  failed solve returns status "updated"
+  D FAIL  locked dimension: asked 14.0 ft, geometry ends 12.0 ft apart
+  E FAIL  failed solve returns an envelope status of "updated"
   F PASS
+  G FAIL  10 of 41 commands fall back to snapshot_state()
 
 Run:  .venv/bin/python scratch/_probe_engine_smoke.py
 """
@@ -186,6 +189,25 @@ def main() -> int:
           all(n > 0 for n in counts.values()),
           f"paths per view = {counts} (engine-side; the UI has no SEC renderer and "
           f"no elevation tool, so this is not reachable from the app)")
+
+    # ---- G: the undo unit (V1 of docs/DECISION-live-edit-transaction-unit.md) --
+    # A full-state snapshot must not be a SILENT fallback for commands that
+    # declare no memento: it never fails, it only gets slower as models grow,
+    # which is how it survived an audit, a plan and a green gate suite.
+    import pathlib as _pathlib
+    import re as _re
+
+    src = _pathlib.Path(ROOT, "backend", "command_bus.py").read_text()
+    body = src[src.index("def _execute_with_memento"):src.index("def execute_transaction")]
+    covered = set(_re.findall(r'cmd_name == "([A-Za-z]+)"', body))
+    registry = src[src.index("COMMAND_REGISTRY"):]
+    registered = set(_re.findall(r'"([A-Za-z]+)":\s*[A-Za-z]+Params', registry))
+    uncovered = sorted(registered - covered)
+    check("G. every registered command declares its undo memento",
+          not uncovered,
+          f"{len(uncovered)} of {len(registered)} commands fall back to a full-state "
+          f"snapshot ({len(registered) - len(uncovered)} declare one): "
+          f"{', '.join(uncovered)}")
 
     failed = [r for r in results if not r[0]]
     print(f"\nSMOKE RESULT: {len(results) - len(failed)} passed, {len(failed)} failed")

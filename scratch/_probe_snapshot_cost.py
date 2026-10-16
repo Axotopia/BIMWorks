@@ -1,8 +1,20 @@
-"""Transaction-overhead probe: full-state snapshot cost per edit.
+"""Snapshot-cost probe: what a full-state snapshot costs, by model size.
 
-`CommandBus.execute_transaction` takes `snapshot_state()` twice per transaction
-(backend/command_bus.py:642 pre-state, :677 post_state for the undo entry), and
-`undo`/`redo` deep-copy full state. This measures that cost against model size.
+READ THIS BEFORE QUOTING A NUMBER FROM IT. The bus no longer snapshots twice per
+transaction: `execute_transaction` emits one journal step and one undo entry made
+of **command-scoped mementos** (backend/command_bus.py:1536), and 31 of 41
+registered commands return one. `WallMove` -- the drag path -- is an O(1) inverse
+operation and never calls `snapshot_state()`.
+
+`snapshot_state()` now survives only as the **fallback** for the ten commands that
+declare no memento (backend/command_bus.py:1519-1523, where `undo_fn` calls
+`restore_state`). So the numbers below are the cost of *that* path, not the cost of
+a wall edit. A fallback transaction calls it once, not twice; the doubled column is
+retained only to show what the pre-memento design paid, and must not be read as
+current per-edit latency.
+
+The 66%-of-cost attribution (STEP serialisation vs parametric copies) is in
+docs/DECISION-live-edit-transaction-unit.md section 4.
 
 Run: ./.venv/Scripts/python.exe scratch/_probe_snapshot_cost.py
 """
@@ -38,7 +50,7 @@ def ms(fn, repeats=5):
     return best
 
 
-print(f"{'walls':>6} {'snapshot ms':>12} {'x2 + slice ms':>14}")
+print(f"{'walls':>6} {'snapshot ms':>12} {'2x + slice ms':>14}  <- pre-memento model")
 for n in (4, 10, 18, 26, 34, 42):
     m = build(n)
     m.get_geometry_buffers()
