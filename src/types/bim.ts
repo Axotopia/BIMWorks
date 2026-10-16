@@ -94,6 +94,7 @@ export interface ElementParams {
   width?: number;
   sill_height?: number;
   swing_flipped?: boolean;
+  polygon?: [number, number][];
   elevation?: number;
   pitch?: number;
   tag?: string;

@@ -3395,6 +3395,8 @@ class BimModelManager:
                 meta["width"] = float(updates["width"])
             if "height" in updates and updates["height"] is not None:
                 meta["height"] = float(updates["height"])
+            if "sill_height" in updates and updates["sill_height"] is not None:
+                meta["sill_height"] = float(updates["sill_height"])
             if "swing_flipped" in updates and updates["swing_flipped"] is not None:
                 meta["swing_flipped"] = bool(updates["swing_flipped"])
             # Any of these changes where the opening/product pair must sit.
@@ -3420,6 +3422,7 @@ class BimModelManager:
             "polygon": meta.get("polygon"),
             "offset_along_wall": meta.get("offset_along_wall", 0.0),
             "width": meta.get("width", 0.9),
+            "sill_height": meta.get("sill_height"),
             "swing_flipped": meta.get("swing_flipped", False),
         }
 
@@ -3462,6 +3465,87 @@ class BimModelManager:
         if other_pt and math.hypot(pt[0] - other_pt[0], pt[1] - other_pt[1]) < 0.001:
             raise ValueError(f"Wall {guid} length cannot be zero")
         return self.update_element(guid, {end: pt})
+
+    def set_opening_offset(self, guid: str, offset: float) -> Dict[str, Any]:
+        """Sets offset_along_wall for a hosted opening (door/window)."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Opening {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcDoor", "IfcWindow"):
+            raise ValueError(f"Element {guid} is not an opening (is {meta.get('ifc_class')})")
+        if offset < 0:
+            raise ValueError(f"Opening offset cannot be negative, got {offset}")
+        return self.update_element(guid, {"offset_along_wall": float(offset)})
+
+    def set_opening_width(self, guid: str, width: float) -> Dict[str, Any]:
+        """Sets width of a hosted opening (door/window)."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Opening {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcDoor", "IfcWindow"):
+            raise ValueError(f"Element {guid} is not an opening (is {meta.get('ifc_class')})")
+        if width <= 0:
+            raise ValueError(f"Opening width must be positive, got {width}")
+        return self.update_element(guid, {"width": float(width)})
+
+    def set_opening_sill_height(self, guid: str, sill_height: float) -> Dict[str, Any]:
+        """Sets sill_height of an opening."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Opening {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcDoor", "IfcWindow"):
+            raise ValueError(f"Element {guid} is not an opening (is {meta.get('ifc_class')})")
+        if sill_height < 0:
+            raise ValueError(f"Sill height cannot be negative, got {sill_height}")
+        return self.update_element(guid, {"sill_height": float(sill_height)})
+
+    def flip_opening(self, guid: str) -> Dict[str, Any]:
+        """Flips swing orientation of a door or window."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Opening {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcDoor", "IfcWindow"):
+            raise ValueError(f"Element {guid} is not an opening (is {meta.get('ifc_class')})")
+        current = bool(meta.get("swing_flipped", False))
+        return self.update_element(guid, {"swing_flipped": not current})
+
+    def set_grid_endpoint(self, guid: str, end: str, point: Any) -> Dict[str, Any]:
+        """Sets start or end point of an IfcGrid line."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Grid {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") != "IfcGrid":
+            raise ValueError(f"Element {guid} is not an IfcGrid (is {meta.get('ifc_class')})")
+        if end not in ("start", "end"):
+            raise ValueError(f"Invalid end '{end}', expected 'start' or 'end'")
+        pt = [float(point[0]), float(point[1])]
+        other_key = "end" if end == "start" else "start"
+        other_pt = meta.get(other_key)
+        if other_pt and math.hypot(pt[0] - other_pt[0], pt[1] - other_pt[1]) < 0.001:
+            raise ValueError(f"Grid {guid} length cannot be zero")
+        meta[end] = pt
+        entity = meta.get("entity")
+        if entity and hasattr(entity, "UAxes") and entity.UAxes:
+            axis_curve = entity.UAxes[0].AxisCurve
+            if axis_curve and hasattr(axis_curve, "Points") and len(axis_curve.Points) >= 2:
+                idx = 0 if end == "start" else 1
+                axis_curve.Points[idx].Coordinates = (feet_to_metres(pt[0]), feet_to_metres(pt[1]))
+        self.grids_rev += 1
+        return {"guid": guid, "start": meta["start"], "end": meta["end"]}
+
+    def set_polygon_vertex(self, guid: str, vertex_index: int, point: Any) -> Dict[str, Any]:
+        """Updates a single polygon vertex of an IfcSlab or IfcRoof."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Element {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcSlab", "IfcRoof"):
+            raise ValueError(f"Element {guid} is not a slab or roof (is {meta.get('ifc_class')})")
+        poly = [list(p) for p in meta.get("polygon", [])]
+        if vertex_index < 0 or vertex_index >= len(poly):
+            raise IndexError(f"Vertex index {vertex_index} out of range (polygon has {len(poly)} vertices)")
+        new_pt = [float(point[0]), float(point[1])]
+        poly[vertex_index] = new_pt
+        return self.update_element(guid, {"polygon": poly})
 
     # =========================================================================
     # PARAMETRIC CONSTRAINT ENGINE: ALIGN, LOCK, EQUALIZE (EQ), PERSISTENCE

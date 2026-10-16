@@ -449,6 +449,37 @@ class WallSetEndParams(BaseModel):
     point: List[float] = Field(..., min_length=2, max_length=3, description="New endpoint coordinates [x, y] or [x, y, z]")
 
 
+class OpeningSetOffsetParams(BaseModel):
+    guid: str = Field(..., description="Target opening GUID")
+    offset: float = Field(..., ge=0.0, description="New offset along wall in feet (>= 0)")
+
+
+class OpeningSetWidthParams(BaseModel):
+    guid: str = Field(..., description="Target opening GUID")
+    width: float = Field(..., gt=0.0, description="New opening width in feet (> 0)")
+
+
+class OpeningSetSillHeightParams(BaseModel):
+    guid: str = Field(..., description="Target opening GUID")
+    sill_height: float = Field(..., ge=0.0, description="New opening sill height in feet (>= 0)")
+
+
+class OpeningFlipParams(BaseModel):
+    guid: str = Field(..., description="Target opening GUID")
+
+
+class GridSetEndpointParams(BaseModel):
+    guid: str = Field(..., description="Target grid GUID")
+    end: Literal["start", "end"] = Field(..., description="Which endpoint to modify ('start' or 'end')")
+    point: List[float] = Field(..., min_length=2, max_length=2, description="New endpoint [x, y]")
+
+
+class PolygonSetVertexParams(BaseModel):
+    guid: str = Field(..., description="Target slab or roof GUID")
+    vertex_index: int = Field(..., ge=0, description="Index of vertex in polygon")
+    point: List[float] = Field(..., min_length=2, max_length=2, description="New vertex coordinates [x, y]")
+
+
 # Registry of command names to parameter classes
 COMMAND_REGISTRY = {
     "WallCreate": WallCreateParams,
@@ -456,6 +487,12 @@ COMMAND_REGISTRY = {
     "WallSetHeight": WallSetHeightParams,
     "WallSetThickness": WallSetThicknessParams,
     "WallSetEnd": WallSetEndParams,
+    "OpeningSetOffset": OpeningSetOffsetParams,
+    "OpeningSetWidth": OpeningSetWidthParams,
+    "OpeningSetSillHeight": OpeningSetSillHeightParams,
+    "OpeningFlip": OpeningFlipParams,
+    "GridSetEndpoint": GridSetEndpointParams,
+    "PolygonSetVertex": PolygonSetVertexParams,
     "DoorInsert": DoorInsertParams,
     "WindowInsert": WindowInsertParams,
     "SlabCreate": SlabCreateParams,
@@ -604,6 +641,36 @@ class CommandBusEngine:
             p: WallSetEndParams = validated
             res = self.manager.set_wall_end(p.guid, p.end, p.point)
             return {"status": "updated", "guid": p.guid, "end": p.end, "point": p.point, "element": res}
+
+        elif cmd_name == "OpeningSetOffset":
+            p: OpeningSetOffsetParams = validated
+            res = self.manager.set_opening_offset(p.guid, p.offset)
+            return {"status": "updated", "guid": p.guid, "offset": p.offset, "element": res}
+
+        elif cmd_name == "OpeningSetWidth":
+            p: OpeningSetWidthParams = validated
+            res = self.manager.set_opening_width(p.guid, p.width)
+            return {"status": "updated", "guid": p.guid, "width": p.width, "element": res}
+
+        elif cmd_name == "OpeningSetSillHeight":
+            p: OpeningSetSillHeightParams = validated
+            res = self.manager.set_opening_sill_height(p.guid, p.sill_height)
+            return {"status": "updated", "guid": p.guid, "sill_height": p.sill_height, "element": res}
+
+        elif cmd_name == "OpeningFlip":
+            p: OpeningFlipParams = validated
+            res = self.manager.flip_opening(p.guid)
+            return {"status": "updated", "guid": p.guid, "swing_flipped": res.get("swing_flipped"), "element": res}
+
+        elif cmd_name == "GridSetEndpoint":
+            p: GridSetEndpointParams = validated
+            res = self.manager.set_grid_endpoint(p.guid, p.end, p.point)
+            return {"status": "updated", "guid": p.guid, "end": p.end, "point": p.point, "grid": res}
+
+        elif cmd_name == "PolygonSetVertex":
+            p: PolygonSetVertexParams = validated
+            res = self.manager.set_polygon_vertex(p.guid, p.vertex_index, p.point)
+            return {"status": "updated", "guid": p.guid, "vertex_index": p.vertex_index, "point": p.point, "element": res}
 
         elif cmd_name == "ReferenceMove":
             p: ReferenceMoveParams = validated
@@ -1100,6 +1167,86 @@ class CommandBusEngine:
             def redo_fn(mgr):
                 mgr.set_wall_end(p.guid, p.end, new_pt)
             return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "end": p.end, "point": new_pt, "element": res}
+
+        elif cmd_name == "OpeningSetOffset":
+            p: OpeningSetOffsetParams = validated
+            meta = self.manager.element_meta.get(p.guid)
+            if not meta:
+                raise KeyError(f"Opening {p.guid} not found")
+            old_off = float(meta.get("offset_along_wall", 0.0))
+            new_off = float(p.offset)
+            res = self.manager.set_opening_offset(p.guid, new_off)
+            def undo_fn(mgr):
+                mgr.set_opening_offset(p.guid, old_off)
+            def redo_fn(mgr):
+                mgr.set_opening_offset(p.guid, new_off)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "offset": new_off, "element": res}
+
+        elif cmd_name == "OpeningSetWidth":
+            p: OpeningSetWidthParams = validated
+            meta = self.manager.element_meta.get(p.guid)
+            if not meta:
+                raise KeyError(f"Opening {p.guid} not found")
+            old_w = float(meta.get("width", 0.9))
+            new_w = float(p.width)
+            res = self.manager.set_opening_width(p.guid, new_w)
+            def undo_fn(mgr):
+                mgr.set_opening_width(p.guid, old_w)
+            def redo_fn(mgr):
+                mgr.set_opening_width(p.guid, new_w)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "width": new_w, "element": res}
+
+        elif cmd_name == "OpeningSetSillHeight":
+            p: OpeningSetSillHeightParams = validated
+            meta = self.manager.element_meta.get(p.guid)
+            if not meta:
+                raise KeyError(f"Opening {p.guid} not found")
+            old_sh = float(meta.get("sill_height") or 0.0)
+            new_sh = float(p.sill_height)
+            res = self.manager.set_opening_sill_height(p.guid, new_sh)
+            def undo_fn(mgr):
+                mgr.set_opening_sill_height(p.guid, old_sh)
+            def redo_fn(mgr):
+                mgr.set_opening_sill_height(p.guid, new_sh)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "sill_height": new_sh, "element": res}
+
+        elif cmd_name == "OpeningFlip":
+            p: OpeningFlipParams = validated
+            res = self.manager.flip_opening(p.guid)
+            def undo_fn(mgr):
+                mgr.flip_opening(p.guid)
+            def redo_fn(mgr):
+                mgr.flip_opening(p.guid)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "swing_flipped": res.get("swing_flipped"), "element": res}
+
+        elif cmd_name == "GridSetEndpoint":
+            p: GridSetEndpointParams = validated
+            meta = self.manager.element_meta.get(p.guid)
+            if not meta:
+                raise KeyError(f"Grid {p.guid} not found")
+            old_pt = list(meta.get(p.end, [0.0, 0.0]))
+            new_pt = list(p.point)
+            res = self.manager.set_grid_endpoint(p.guid, p.end, new_pt)
+            def undo_fn(mgr):
+                mgr.set_grid_endpoint(p.guid, p.end, old_pt)
+            def redo_fn(mgr):
+                mgr.set_grid_endpoint(p.guid, p.end, new_pt)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "end": p.end, "point": new_pt, "grid": res}
+
+        elif cmd_name == "PolygonSetVertex":
+            p: PolygonSetVertexParams = validated
+            meta = self.manager.element_meta.get(p.guid)
+            if not meta:
+                raise KeyError(f"Element {p.guid} not found")
+            poly = meta.get("polygon", [])
+            old_pt = list(poly[p.vertex_index])
+            new_pt = list(p.point)
+            res = self.manager.set_polygon_vertex(p.guid, p.vertex_index, new_pt)
+            def undo_fn(mgr):
+                mgr.set_polygon_vertex(p.guid, p.vertex_index, old_pt)
+            def redo_fn(mgr):
+                mgr.set_polygon_vertex(p.guid, p.vertex_index, new_pt)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "vertex_index": p.vertex_index, "point": new_pt, "element": res}
 
         elif cmd_name == "ReferenceMove":
             pre_coords = {

@@ -152,6 +152,12 @@ export const UI_ACTION_COMMANDS = {
   modifyWallHeight: 'WallSetHeight',
   modifyWallThickness: 'WallSetThickness',
   modifyWallEnd: 'WallSetEnd',
+  modifyOpeningOffset: 'OpeningSetOffset',
+  modifyOpeningWidth: 'OpeningSetWidth',
+  modifyOpeningSillHeight: 'OpeningSetSillHeight',
+  flipOpening: 'OpeningFlip',
+  modifyGridEndpoint: 'GridSetEndpoint',
+  modifyPolygonVertex: 'PolygonSetVertex',
 } as const;
 
 export type UiAction = keyof typeof UI_ACTION_COMMANDS;
@@ -193,6 +199,7 @@ function geometryPatch(
       width: params.width,
       sill_height: params.sill_height,
       swing_flipped: params.swing_flipped,
+      polygon: params.polygon,
       elevation: params.elevation,
       pitch: params.pitch,
       tag: params.tag,
@@ -645,6 +652,12 @@ interface BimStoreState {
   modifyWallHeight: (guid: string, height: number) => Promise<void>;
   modifyWallThickness: (guid: string, thickness: number) => Promise<void>;
   modifyWallEnd: (guid: string, end: 'start' | 'end', point: [number, number] | [number, number, number]) => Promise<void>;
+  modifyOpeningOffset: (guid: string, offset: number) => Promise<void>;
+  modifyOpeningWidth: (guid: string, width: number) => Promise<void>;
+  modifyOpeningSillHeight: (guid: string, sillHeight: number) => Promise<void>;
+  flipOpening: (guid: string) => Promise<void>;
+  modifyGridEndpoint: (guid: string, end: 'start' | 'end', point: [number, number]) => Promise<void>;
+  modifyPolygonVertex: (guid: string, vertexIndex: number, point: [number, number]) => Promise<void>;
   moveReference: (source: any, target: any, axis?: string) => Promise<void>;
   updateGeoreferencing: (data: BimStoreState['georeference']) => Promise<void>;
   createSheet: (sheetNumber: string, sheetTitle: string, paperSize?: 'ARCH_D' | 'ARCH_C' | 'ISO_A1') => Promise<void>;
@@ -2281,6 +2294,60 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     }
   },
 
+  modifyOpeningOffset: async (guid: string, offset: number) => {
+    try {
+      await get().dispatchTransaction('modifyOpeningOffset', { guid, offset }, 'Modify opening offset');
+    } catch (e) {
+      set({ statusMessage: `Modify opening offset failed: ${failureMessage(e)}` });
+      console.error('Failed to modify opening offset', e);
+    }
+  },
+
+  modifyOpeningWidth: async (guid: string, width: number) => {
+    try {
+      await get().dispatchTransaction('modifyOpeningWidth', { guid, width }, 'Modify opening width');
+    } catch (e) {
+      set({ statusMessage: `Modify opening width failed: ${failureMessage(e)}` });
+      console.error('Failed to modify opening width', e);
+    }
+  },
+
+  modifyOpeningSillHeight: async (guid: string, sillHeight: number) => {
+    try {
+      await get().dispatchTransaction('modifyOpeningSillHeight', { guid, sill_height: sillHeight }, 'Modify opening sill height');
+    } catch (e) {
+      set({ statusMessage: `Modify opening sill height failed: ${failureMessage(e)}` });
+      console.error('Failed to modify opening sill height', e);
+    }
+  },
+
+  flipOpening: async (guid: string) => {
+    try {
+      await get().dispatchTransaction('flipOpening', { guid }, 'Flip opening');
+    } catch (e) {
+      set({ statusMessage: `Flip opening failed: ${failureMessage(e)}` });
+      console.error('Failed to flip opening', e);
+    }
+  },
+
+  modifyGridEndpoint: async (guid: string, end: 'start' | 'end', point: [number, number]) => {
+    try {
+      await get().dispatchTransaction('modifyGridEndpoint', { guid, end, point }, 'Modify grid endpoint');
+    } catch (e) {
+      set({ statusMessage: `Modify grid endpoint failed: ${failureMessage(e)}` });
+      console.error('Failed to modify grid endpoint', e);
+    }
+  },
+
+  modifyPolygonVertex: async (guid: string, vertexIndex: number, point: [number, number]) => {
+    try {
+      await get().dispatchTransaction('modifyPolygonVertex', { guid, vertex_index: vertexIndex, point }, 'Modify polygon vertex');
+    } catch (e) {
+      set({ statusMessage: `Modify polygon vertex failed: ${failureMessage(e)}` });
+      console.error('Failed to modify polygon vertex', e);
+    }
+  },
+
   setWallHeight: (height) => set({ wallHeight: height }),
   setWallLocationLine: (loc) => set({ wallLocationLine: loc }),
   setWallOffset: (offset) => set({ wallOffset: offset }),
@@ -3005,6 +3072,12 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           updatedParams.point = newPt;
         }
       }
+    } else if (lastGestureCommit.action === 'modifyOpeningOffset') {
+      updatedParams.offset = feet;
+    } else if (lastGestureCommit.action === 'modifyOpeningWidth') {
+      updatedParams.width = feet;
+    } else if (lastGestureCommit.action === 'modifyOpeningSillHeight') {
+      updatedParams.sill_height = feet;
     } else if (lastGestureCommit.action === 'createWall') {
       const sp = updatedParams.start as [number, number, number];
       const ep = updatedParams.end as [number, number, number];

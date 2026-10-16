@@ -140,6 +140,13 @@ export const Viewport3D: React.FC = () => {
     modifyWallHeight,
     modifyWallThickness,
     modifyWallEnd,
+    modifyOpeningOffset,
+    modifyOpeningWidth,
+    modifyOpeningSillHeight,
+    flipOpening,
+    modifyGridEndpoint,
+    modifyPolygonVertex,
+    moveLevel,
   } = useBimStore();
 
   // Internal Three.js state
@@ -217,12 +224,34 @@ export const Viewport3D: React.FC = () => {
             modifyWallEnd(element.guid, isStart ? 'start' : 'end', newPt);
           }
         }
+      } else if (grip.kind === 'opening_offset') {
+        modifyOpeningOffset(element.guid, feet);
+      } else if (grip.kind === 'opening_width') {
+        modifyOpeningWidth(element.guid, feet);
+      } else if (grip.kind === 'opening_sill_height') {
+        modifyOpeningSillHeight(element.guid, feet);
+      } else if (grip.kind === 'level_elevation') {
+        moveLevel(element.guid, feet);
       }
       endDrag(true);
       activeDragGripRef.current = null;
       setLiveGripValue(null);
     }
-  }, [activeTool, wallStartPoint, wallCurrentPoint, createWall, setActiveTool, modifyWallHeight, modifyWallThickness, modifyWallEnd, endDrag]);
+  }, [
+    activeTool,
+    wallStartPoint,
+    wallCurrentPoint,
+    createWall,
+    setActiveTool,
+    modifyWallHeight,
+    modifyWallThickness,
+    modifyWallEnd,
+    modifyOpeningOffset,
+    modifyOpeningWidth,
+    modifyOpeningSillHeight,
+    moveLevel,
+    endDrag,
+  ]);
 
   const snapSegments = useMemo<SnapSegment[]>(() => {
     const segs: SnapSegment[] = [];
@@ -806,7 +835,11 @@ export const Viewport3D: React.FC = () => {
         raycaster.setFromCamera(mouse, cameraRef.current);
 
         let targetPoint: [number, number, number] | null = null;
-        if (grip.kind === 'wall_height') {
+        if (
+          grip.kind === 'wall_height' ||
+          grip.kind === 'opening_sill_height' ||
+          grip.kind === 'level_elevation'
+        ) {
           const camDir = new THREE.Vector3();
           cameraRef.current.getWorldDirection(camDir);
           const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
@@ -818,7 +851,9 @@ export const Viewport3D: React.FC = () => {
             targetPoint = [hitPt.x, hitPt.y, hitPt.z];
           }
         } else {
-          const baseZ = Number(element.start?.[2] ?? 0);
+          const baseZ = Number(
+            grip.worldPoint[2] ?? element.start?.[2] ?? element.elevation ?? 0
+          );
           const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -baseZ);
           const hitPt = new THREE.Vector3();
           if (raycaster.ray.intersectPlane(plane, hitPt)) {
@@ -827,7 +862,7 @@ export const Viewport3D: React.FC = () => {
         }
 
         if (targetPoint) {
-          const cmd = computeGripDragCommand(grip, targetPoint, element);
+          const cmd = computeGripDragCommand(grip, targetPoint, element, elements);
           if (cmd.action === 'modifyWallHeight') {
             modifyWallHeight(element.guid, cmd.params.height);
             setLiveGripValue({ label: 'Wall Height', value: cmd.params.height });
@@ -842,6 +877,25 @@ export const Viewport3D: React.FC = () => {
               const len = Math.hypot(cmd.params.point[0] - fixedPt[0], cmd.params.point[1] - fixedPt[1]);
               setLiveGripValue({ label: 'Wall Length', value: len });
             }
+          } else if (cmd.action === 'modifyOpeningOffset') {
+            modifyOpeningOffset(element.guid, cmd.params.offset);
+            setLiveGripValue({ label: 'Opening Position', value: cmd.params.offset });
+          } else if (cmd.action === 'modifyOpeningWidth') {
+            modifyOpeningWidth(element.guid, cmd.params.width);
+            setLiveGripValue({ label: 'Opening Width', value: cmd.params.width });
+          } else if (cmd.action === 'modifyOpeningSillHeight') {
+            modifyOpeningSillHeight(element.guid, cmd.params.sill_height);
+            setLiveGripValue({ label: 'Sill Height', value: cmd.params.sill_height });
+          } else if (cmd.action === 'flipOpening') {
+            flipOpening(element.guid);
+          } else if (cmd.action === 'modifyGridEndpoint') {
+            modifyGridEndpoint(element.guid, cmd.params.end, cmd.params.point);
+            setLiveGripValue({ label: 'Grid Length', value: cmd.previewValue });
+          } else if (cmd.action === 'modifyPolygonVertex') {
+            modifyPolygonVertex(element.guid, cmd.params.vertex_index, cmd.params.point);
+          } else if (cmd.action === 'moveLevel') {
+            moveLevel(element.guid, cmd.params.elevation);
+            setLiveGripValue({ label: 'Level Elevation', value: cmd.params.elevation });
           }
         }
       }
@@ -1136,7 +1190,8 @@ export const Viewport3D: React.FC = () => {
         return guidsToInspect.map((guid) => {
           const el = elements[guid];
           if (!el) return null;
-          const grips = gripsFor(el);
+          const hostWall = el.host_wall_guid ? elements[el.host_wall_guid] : undefined;
+          const grips = gripsFor(el, hostWall || elements);
           return grips.map((grip) => {
             const v = new THREE.Vector3(grip.worldPoint[0], grip.worldPoint[1], grip.worldPoint[2]);
             v.project(camera);
