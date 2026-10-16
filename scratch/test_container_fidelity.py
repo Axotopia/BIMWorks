@@ -251,8 +251,27 @@ def main():
           "lossy" in res3["load_report"].get("note", "").lower(),
           res3["load_report"].get("note"))
     upgraded = mgr3.save_orlt_project()
-    check("re-saving a legacy container upgrades it to v3",
+    check("re-saving a legacy container upgrades it to v4",
           overlay_of(upgraded)[0].get("schema_version") == OVERLAY_SCHEMA_VERSION)
+
+    # Verify schema v3 container loads as authoritative with normalized references (M5)
+    members["parametric.json"] = json.dumps({
+        "schema_version": 3,
+        "internal_units": "decimal_feet",
+        "constraints": {},
+        "elements": {},
+        "dimensions": [
+            {"id": "dim_v3", "ref_a": {"guid": "wall-1", "ref": "start"}, "ref_b": {"guid": "wall-1", "ref": "end"}, "value": 10.0}
+        ]
+    }).encode()
+    buf_v3 = io.BytesIO()
+    with zipfile.ZipFile(buf_v3, "w", zipfile.ZIP_DEFLATED) as z:
+        for n, data in members.items():
+            z.writestr(n, data)
+    mgr_v3 = BimModelManager()
+    res_v3 = mgr_v3.load_orlt_project(buf_v3.getvalue(), "v3_project.bimworks")
+    check("v3 container loads as authoritative", res_v3["overlay_authoritative"] is True)
+    check("v3 dimension reference normalized to canonical schema", mgr_v3.dimensions.get("dim_v3", {}).get("ref_a", {}).get("kind") == "wall_start")
 
     print("10. Section 9: save -> load -> save is overlay-stable ...")
     m_a, ids_a = scenario()

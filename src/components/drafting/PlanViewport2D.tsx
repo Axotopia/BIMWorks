@@ -131,6 +131,7 @@ export const PlanViewport2D: React.FC = () => {
     equalizeSouthWallWindows,
     setDimensionValue,
     createDimension,
+    toggleDimensionLock,
     activeTool,
     alignPickState,
     setAlignPickState,
@@ -1313,7 +1314,9 @@ export const PlanViewport2D: React.FC = () => {
                     className="cursor-pointer"
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (dimConstraint) {
+                      if (dim.id) {
+                        toggleDimensionLock(dim.id, !isLocked);
+                      } else if (dimConstraint) {
                         toggleConstraintLock(dimConstraint.id, !isLocked);
                       } else if (refAGuid && refBGuid) {
                         lockDimension(refAGuid, refBGuid, dim.length, (dim.axis as any) || 'x');

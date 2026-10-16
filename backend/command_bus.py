@@ -133,6 +133,28 @@ class DimensionCreateParams(BaseModel):
     is_locked: bool = Field(default=False, description="Whether dimension is locked as constraint")
     eq_group: Optional[str] = Field(default=None, description="Optional EQ group identifier")
     refs: Optional[List[Dict[str, Any]]] = Field(default=None, description="Optional ordered list of chained references")
+    binding: Literal["literal", "equal", "formula"] = Field(default="literal", description="Binding mode")
+    label: Optional[str] = Field(default=None, description="Optional parameter label")
+    eq_anchor: Optional[int] = Field(default=None, description="Optional anchor index for equal binding")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "dimensionId": "dimension_id",
+                "isLocked": "is_locked",
+                "eqGroup": "eq_group",
+                "eqAnchor": "eq_anchor",
+                "refA": "ref_a",
+                "refB": "ref_b",
+            }
+            res = dict(data)
+            for k_camel, k_snake in mapping.items():
+                if k_camel in res and k_snake not in res:
+                    res[k_snake] = res[k_camel]
+            return res
+        return data
 
 
 class DimensionValueSetParams(BaseModel):
@@ -838,6 +860,9 @@ class CommandBusEngine:
                 eq_group=p.eq_group,
                 dimension_id=p.dimension_id,
                 refs=p.refs,
+                binding=p.binding,
+                label=p.label,
+                eq_anchor=p.eq_anchor,
             )
             return {"status": "created", "dimension": dim, "dimension_id": dim["id"]}
 
@@ -862,7 +887,32 @@ class CommandBusEngine:
             if "segments" in dim:
                 for s in dim["segments"]:
                     s["locked"] = p.is_locked
+
+            cid = dim.get("constraint_id")
+            if p.is_locked:
+                if cid and cid in self.manager.constraints:
+                    self.manager.constraints[cid]["is_locked"] = True
+                    self.manager.constraints[cid]["locked_distance"] = float(dim.get("value", 0.0))
+                else:
+                    ref_a = dim.get("ref_a", {})
+                    ref_b = dim.get("ref_b", {})
+                    guid_a = ref_a.get("guid") or (ref_a.get("sources") and ref_a["sources"][0]["element_guid"])
+                    guid_b = ref_b.get("guid") or (ref_b.get("sources") and ref_b["sources"][0]["element_guid"])
+                    if guid_a and guid_b and guid_a != guid_b and guid_a in self.manager.element_meta and guid_b in self.manager.element_meta:
+                        c = self.manager.add_dimension_lock(
+                            guid_a=guid_a,
+                            guid_b=guid_b,
+                            locked_distance=float(dim.get("value", 0.0)),
+                            is_locked=True,
+                            axis=dim.get("axis", "x") if dim.get("axis") in ("x", "y") else "x",
+                        )
+                        dim["constraint_id"] = c.get("id")
+            else:
+                if cid and cid in self.manager.constraints:
+                    self.manager.constraints[cid]["is_locked"] = False
+
             self.manager.dimensions_rev += 1
+            self.manager.constraints_rev += 1
             self.manager.project_rev += 1
             return {"status": "updated", "dimension_id": p.dimension_id, "is_locked": p.is_locked}
 
@@ -1093,15 +1143,39 @@ class CommandBusEngine:
         elif cmd_name == "DimensionCreate":
             p: DimensionCreateParams = validated
             dim = self.manager.create_dimension(
-                ref_a=p.ref_a, ref_b=p.ref_b, kind=p.kind, axis=p.axis, offset=p.offset,
-                value=p.value, is_locked=p.is_locked, eq_group=p.eq_group,
-                dimension_id=p.dimension_id, refs=p.refs
+                ref_a=p.ref_a,
+                ref_b=p.ref_b,
+                kind=p.kind,
+                axis=p.axis,
+                offset=p.offset,
+                value=p.value,
+                is_locked=p.is_locked,
+                eq_group=p.eq_group,
+                dimension_id=p.dimension_id,
+                refs=p.refs,
+                binding=p.binding,
+                label=p.label,
+                eq_anchor=p.eq_anchor,
             )
             dim_id = dim["id"]
             def undo_fn(mgr):
                 mgr.delete_dimension(dim_id)
             def redo_fn(mgr):
-                mgr.create_dimension(ref_a=p.ref_a, ref_b=p.ref_b, kind=p.kind, axis=p.axis, offset=p.offset, value=p.value, is_locked=p.is_locked, eq_group=p.eq_group, dimension_id=dim_id, refs=p.refs)
+                mgr.create_dimension(
+                    ref_a=p.ref_a,
+                    ref_b=p.ref_b,
+                    kind=p.kind,
+                    axis=p.axis,
+                    offset=p.offset,
+                    value=p.value,
+                    is_locked=p.is_locked,
+                    eq_group=p.eq_group,
+                    dimension_id=dim_id,
+                    refs=p.refs,
+                    binding=p.binding,
+                    label=p.label,
+                    eq_anchor=p.eq_anchor,
+                )
             return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "created", "dimension": dim, "dimension_id": dim_id}
 
         elif cmd_name == "DimensionValueSet":
@@ -1132,6 +1206,12 @@ class CommandBusEngine:
             dim = self.manager.dimensions.get(p.dimension_id)
             prev_locked = dim.get("is_locked", False) if dim else False
             did = p.dimension_id
+            cid = dim.get("constraint_id") if dim else None
+            prev_constraint = copy.deepcopy(self.manager.constraints.get(cid)) if cid and cid in self.manager.constraints else None
+
+            res = self.execute_single_command(cmd_name, p.model_dump())
+
+            post_cid = self.manager.dimensions.get(did, {}).get("constraint_id")
             def undo_fn(mgr):
                 if did in mgr.dimensions:
                     mgr.dimensions[did]["is_locked"] = prev_locked
@@ -1139,16 +1219,36 @@ class CommandBusEngine:
                         for s in mgr.dimensions[did]["segments"]:
                             s["locked"] = prev_locked
                     mgr.dimensions_rev += 1
-                    mgr.project_rev += 1
+                if cid:
+                    if prev_constraint is not None:
+                        mgr.constraints[cid] = copy.deepcopy(prev_constraint)
+                    elif cid in mgr.constraints:
+                        del mgr.constraints[cid]
+                    mgr.constraints_rev += 1
+                elif post_cid and post_cid in mgr.constraints:
+                    del mgr.constraints[post_cid]
+                    if did in mgr.dimensions:
+                        mgr.dimensions[did]["constraint_id"] = None
+                    mgr.constraints_rev += 1
+                mgr.project_rev += 1
+
             def redo_fn(mgr):
                 if did in mgr.dimensions:
                     mgr.dimensions[did]["is_locked"] = p.is_locked
                     if "segments" in mgr.dimensions[did]:
                         for s in mgr.dimensions[did]["segments"]:
                             s["locked"] = p.is_locked
+                    target_cid = mgr.dimensions[did].get("constraint_id")
+                    if p.is_locked:
+                        if target_cid and target_cid in mgr.constraints:
+                            mgr.constraints[target_cid]["is_locked"] = True
+                    else:
+                        if target_cid and target_cid in mgr.constraints:
+                            mgr.constraints[target_cid]["is_locked"] = False
                     mgr.dimensions_rev += 1
+                    mgr.constraints_rev += 1
                     mgr.project_rev += 1
-            res = self.execute_single_command(cmd_name, p.model_dump())
+
             return CommandMemento(cmd_name, undo_fn, redo_fn), res
 
         elif cmd_name == "LevelMove":

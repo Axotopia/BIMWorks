@@ -211,7 +211,7 @@ class DependencyGraph:
                 self.manager.recompute_wall_joins(only=walls_to_fix)
 
         if "constraint" in kinds or not kinds:
-            # Re-resolve dimensions for affected nodes with constraint dependencies (Phase 3.4)
+            # Refresh dimension measurements for affected nodes
             for node in affected:
                 if hasattr(self.manager, "_re_resolve_dimensions_after_move"):
                     self.manager._re_resolve_dimensions_after_move(node)

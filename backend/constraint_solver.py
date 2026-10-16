@@ -43,6 +43,18 @@ from references import normalize_reference, reference_key, resolve_reference_axi
 
 try:
     from planegcs import Sketch, SolveStatus
+    if not hasattr(Sketch, "add_fixed_point"):
+        def _add_fixed_point(self, x: float, y: float):
+            pid = self.add_point(float(x), float(y))
+            self.fix_point(pid, float(x), float(y))
+            return pid
+        Sketch.add_fixed_point = _add_fixed_point
+
+    if not hasattr(Sketch, "set_p2p_distance"):
+        def _set_p2p_distance(self, p1: int, p2: int, dist: float):
+            param = self.add_param(float(dist))
+            return self.p2p_distance(p1, p2, param)
+        Sketch.set_p2p_distance = _set_p2p_distance
 except ImportError:  # pragma: no cover - surfaced by the caller as a clear error
     Sketch = None
     SolveStatus = None
@@ -102,6 +114,10 @@ class ConstraintSolver:
                 "planegcs is not installed; constraint solving is unavailable. "
                 "Install it with `pip install planegcs` (GPL-3.0)."
             )
+
+    @staticmethod
+    def _solver_available() -> bool:
+        return Sketch is not None
 
     def _position(self, guid: str, axis: str) -> Optional[float]:
         if guid not in self.manager.element_meta:
@@ -594,12 +610,20 @@ class ConstraintSolver:
         for i in range(len(keys) - 1):
             k1, k2 = keys[i], keys[i + 1]
             if k1 in ids and k2 in ids:
-                if i < len(segments) and segments[i].get("value") is not None:
+                if (
+                    i < len(segments)
+                    and segments[i] is not None
+                    and isinstance(segments[i], dict)
+                    and segments[i].get("value") is not None
+                ):
                     target_dist = float(segments[i]["value"])
                 else:
                     target_dist = float(dimension.get("value", 0.0))
-                if target_dist > 0:
-                    sketch.set_p2p_distance(ids[k1], ids[k2], target_dist)
+                if target_dist <= 0:
+                    return ConstraintSolve(
+                        axis=axis, status="failed", conflicting=["non_positive_target_distance"]
+                    )
+                sketch.set_p2p_distance(ids[k1], ids[k2], target_dist)
 
         # Include any other locked dimensions sharing these references
         overlapping_locked = []
@@ -608,7 +632,9 @@ class ConstraintSolver:
                 continue
             if other_dim.get("axis") not in (axis, "aligned"):
                 continue
-            is_locked = other_dim.get("is_locked") or any(s.get("locked") for s in other_dim.get("segments", []))
+            is_locked = other_dim.get("is_locked") or any(
+                s.get("locked") for s in (other_dim.get("segments") or []) if s is not None and isinstance(s, dict)
+            )
             if not is_locked:
                 continue
             o_refs = other_dim.get("refs") or [other_dim.get("ref_a"), other_dim.get("ref_b")]
@@ -632,7 +658,12 @@ class ConstraintSolver:
             for i in range(len(o_keys) - 1):
                 ok1, ok2 = o_keys[i], o_keys[i + 1]
                 if ok1 in ids and ok2 in ids:
-                    if i < len(o_segs) and o_segs[i].get("value") is not None:
+                    if (
+                        i < len(o_segs)
+                        and o_segs[i] is not None
+                        and isinstance(o_segs[i], dict)
+                        and o_segs[i].get("value") is not None
+                    ):
                         d_val = float(o_segs[i]["value"])
                     else:
                         d_val = float(other_dim.get("value", 0.0))
@@ -660,9 +691,11 @@ class ConstraintSolver:
             conflicting_dims = [did] + [od for od in overlapping_locked if od != did]
             resolutions = [
                 {"kind": "unlock_dimension", "dimension_id": did, "segment_index": 0},
-                {"kind": "unlabel", "dimension_id": did},
-                {"kind": "release_eq", "dimension_id": did},
             ]
+            if dimension.get("label"):
+                resolutions.append({"kind": "unlabel", "dimension_id": did})
+            if dimension.get("binding") == "equal" or dimension.get("eq_group"):
+                resolutions.append({"kind": "release_eq", "dimension_id": did})
             for od in overlapping_locked:
                 resolutions.append({"kind": "unlock_dimension", "dimension_id": od, "segment_index": 0})
             conflict_info = {
@@ -680,6 +713,10 @@ class ConstraintSolver:
                 coordinates=dict(coords),
                 pinned=pins,
             )
+
+        # On success, clear any previous conflict
+        if hasattr(self.manager, "last_constraint_conflict"):
+            self.manager.last_constraint_conflict = None
 
         out: Dict[str, float] = {}
         for k, pid in ids.items():

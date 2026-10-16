@@ -12,6 +12,8 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 function getPythonPath() {
   const venvWin = join(ROOT, '.venv', 'Scripts', 'python.exe');
   if (existsSync(venvWin)) return venvWin;
+  const venvWinConda = join(ROOT, '.venv', 'python.exe');
+  if (existsSync(venvWinConda)) return venvWinConda;
   const venvUnix = join(ROOT, '.venv', 'bin', 'python');
   if (existsSync(venvUnix)) return venvUnix;
   return process.platform === 'win32' ? 'python' : 'python3';

@@ -716,6 +716,17 @@ def get_constraint_conflict():
     return getattr(bim_manager, "last_constraint_conflict", None)
 
 
+@app.get("/health")
+@app.get("/api/health")
+def get_health():
+    """Returns health status including solver availability (L3 / Phase 0.3 / §5)."""
+    from constraint_solver import ConstraintSolver
+    return {
+        "status": "healthy",
+        "solver_available": ConstraintSolver._solver_available(),
+    }
+
+
 @app.post("/api/constraints/align")
 def create_align_constraint(req: AlignRequest):
     """Compatibility shim for ConstraintAlign (bus-backed, journaled)."""

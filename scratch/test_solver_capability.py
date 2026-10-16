@@ -25,10 +25,11 @@ def check(label, condition, detail=""):
 def main():
     print("=== RUNNING SOLVER CAPABILITY INVENTORY (GATE 0) ===")
 
-    # 1. Import planegcs
+    # 1. Import planegcs and constraint_solver
     try:
         import planegcs
-        from planegcs import Sketch, SolveStatus
+        import constraint_solver
+        from constraint_solver import Sketch, SolveStatus
         planegcs_available = True
     except ImportError as e:
         planegcs_available = False

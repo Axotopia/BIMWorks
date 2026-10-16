@@ -19,6 +19,7 @@ import sys
 import os
 import math
 import tempfile
+import copy
 
 sys.path.insert(0, os.path.abspath("backend"))
 
@@ -315,7 +316,7 @@ def run_tests():
 
     # Translate w_p2b by +5.0 in Y
     mgr.translate_element(w_p2b["guid"], 0.0, 5.0, 0.0)
-    check("dim_p2 reports repaired after witness moves", dim_p2.get("status") == "repaired")
+    check("dim_p2 reports exact status after witness moves", dim_p2.get("status") == "exact")
     check("dim_p2 value updated to 15.0 (not a wrong number)", abs(dim_p2["value"] - 15.0) < 1e-4)
 
     # 17b. Delete referenced element: reference resolution yields 'lost', never (0.0, 0.0)
@@ -439,6 +440,80 @@ def run_tests():
     check("undo restores unlocked state", mgr.dimensions[dim_oc2["id"]].get("is_locked") is False)
     engine.redo()
     check("redo restores locked state", mgr.dimensions[dim_oc2["id"]].get("is_locked") is True)
+
+    # 19f. H1: Same-wall reference pairs (not length dimensions) round-trip without corrupting wall length
+    w_h1 = mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], height=10.0, thickness=0.5)
+    dim_sc = mgr.add_dimension([
+        {"kind": "wall_start", "sources": [{"element_guid": w_h1["guid"], "ordinal": 0}]},
+        {"kind": "wall_center", "sources": [{"element_guid": w_h1["guid"], "ordinal": 0}]},
+    ], axis="x")
+    check("start<->center dimension initial value is 5.0", abs(mgr.resolve_dimension(dim_sc["id"]) - 5.0) < 1e-4)
+    res_sc = mgr.set_dimension_value(dim_sc["id"], 3.0)
+    check("start<->center set_dimension_value succeeds", res_sc.get("status") == "updated")
+    check("start<->center resolve_dimension returns 3.0 ft", abs(mgr.resolve_dimension(dim_sc["id"]) - 3.0) < 1e-4)
+    check("start<->center resized wall length to 6.0 ft (not forced to 3.0 ft)", abs(mgr.element_meta[w_h1["guid"]]["length"] - 6.0) < 1e-4)
+
+    # 19g. H2: DimensionLockToggle synchronizes with self.constraints (releases lock)
+    dim_locked_h2 = mgr.create_dimension(
+        ref_a={"guid": w_oc1["guid"], "ref": "start"},
+        ref_b={"guid": w_oc2["guid"], "ref": "end"},
+        axis="x",
+        is_locked=True,
+    )
+    cid_h2 = dim_locked_h2.get("constraint_id")
+    check("locked dimension created constraint_id", cid_h2 is not None and cid_h2 in mgr.constraints)
+    check("constraint is active and locked", mgr.constraints[cid_h2].get("is_locked") is True)
+    engine.execute_single_command("DimensionLockToggle", {"dimension_id": dim_locked_h2["id"], "is_locked": False})
+    check("dim['is_locked'] toggled to False", mgr.dimensions[dim_locked_h2["id"]].get("is_locked") is False)
+    check("constraints[cid]['is_locked'] toggled to False (released)", mgr.constraints[cid_h2].get("is_locked") is False)
+    engine.execute_single_command("DimensionLockToggle", {"dimension_id": dim_locked_h2["id"], "is_locked": True})
+    check("constraints[cid]['is_locked'] restored to True", mgr.constraints[cid_h2].get("is_locked") is True)
+
+    # 19h. H3: Dimension from wall to level_plane drives level elevation and round-trips
+    w_h3 = mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0])
+    lvl_h3 = mgr.add_level("Level H3", elevation=0.0)
+    dim_lvl = mgr.create_dimension(
+        ref_a={"kind": "wall_start", "sources": [{"element_guid": w_h3["guid"], "ordinal": 0}]},
+        ref_b={"kind": "level_plane", "sources": [{"element_guid": lvl_h3, "ordinal": 0}]},
+        axis="z",
+    )
+    check("initial level dimension value is 0.0", abs(mgr.resolve_dimension(dim_lvl["id"]) - 0.0) < 1e-4)
+    res_lvl = mgr.set_dimension_value(dim_lvl["id"], 25.0)
+    check("level dimension set to 25.0 updated", res_lvl.get("status") == "updated")
+    check("level elevation is 25.0 ft", abs(float(mgr.levels[lvl_h3]["elevation"]) - 25.0) < 1e-4)
+    check("resolve_dimension to level returns 25.0 ft", abs(mgr.resolve_dimension(dim_lvl["id"]) - 25.0) < 1e-4)
+    check("dim['value'] recorded as 25.0 ft", abs(mgr.dimensions[dim_lvl["id"]]["value"] - 25.0) < 1e-4)
+
+    # 19i. H4: Failed solve refusal does not mutate dim['value']
+    dim_fail = copy.deepcopy(dim_g3_len)
+    dim_fail["id"] = "dim_test_fail"
+    dim_fail["ref_b"] = {"kind": "wall_end", "sources": [{"element_guid": "non_existent_wall", "ordinal": 0}]}
+    mgr.dimensions[dim_fail["id"]] = dim_fail
+    res_fail = mgr.set_dimension_value("dim_test_fail", 99.0)
+    check("failed solve returns error or failed status", res_fail.get("status") in ("error", "failed", "conflict"))
+    check("failed solve does not mutate dimension value to 99.0", mgr.dimensions["dim_test_fail"].get("value") != 99.0)
+
+    # 19j. M1: Valid set_dimension_value clears last_constraint_conflict
+    mgr.set_dimension_value(dim_oc2["id"], 30.0)
+    check("conflict populated after over-constraint", mgr.last_constraint_conflict is not None)
+    mgr.set_dimension_value(dim_g3_len["id"], 14.0)
+    check("valid set_dimension_value clears last_constraint_conflict to None", mgr.last_constraint_conflict is None)
+
+    # 19k. Section 7 variations: Axis 'y' and shrink
+    w_y = mgr.add_wall([0.0, 0.0, 0.0], [0.0, 10.0, 0.0], height=10.0, thickness=0.5)
+    dim_y = mgr.add_dimension([
+        {"kind": "wall_start", "sources": [{"element_guid": w_y["guid"], "ordinal": 0}]},
+        {"kind": "wall_end", "sources": [{"element_guid": w_y["guid"], "ordinal": 0}]},
+    ], axis="y")
+    check("y-axis dimension initial length is 10.0", abs(mgr.resolve_dimension(dim_y["id"]) - 10.0) < 1e-4)
+    mgr.set_dimension_value(dim_y["id"], 4.0, anchor="start")
+    check("y-axis wall length set to 4.0 ft", abs(mgr.element_meta[w_y["guid"]]["length"] - 4.0) < 1e-4)
+    check("y-axis resolve_dimension returns 4.0 ft", abs(mgr.resolve_dimension(dim_y["id"]) - 4.0) < 1e-4)
+
+    # Shrink variation (14.0 -> 8.0 ft)
+    mgr.set_dimension_value(dim_g3_len["id"], 8.0, anchor="start")
+    check("wall length shrinks to 8.0 ft", abs(mgr.element_meta[w_g3["guid"]]["length"] - 8.0) < 1e-4)
+    check("resolve_dimension returns 8.0 ft on shrink", abs(mgr.resolve_dimension(dim_g3_len["id"]) - 8.0) < 1e-4)
 
     print(f"\nRESULTS: {passed} passed, {failed} failed")
     if failed > 0:

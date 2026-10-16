@@ -1582,6 +1582,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         endGuid = sorted[sorted.length - 1];
         interiorGuids = sorted.slice(1, -1);
       } else {
+        set({ statusMessage: 'Cannot equalize: South wall requires at least 3 elements to distribute' });
         return;
       }
     }
@@ -2728,6 +2729,11 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       }
 
       const data = await res.json();
+      if (data?.conflict) {
+        const c = data.conflict;
+        const msg = `Constraint Conflict on ${c.axis || 'solve'} axis: ${c.constraints?.length || 0} conflicting constraints.`;
+        set({ statusMessage: msg });
+      }
       // View state is refreshed from the engine after every commit; the store
       // holds no independent model state. This is ONE round trip: the previous
       // sequence issued seven serial requests and fetched /api/constraints twice.
