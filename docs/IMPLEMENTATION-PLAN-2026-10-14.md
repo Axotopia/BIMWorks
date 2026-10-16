@@ -1,7 +1,7 @@
 # BIMWorks — Updated Implementation Plan (2026-10-14)
 
 **Supersedes:** the M0–M5 sequencing in `README.md` §8 (roadmap content remains valid; the *order and entry criteria* change).
-**Inputs:** Master spec v2.3 (`README.md`), the 2026-10-13 working session (BIMWorks.20261013), and the full code review of 2026-10-14 (`review/REVIEW_file-format-architecture_2026-10-14.md`).
+**Inputs:** Master spec v2.3 (`README.md`), the 2026-10-13 working session (BIMWorks.20261013), and the full code review of 2026-10-14 (`review/archive/REVIEW_file-format-architecture_2026-10-14.md`).
 
 ---
 
@@ -446,6 +446,6 @@ Flagged as blocked on that basis. Unblocking it requires one of: a reviewer conf
 
 ---
 
-*Plan authored 2026-10-14 from: full code review (`review/REVIEW_file-format-architecture_2026-10-14.md`), master spec v2.3 (`README.md`), and session BIMWorks.20261013 (decision record + handoff state). Every "current behavior" claim above is line-cited in the review document.*
+*Plan authored 2026-10-14 from: full code review (`review/archive/REVIEW_file-format-architecture_2026-10-14.md`), master spec v2.3 (`README.md`), and session BIMWorks.20261013 (decision record + handoff state). Every "current behavior" claim above is line-cited in the review document.*
 *Revised 2026-10-14 after merge `1183617`: §0.1 re-verifies all findings against the merged tree and adds N13–N16; P0 status, P1 scope, P2 item 9, P4 scope note and the risk register were updated accordingly. Later readers: re-run §0.1's checks before trusting any finding above.*
 

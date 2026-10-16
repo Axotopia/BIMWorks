@@ -1,13 +1,13 @@
 # BIMWorks — Implementation Plan: modelediting that feels like Revit
 
-**Supersedes for execution purposes:** `review/CHANGE-PLAN-revit-parity.md` (the analysis). This is the
+**Supersedes for execution purposes:** `review/archive/CHANGE-PLAN-revit-parity.md` (the analysis). This is the
 plan that acts on it.
 **Branch:** `gemini` @ `318ce26`, executed on `main` through `e3216fe`. **Companion audits:** the four
 under `review/AUDIT-*-vs-revit.md`.
 
 > ## ✅ AUDITED & RECONCILED STATUS (ROUND 4)
 >
-> **Audit Status:** The core backend regressions, blocking bugs, and code defects documented in [`review/HANDOFF-revitUI-plan-verification.md`](HANDOFF-revitUI-plan-verification.md)
+> **Audit Status:** The core backend regressions, blocking bugs, and code defects documented in [`review/archive/HANDOFF-revitUI-plan-verification.md`](archive/HANDOFF-revitUI-plan-verification.md)
 > (Bugs A, B, C1, C2, §2.1 intra-wall EQ redistribution, §2.7 multi-sheet batch-PDF serialization, §2.10 `constraints_rev` bump, pure-Python constraint solver fallback tested with `Sketch is None`, scale gate budget threshold & stale note, and snapEngine docstring & candidate coverage) have been verified across gates.
 > §19 budget status is explicitly stated: $N \le 100$ meets the 16 ms budget; $N \approx 200$ (~16.3 ms under load) is protected by the 30.0 ms anti-regression guard against the 80+ ms global join baseline.
 > Deferred UI-level features (§2.2 grid dimension edit, §2.3 interactive `DI` tool, §2.6 non-wall real-ref temporary dimensions, §2.8 interactive endpoint grips, and §2.9 element-specific contextual ribbon tools) are explicitly classified as `⬜ PARTIAL` in the task matrix below.
@@ -36,7 +36,7 @@ under `review/AUDIT-*-vs-revit.md`.
 
 Written to be read cold by a session that has none of the context above. **Re-verify the measurements
 before trusting them** — this project's own history is that a hand-maintained status block decays in
-about a day (§4.4 of `CHANGE-PLAN-revit-parity.md`).
+about a day (§4.4 of `archive/CHANGE-PLAN-revit-parity.md`).
 
 ### 0a.1 What was verified working, and by which gate
 
