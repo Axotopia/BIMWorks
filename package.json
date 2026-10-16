@@ -12,7 +12,8 @@
     "check:ui": "node scripts/check-ui-p0.mjs",
     "check:state": "node scripts/check-state-bundle.mjs",
     "check:delta": "node scripts/check-delta-equivalence.mjs",
-    "check": "npm run check:bus && npm run check:ui && npm run check:state && npm run check:delta && tsc --noEmit",
+    "check:snap": "node scripts/check-snap-engine.mjs",
+    "check": "npm run check:bus && npm run check:ui && npm run check:state && npm run check:delta && npm run check:snap && tsc --noEmit",
     "diagnose": "node scripts/diagnose-blank-page.mjs"
   },
   "bugs": {

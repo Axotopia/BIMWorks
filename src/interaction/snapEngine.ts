@@ -7,6 +7,7 @@
  *    - 'endpoint' (Square □)
  *    - 'midpoint' (Triangle △)
  *    - 'perpendicular' (Right-angle ⦜)
+ *    - 'extension' (Collinear Extension ⤏)
  *    - 'grid' (Diamond ◇)
  * 2. Window vs Crossing selection box containment helpers.
  */
@@ -96,7 +97,8 @@ export function distToSegment(
  * 2. Endpoint
  * 3. Midpoint
  * 4. Perpendicular / Orthogonal
- * 5. Grid
+ * 5. Extension
+ * 6. Grid
  */
 export function findSnapCandidate(
   cursor: [number, number],
