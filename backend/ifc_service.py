@@ -3433,8 +3433,8 @@ class BimModelManager:
         meta = self.element_meta[guid]
         if meta.get("ifc_class") not in ("IfcWall", "IfcWallStandardCase"):
             raise ValueError(f"Element {guid} is not a wall (is {meta.get('ifc_class')})")
-        if height <= 0:
-            raise ValueError(f"Wall height must be positive, got {height}")
+        from validity import validate_wall_height
+        validate_wall_height(height)
         return self.update_element(guid, {"height": float(height)})
 
     def set_wall_thickness(self, guid: str, thickness: float) -> Dict[str, Any]:
@@ -3444,11 +3444,11 @@ class BimModelManager:
         meta = self.element_meta[guid]
         if meta.get("ifc_class") not in ("IfcWall", "IfcWallStandardCase"):
             raise ValueError(f"Element {guid} is not a wall (is {meta.get('ifc_class')})")
-        if thickness <= 0:
-            raise ValueError(f"Wall thickness must be positive, got {thickness}")
+        from validity import validate_thickness
+        validate_thickness(thickness)
         return self.update_element(guid, {"thickness": float(thickness)})
 
-    def set_wall_end(self, guid: str, end: str, point: Any) -> Dict[str, Any]:
+    def set_wall_end(self, guid: str, end: str, point: Any, clamp: bool = False) -> Dict[str, Any]:
         """Sets start or end point of a wall baseline and updates joins & openings."""
         if guid not in self.element_meta:
             raise KeyError(f"Wall {guid} not found")
@@ -3457,24 +3457,46 @@ class BimModelManager:
             raise ValueError(f"Element {guid} is not a wall (is {meta.get('ifc_class')})")
         if end not in ("start", "end"):
             raise ValueError(f"Invalid end '{end}', expected 'start' or 'end'")
+
+        from validity import validate_finite_point, clamp_wall_end, validate_wall_length_for_openings
+        validate_finite_point(point, f"Wall {end}")
+
         existing = meta.get(end, [0.0, 0.0, 0.0])
         z = existing[2] if len(existing) > 2 else 0.0
-        pt = [float(point[0]), float(point[1]), float(point[2]) if len(point) > 2 else z]
+        raw_pt = [float(point[0]), float(point[1]), float(point[2]) if len(point) > 2 else z]
         other_key = "end" if end == "start" else "start"
         other_pt = meta.get(other_key)
-        if other_pt and math.hypot(pt[0] - other_pt[0], pt[1] - other_pt[1]) < 0.001:
-            raise ValueError(f"Wall {guid} length cannot be zero")
+
+        if clamp:
+            clamped_2d, expl = clamp_wall_end(self, guid, end, raw_pt)
+            pt = [clamped_2d[0], clamped_2d[1], raw_pt[2]]
+        else:
+            pt = raw_pt
+            if other_pt:
+                proposed_len = math.hypot(pt[0] - other_pt[0], pt[1] - other_pt[1])
+                if proposed_len < 0.001:
+                    raise ValueError(f"Wall {guid} length cannot be zero")
+                validate_wall_length_for_openings(self, guid, proposed_len)
+
         return self.update_element(guid, {end: pt})
 
-    def set_opening_offset(self, guid: str, offset: float) -> Dict[str, Any]:
+    def set_opening_offset(self, guid: str, offset: float, clamp: bool = False) -> Dict[str, Any]:
         """Sets offset_along_wall for a hosted opening (door/window)."""
         if guid not in self.element_meta:
             raise KeyError(f"Opening {guid} not found")
         meta = self.element_meta[guid]
         if meta.get("ifc_class") not in ("IfcDoor", "IfcWindow"):
             raise ValueError(f"Element {guid} is not an opening (is {meta.get('ifc_class')})")
-        if offset < 0:
-            raise ValueError(f"Opening offset cannot be negative, got {offset}")
+
+        from validity import validate_opening_placement, clamp_opening_offset
+        host_guid = meta.get("host_wall_guid")
+        width = float(meta.get("width", 3.0))
+        if host_guid and clamp:
+            clamped_off, expl = clamp_opening_offset(self, host_guid, offset, width)
+            offset = clamped_off
+        elif host_guid:
+            validate_opening_placement(self, host_guid, offset, width)
+
         return self.update_element(guid, {"offset_along_wall": float(offset)})
 
     def set_opening_width(self, guid: str, width: float) -> Dict[str, Any]:
@@ -3484,8 +3506,11 @@ class BimModelManager:
         meta = self.element_meta[guid]
         if meta.get("ifc_class") not in ("IfcDoor", "IfcWindow"):
             raise ValueError(f"Element {guid} is not an opening (is {meta.get('ifc_class')})")
-        if width <= 0:
-            raise ValueError(f"Opening width must be positive, got {width}")
+        from validity import validate_opening_placement
+        host_guid = meta.get("host_wall_guid")
+        offset = float(meta.get("offset_along_wall", 0.0))
+        if host_guid:
+            validate_opening_placement(self, host_guid, offset, width)
         return self.update_element(guid, {"width": float(width)})
 
     def set_opening_sill_height(self, guid: str, sill_height: float) -> Dict[str, Any]:
@@ -3518,6 +3543,8 @@ class BimModelManager:
             raise ValueError(f"Element {guid} is not an IfcGrid (is {meta.get('ifc_class')})")
         if end not in ("start", "end"):
             raise ValueError(f"Invalid end '{end}', expected 'start' or 'end'")
+        from validity import validate_finite_point
+        validate_finite_point(point, f"Grid {end}")
         pt = [float(point[0]), float(point[1])]
         other_key = "end" if end == "start" else "start"
         other_pt = meta.get(other_key)
@@ -3540,11 +3567,14 @@ class BimModelManager:
         meta = self.element_meta[guid]
         if meta.get("ifc_class") not in ("IfcSlab", "IfcRoof"):
             raise ValueError(f"Element {guid} is not a slab or roof (is {meta.get('ifc_class')})")
+        from validity import validate_finite_point, validate_polygon_footprint
+        validate_finite_point(point, "Vertex point")
         poly = [list(p) for p in meta.get("polygon", [])]
         if vertex_index < 0 or vertex_index >= len(poly):
             raise IndexError(f"Vertex index {vertex_index} out of range (polygon has {len(poly)} vertices)")
         new_pt = [float(point[0]), float(point[1])]
         poly[vertex_index] = new_pt
+        validate_polygon_footprint(poly, f"{meta.get('ifc_class')} Footprint")
         return self.update_element(guid, {"polygon": poly})
 
     # =========================================================================

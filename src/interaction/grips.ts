@@ -411,6 +411,7 @@ export function computeGripDragCommand(
           guid: grip.elementGuid,
           end: 'start',
           point: finalPt,
+          clamp: true,
         },
         previewValue: clampedDist,
       };
@@ -434,6 +435,7 @@ export function computeGripDragCommand(
           guid: grip.elementGuid,
           end: 'end',
           point: finalPt,
+          clamp: true,
         },
         previewValue: clampedDist,
       };
@@ -511,6 +513,7 @@ export function computeGripDragCommand(
         params: {
           guid: grip.elementGuid,
           offset: Number(clampedOffset.toFixed(3)),
+          clamp: true,
         },
         previewValue: clampedOffset,
       };

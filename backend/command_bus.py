@@ -447,11 +447,13 @@ class WallSetEndParams(BaseModel):
     guid: str = Field(..., description="Target wall GUID")
     end: Literal["start", "end"] = Field(..., description="Which endpoint to modify ('start' or 'end')")
     point: List[float] = Field(..., min_length=2, max_length=3, description="New endpoint coordinates [x, y] or [x, y, z]")
+    clamp: bool = Field(default=False, description="Whether to clamp to safe bounds fitting hosted openings")
 
 
 class OpeningSetOffsetParams(BaseModel):
     guid: str = Field(..., description="Target opening GUID")
     offset: float = Field(..., ge=0.0, description="New offset along wall in feet (>= 0)")
+    clamp: bool = Field(default=False, description="Whether to clamp to safe bounds within host wall")
 
 
 class OpeningSetWidthParams(BaseModel):
@@ -639,13 +641,15 @@ class CommandBusEngine:
 
         elif cmd_name == "WallSetEnd":
             p: WallSetEndParams = validated
-            res = self.manager.set_wall_end(p.guid, p.end, p.point)
-            return {"status": "updated", "guid": p.guid, "end": p.end, "point": p.point, "element": res}
+            res = self.manager.set_wall_end(p.guid, p.end, p.point, clamp=p.clamp)
+            final_pt = res.get(p.end, p.point)
+            return {"status": "updated", "guid": p.guid, "end": p.end, "point": final_pt, "element": res}
 
         elif cmd_name == "OpeningSetOffset":
             p: OpeningSetOffsetParams = validated
-            res = self.manager.set_opening_offset(p.guid, p.offset)
-            return {"status": "updated", "guid": p.guid, "offset": p.offset, "element": res}
+            res = self.manager.set_opening_offset(p.guid, p.offset, clamp=p.clamp)
+            final_off = float(res.get("offset_along_wall", p.offset))
+            return {"status": "updated", "guid": p.guid, "offset": final_off, "element": res}
 
         elif cmd_name == "OpeningSetWidth":
             p: OpeningSetWidthParams = validated
@@ -1160,13 +1164,13 @@ class CommandBusEngine:
             if not meta:
                 raise KeyError(f"Wall {p.guid} not found")
             old_pt = list(meta.get(p.end, [0.0, 0.0, 0.0]))
-            new_pt = list(p.point)
-            res = self.manager.set_wall_end(p.guid, p.end, new_pt)
+            res = self.manager.set_wall_end(p.guid, p.end, p.point, clamp=p.clamp)
+            final_pt = res.get(p.end, p.point)
             def undo_fn(mgr):
-                mgr.set_wall_end(p.guid, p.end, old_pt)
+                mgr.set_wall_end(p.guid, p.end, old_pt, clamp=False)
             def redo_fn(mgr):
-                mgr.set_wall_end(p.guid, p.end, new_pt)
-            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "end": p.end, "point": new_pt, "element": res}
+                mgr.set_wall_end(p.guid, p.end, final_pt, clamp=False)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "end": p.end, "point": final_pt, "element": res}
 
         elif cmd_name == "OpeningSetOffset":
             p: OpeningSetOffsetParams = validated
@@ -1174,13 +1178,13 @@ class CommandBusEngine:
             if not meta:
                 raise KeyError(f"Opening {p.guid} not found")
             old_off = float(meta.get("offset_along_wall", 0.0))
-            new_off = float(p.offset)
-            res = self.manager.set_opening_offset(p.guid, new_off)
+            res = self.manager.set_opening_offset(p.guid, p.offset, clamp=p.clamp)
+            final_off = float(res.get("offset_along_wall", p.offset))
             def undo_fn(mgr):
-                mgr.set_opening_offset(p.guid, old_off)
+                mgr.set_opening_offset(p.guid, old_off, clamp=False)
             def redo_fn(mgr):
-                mgr.set_opening_offset(p.guid, new_off)
-            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "offset": new_off, "element": res}
+                mgr.set_opening_offset(p.guid, final_off, clamp=False)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "offset": final_off, "element": res}
 
         elif cmd_name == "OpeningSetWidth":
             p: OpeningSetWidthParams = validated

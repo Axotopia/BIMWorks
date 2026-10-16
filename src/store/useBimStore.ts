@@ -651,8 +651,8 @@ interface BimStoreState {
   translateElement: (guid: string, dx: number, dy: number, dz?: number) => Promise<void>;
   modifyWallHeight: (guid: string, height: number) => Promise<void>;
   modifyWallThickness: (guid: string, thickness: number) => Promise<void>;
-  modifyWallEnd: (guid: string, end: 'start' | 'end', point: [number, number] | [number, number, number]) => Promise<void>;
-  modifyOpeningOffset: (guid: string, offset: number) => Promise<void>;
+  modifyWallEnd: (guid: string, end: 'start' | 'end', point: [number, number] | [number, number, number], clamp?: boolean) => Promise<void>;
+  modifyOpeningOffset: (guid: string, offset: number, clamp?: boolean) => Promise<void>;
   modifyOpeningWidth: (guid: string, width: number) => Promise<void>;
   modifyOpeningSillHeight: (guid: string, sillHeight: number) => Promise<void>;
   flipOpening: (guid: string) => Promise<void>;
@@ -2285,18 +2285,18 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     }
   },
 
-  modifyWallEnd: async (guid: string, end: 'start' | 'end', point: [number, number] | [number, number, number]) => {
+  modifyWallEnd: async (guid: string, end: 'start' | 'end', point: [number, number] | [number, number, number], clamp?: boolean) => {
     try {
-      await get().dispatchTransaction('modifyWallEnd', { guid, end, point }, 'Modify wall endpoint');
+      await get().dispatchTransaction('modifyWallEnd', { guid, end, point, ...(clamp !== undefined ? { clamp } : {}) }, 'Modify wall endpoint');
     } catch (e) {
       set({ statusMessage: `Modify wall end failed: ${failureMessage(e)}` });
       console.error('Failed to modify wall end', e);
     }
   },
 
-  modifyOpeningOffset: async (guid: string, offset: number) => {
+  modifyOpeningOffset: async (guid: string, offset: number, clamp?: boolean) => {
     try {
-      await get().dispatchTransaction('modifyOpeningOffset', { guid, offset }, 'Modify opening offset');
+      await get().dispatchTransaction('modifyOpeningOffset', { guid, offset, ...(clamp !== undefined ? { clamp } : {}) }, 'Modify opening offset');
     } catch (e) {
       set({ statusMessage: `Modify opening offset failed: ${failureMessage(e)}` });
       console.error('Failed to modify opening offset', e);

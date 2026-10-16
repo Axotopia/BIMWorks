@@ -248,6 +248,7 @@ class Sketch:
             current_point = self.curves[current_index].start
             first_point = current_point
             guard = 0
+            is_closed_loop = False
             while True:
                 guard += 1
                 if guard > len(self.curves) + 2:
@@ -259,13 +260,14 @@ class Sketch:
                     curve.end if _dist(curve.start, current_point) <= self.tolerance else curve.start
                 )
                 if _dist(next_point, first_point) <= self.tolerance and len(ring) >= 3:
+                    is_closed_loop = True
                     break
                 candidates = neighbours(next_point, current_index)
                 if not candidates:
                     break
                 current_index = candidates[0]
                 current_point = next_point
-            if len(ring) >= 3:
+            if is_closed_loop and len(ring) >= 3:
                 loops.append(ring)
             unused.discard(start_index)
         return loops

@@ -870,7 +870,7 @@ export const Viewport3D: React.FC = () => {
             modifyWallThickness(element.guid, cmd.params.thickness);
             setLiveGripValue({ label: 'Wall Thickness', value: cmd.params.thickness });
           } else if (cmd.action === 'modifyWallEnd') {
-            modifyWallEnd(element.guid, cmd.params.end, cmd.params.point);
+            modifyWallEnd(element.guid, cmd.params.end, cmd.params.point, cmd.params.clamp);
             const isStart = cmd.params.end === 'start';
             const fixedPt = isStart ? element.end : element.start;
             if (fixedPt) {
@@ -878,7 +878,7 @@ export const Viewport3D: React.FC = () => {
               setLiveGripValue({ label: 'Wall Length', value: len });
             }
           } else if (cmd.action === 'modifyOpeningOffset') {
-            modifyOpeningOffset(element.guid, cmd.params.offset);
+            modifyOpeningOffset(element.guid, cmd.params.offset, cmd.params.clamp);
             setLiveGripValue({ label: 'Opening Position', value: cmd.params.offset });
           } else if (cmd.action === 'modifyOpeningWidth') {
             modifyOpeningWidth(element.guid, cmd.params.width);
