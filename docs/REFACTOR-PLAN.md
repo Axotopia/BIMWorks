@@ -1,7 +1,7 @@
 # BIMWorks — Refactor Plan
 
 **Objective owner:** this document. **Rules of engagement:** [`GEMINI.md`](../GEMINI.md).
-**Normative contract:** [`docs/SPECIFICATION-v0.2.md`](SPECIFICATION-v0.2.md).
+**Normative contract:** [`docs/SPECIFICATION-v0.3.md`](SPECIFICATION-v0.3.md) — which incorporates v0.2 by reference and lists its deltas in §0.3.
 **Sequencing context:** [`docs/IMPLEMENTATION-PLAN-2026-10-14.md`](IMPLEMENTATION-PLAN-2026-10-14.md).
 
 ---

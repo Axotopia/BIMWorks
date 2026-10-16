@@ -32,13 +32,15 @@ through the same interface as the ribbon.
 
 ## Where to read what
 
-Four documents, four distinct jobs. **Read the right one** — conflating them is how this file
-previously went wrong.
+Each document has one job. **Read the right one** — conflating them is how this file previously went
+wrong.
 
 | File | Job | Authority |
 |---|---|---|
-| [`docs/SPECIFICATION-v0.2.md`](docs/SPECIFICATION-v0.2.md) | **What BIMWorks must be.** Interfaces, invariants, acceptance criteria, verified against the code. | **Normative** |
+| [`docs/SPECIFICATION-v0.3.md`](docs/SPECIFICATION-v0.3.md) | **What BIMWorks must be.** The current contract. It incorporates v0.2 by reference and lists every delta in its §0.3. | **Normative** |
+| [`docs/REFACTOR-PLAN.md`](docs/REFACTOR-PLAN.md) | **The work in flight** — the delta-protocol refactor. Baseline protocol, D1–D9, exact gate commands, and the traps. Rules of engagement: [`GEMINI.md`](GEMINI.md). | Contract |
 | [`docs/IMPLEMENTATION-PLAN-2026-10-14.md`](docs/IMPLEMENTATION-PLAN-2026-10-14.md) | **When and in what order.** P0–P7, status tables, risk register. | Sequencing |
+| [`review/`](review/) | **Where we are heading** — the forward plans (`dimension-as-control`, `geometric-references`, `direct-manipulation`, `revit-feel`) and the measured `AUDIT-*-vs-revit.md` evidence. Superseded material is in `review/archive/`. | Plans and evidence |
 | [`docs/SPEC.md`](docs/SPEC.md) | **Why.** Master specification v2.3 — research rationale, Revit/IFC ground truth, sourced quotations. | Non-normative |
 | `README.md` (this) | Orientation and how to run it. | Non-normative |
 
@@ -138,16 +140,22 @@ OS — or built on a different CPU — fails to load them and Vite never serves 
 ### Gates — run these before committing
 
 ```bash
-npm run check           # bus parity + UI invariants + tsc --noEmit
+npm run check           # the five gates below, then tsc --noEmit
 ```
 
 | Script | What it protects |
 |---|---|
 | `npm run check:bus` | That the UI store holds no independent model state |
 | `npm run check:ui` | UI interaction invariants (a UI-P0 gate) |
+| `npm run check:state` | The `GET /api/state` bundle's invariants |
+| `npm run check:delta` | Delta-protocol equivalence |
+| `npm run check:snap` | Snap candidate resolution, priority hierarchy and selection geometry |
 | `tsc --noEmit` | Types |
 
-Both gates exist because the violations they catch were real and shipped. Do not weaken them.
+The gates exist because the violations they catch were real and shipped. Do not weaken them.
+
+> **The UI gate makes real HTTP calls to the engine.** Start the backend first, or the run is misread —
+> the same trap recorded in `docs/REFACTOR-PLAN.md` §2.1.
 
 ### Engine regression suites
 
@@ -165,8 +173,9 @@ python scratch/test_sketch_model.py        # sketch data model
 python scratch/test_bus_parity_audit.py    # bus parity, audit form
 ```
 
-There are 16 suites under [`scratch/`](scratch/); the remainder cover imports, hosted openings, roof
-updates, mesh HLR and HTTP container round-trips.
+There are 29 `test_*.py` suites under [`scratch/`](scratch/); the nine above are the ones most often
+reached for, and the remainder cover imports, hosted openings, roof updates, mesh HLR, HTTP container
+round-trips, units boundaries, scale gating, trim/split, and the type layer.
 
 ### Why there are two join suites
 
@@ -202,18 +211,23 @@ backend/          Python engine process
 src/              React + TypeScript shell
   store/            Zustand store — view/UI state, no independent model state
   components/       ribbon, viewports, properties, sheets, drafting
-  interaction/      tool captions and interaction helpers
+  interaction/      the typed snap engine and tool captions
   types/            shared TypeScript types
   utils/            units and formatting
 
 scripts/          gates and diagnostics
-  check-bus-parity.mjs      bus parity gate
-  check-ui-p0.mjs           UI invariants gate
-  diagnose-blank-page.mjs   blank-page diagnostic
+  check-bus-parity.mjs        bus parity gate
+  check-ui-p0.mjs             UI invariants gate
+  check-state-bundle.mjs      state-bundle gate
+  check-delta-equivalence.mjs delta-protocol gate
+  check-snap-engine.mjs       snap-engine gate
+  diagnose-blank-page.mjs     blank-page diagnostic
 
-scratch/          engine regression suites (16)
-docs/             SPECIFICATION-v0.2 (normative), SPEC.md (rationale), the plan
-review/           architecture review + sample outputs
+scratch/          engine regression suites (29 test_*.py, plus 5 _probe_*.py)
+docs/             the specification (v0.3 normative, v0.2 its base), REFACTOR-PLAN and
+                  DELTA-MEASUREMENT (the delta work), IMPLEMENTATION-PLAN-2026-10-14
+                  (sequencing) and SPEC.md (rationale); archive/ holds the withdrawn v0.1
+review/           the forward plans and the parity audits; archive/ holds superseded material
 public/           static assets
 ```
 
