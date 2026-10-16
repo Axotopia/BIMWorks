@@ -82,6 +82,7 @@ from references import (
     normalize_reference,
     resolve_reference,
     repair_reference,
+    worst_outcome,
 )
 
 
@@ -6128,12 +6129,19 @@ class BimModelManager:
                 ref_b = d.get("ref_b", {})
                 pa, out_a = resolve_reference(self, ref_a)
                 pb, out_b = resolve_reference(self, ref_b)
-                if pa is None or pb is None or out_a == "lost" or out_b == "lost" or d.get("status") == "lost":
+                # Visibility follows the LIVE resolution only. A persisted `status` is a historical
+                # fact ("lost" while a witness was missing), so trusting it here kept a dimension
+                # hidden forever once its witness came back — a re-added GUID, a re-imported IFC or
+                # a re-opened overlay never cleared it. See review round 3, finding F1.
+                if pa is None or pb is None or out_a == "lost" or out_b == "lost":
                     val = float(d.get("value", 0.0))
                     dims_out.append({
                         "id": did,
                         "guid": ref_a.get("guid"),
                         "kind": d.get("kind", "aligned"),
+                        # `length`/`text` are the last stored value, NOT a live measurement: the
+                        # witnesses cannot be resolved, so there is nothing to measure. Consumers
+                        # must key off `status`, never off `text`.
                         "start": None,
                         "end": None,
                         "length": val,
@@ -6153,6 +6161,13 @@ class BimModelManager:
                 else:
                     nx, ny = 0.0, 1.0
                 val = float(d.get("value", dist))
+                # Reconcile the persisted status with the fresh outcome. The move path stamps
+                # "repaired" for a re-resolved witness and plan §4 Phase 2 requires that to survive;
+                # a stale "lost" must not, and a newly-ambiguous reference must not be masked by an
+                # older "exact".
+                persisted = d.get("status")
+                live_outcome = worst_outcome(out_a, out_b)
+                status = live_outcome if persisted == "lost" else worst_outcome(persisted, live_outcome)
                 dims_out.append({
                     "id": did,
                     "guid": ref_a.get("guid"),
@@ -6166,7 +6181,7 @@ class BimModelManager:
                     "ref_a": ref_a,
                     "ref_b": ref_b,
                     "axis": d.get("axis", "aligned"),
-                    "status": d.get("status", "ambiguous" if (out_a == "ambiguous" or out_b == "ambiguous") else ("repaired" if (out_a == "repaired" or out_b == "repaired") else "exact")),
+                    "status": status,
                 })
         if not dims_out and not getattr(self, "dimensions", None):
             dims_out = self._overall_dimensions(contract)

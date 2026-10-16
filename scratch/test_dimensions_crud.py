@@ -277,6 +277,27 @@ def run_tests():
     check("lost reference dimension start is None (not anchored to 0,0)", dangling_dim is not None and dangling_dim.get("start") is None)
     check("lost reference dimension end is None (not anchored to 0,0)", dangling_dim is not None and dangling_dim.get("end") is None)
 
+    # 16e. Round 3 F1: a persisted 'lost' must not keep a dimension hidden once its witness
+    # exists. The contract keys visibility off the LIVE resolution, not off the stored status —
+    # otherwise a re-added GUID / re-imported IFC / re-opened overlay leaves it invisible forever.
+    dim_recover = mgr.create_dimension(
+        ref_a={"guid": "ghost-recover-guid", "ref": "start"},
+        ref_b={"guid": w3_guid, "ref": "start"},
+        value=5.0,
+    )
+    check("dim_recover stored status is 'lost' while witness is missing", dim_recover.get("status") == "lost")
+    pre_contract = mgr.slice_2d_vector_plan(cut_elevation=4.0)
+    pre = next((d for d in pre_contract.get("dimensions", []) if d.get("id") == dim_recover["id"]), None)
+    check("dim_recover emitted as 'lost' with no coordinates", pre is not None and pre.get("status") == "lost" and pre.get("start") is None)
+    # The witness appears (re-added GUID / re-imported IFC / re-opened overlay). Placed far from the
+    # existing model so wall joins cannot perturb the geometry other assertions depend on.
+    mgr.add_wall([200.0, 200.0, 0.0], [204.0, 200.0, 0.0], height=10.0, thickness=0.5, guid="ghost-recover-guid")
+    post_contract = mgr.slice_2d_vector_plan(cut_elevation=4.0)
+    post = next((d for d in post_contract.get("dimensions", []) if d.get("id") == dim_recover["id"]), None)
+    check("dim_recover visible again once the witness exists (stale 'lost' discarded)", post is not None and post.get("status") != "lost")
+    check("dim_recover has live coordinates again (not None)", post is not None and post.get("start") is not None)
+    mgr.delete_dimension(dim_recover["id"])
+
     # Clean up test dimension
     mgr.delete_dimension(dim_dangling["id"])
 

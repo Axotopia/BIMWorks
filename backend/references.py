@@ -28,6 +28,25 @@ ReferenceKind = (
     "extension",
 )
 
+# Resolution outcomes ordered by increasing concern. Layers that persist a status (the dimension
+# overlay) and layers that compute one fresh (this module) reconcile through this ordering, so a
+# newly-ambiguous reference is never masked by an older "exact", and a stale "lost" is discarded
+# once the reference resolves again. See review round 3, finding F1.
+OUTCOME_SEVERITY = {"exact": 0, "repaired": 1, "ambiguous": 2, "lost": 3}
+
+
+def worst_outcome(*outcomes: Optional[str]) -> str:
+    """
+    Returns the most concerning of the given resolution outcomes.
+
+    Unknown or missing outcomes are ignored; "lost" is returned when none are recognised, because
+    an outcome that cannot be interpreted must not be presented as success.
+    """
+    known = [o for o in outcomes if o in OUTCOME_SEVERITY]
+    if not known:
+        return "lost"
+    return max(known, key=lambda o: OUTCOME_SEVERITY[o])
+
 
 def normalize_reference(raw: Any) -> Dict[str, Any]:
     """

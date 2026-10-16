@@ -1210,6 +1210,10 @@ export const PlanViewport2D: React.FC = () => {
           {sliced2D?.dimensions.map((dim, idx) => {
             if (!dim.start || !dim.end || dim.status === 'lost') return null;
             const isSelected = selectedGuid === dim.guid;
+            // `GeometricReference.guid` is optional (hint-only point references have none), so
+            // narrow once here rather than relying on optional-chain narrowing at the call site.
+            const refAGuid = dim.ref_a?.guid ?? null;
+            const refBGuid = dim.ref_b?.guid ?? null;
             const offDist = 0.8;
             const offsetNorm = dim.offset_norm || [0, 1];
             const dx = offsetNorm[0] * offDist;
@@ -1311,8 +1315,8 @@ export const PlanViewport2D: React.FC = () => {
                       e.stopPropagation();
                       if (dimConstraint) {
                         toggleConstraintLock(dimConstraint.id, !isLocked);
-                      } else if (dim.ref_a?.guid && dim.ref_b?.guid) {
-                        lockDimension(dim.ref_a.guid, dim.ref_b.guid, dim.length, (dim.axis as any) || 'x');
+                      } else if (refAGuid && refBGuid) {
+                        lockDimension(refAGuid, refBGuid, dim.length, (dim.axis as any) || 'x');
                       } else if (dim.guid) {
                         lockDimension(dim.guid, dim.guid, dim.length);
                       }

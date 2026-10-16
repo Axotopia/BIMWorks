@@ -115,6 +115,28 @@ export interface GridData {
   end: [number, number];
 }
 
+/**
+ * A normalized geometric reference, as emitted by `backend/references.py`.
+ *
+ * `sources` carries element provenance — two entries for derived kinds such as `intersection`.
+ * `hint` is repair data and is never identity. `guid` is a convenience mirror of `sources[0]` and
+ * is absent for hint-only point references, so consumers must not assume it is present.
+ */
+export interface GeometricReference {
+  kind?: string;
+  sources?: Array<{ element_guid: string; ordinal?: number }>;
+  hint?: {
+    point?: [number, number, number] | null;
+    normal?: [number, number, number] | null;
+  } | null;
+  /** Backward-compatible primary guid; absent when the reference has no element source. */
+  guid?: string | null;
+  /** Backward-compatible semantic string from the legacy `{ guid, ref }` form. */
+  ref?: string;
+  /** Legacy free-point coordinates accepted on input. */
+  point?: [number, number] | [number, number, number];
+}
+
 export interface Sliced2DData {
   cut_paths: Array<{ guid: string; class: string; d: string; fill?: string }>;
   projection_paths: Array<{ guid: string; class: string; d: string }>;
@@ -160,6 +182,14 @@ export interface Sliced2DData {
     circle_center: [number, number];
     class?: string;
   }>;
+  /**
+   * Dimension strings for the view. `status` reconciles the persisted dimension status with a
+   * fresh reference resolution: `exact` | `repaired` | `ambiguous` | `lost`.
+   *
+   * An entry with `status: 'lost'` has `start`/`end` null and its `length`/`text` are the last
+   * stored values, NOT a live measurement — the witnesses cannot be resolved, so there is nothing
+   * to measure. Consumers must key off `status`, never off `text`.
+   */
   dimensions: Array<{
     id?: string;
     guid?: string | null;
@@ -170,8 +200,8 @@ export interface Sliced2DData {
     text: string;
     offset_norm?: [number, number] | null;
     is_locked?: boolean;
-    ref_a?: { guid: string; ref?: string };
-    ref_b?: { guid: string; ref?: string };
+    ref_a?: GeometricReference;
+    ref_b?: GeometricReference;
     axis?: string;
     status?: string;
   }>;
@@ -180,8 +210,8 @@ export interface Sliced2DData {
 export interface OverlayDimension {
   id: string;
   kind: 'aligned' | 'linear' | 'angular' | 'radial';
-  ref_a: { guid: string; ref?: string; point?: [number, number] };
-  ref_b: { guid: string; ref?: string; point?: [number, number] };
+  ref_a: GeometricReference;
+  ref_b: GeometricReference;
   axis: 'x' | 'y' | 'aligned';
   offset: number;
   value: number;
