@@ -4019,6 +4019,39 @@ class BimModelManager:
         else:
             return float(math.hypot(pb[0] - pa[0], pb[1] - pa[1]))
 
+    def get_dimension_detail(self, dim_id: str) -> Optional[Dict[str, Any]]:
+        """Returns dimension representation with resolved witnesses and current value (Track A4)."""
+        if not hasattr(self, "dimensions") or dim_id not in self.dimensions:
+            return None
+        dim = copy.deepcopy(self.dimensions[dim_id])
+        ra = dim.get("ref_a")
+        rb = dim.get("ref_b")
+        pa, out_a = None, "lost"
+        pb, out_b = None, "lost"
+        if ra:
+            if ra.get("kind") == "level_plane" or dim.get("axis", "aligned").lower() == "z":
+                za, out_a = resolve_reference_axis(self, ra, "z")
+                pa = [0.0, float(za)] if za is not None else None
+            else:
+                p, out_a = resolve_reference(self, ra)
+                pa = [float(p[0]), float(p[1])] if p is not None else None
+        if rb:
+            if rb.get("kind") == "level_plane" or dim.get("axis", "aligned").lower() == "z":
+                zb, out_b = resolve_reference_axis(self, rb, "z")
+                pb = [0.0, float(zb)] if zb is not None else None
+            else:
+                p, out_b = resolve_reference(self, rb)
+                pb = [float(p[0]), float(p[1])] if p is not None else None
+
+        dim["witness_a"] = {"point": pa, "outcome": out_a}
+        dim["witness_b"] = {"point": pb, "outcome": out_b}
+        dim["resolved_start"] = pa
+        dim["resolved_end"] = pb
+        measured = self.resolve_dimension(dim_id)
+        if measured is not None:
+            dim["measured_value"] = measured
+        return dim
+
     def delete_dimension(self, dimension_id: str) -> bool:
         """Deletes a dimension object and releases any associated constraint lock."""
         if dimension_id not in self.dimensions:

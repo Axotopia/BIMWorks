@@ -755,6 +755,24 @@ def delete_constraint(constraint_id: str):
     return {"status": "deleted", "id": res.get("constraint_id"), "transaction_id": res.get("transaction_id")}
 
 
+@app.get("/api/dimensions")
+def list_dimensions():
+    """Returns all dimensions in the active model with resolved witness coordinates."""
+    return [
+        bim_manager.get_dimension_detail(did)
+        for did in getattr(bim_manager, "dimensions", {}).keys()
+    ]
+
+
+@app.get("/api/dimensions/{dimension_id}")
+def get_dimension(dimension_id: str):
+    """Returns a single dimension by ID with resolved witness coordinates."""
+    detail = bim_manager.get_dimension_detail(dimension_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"Dimension '{dimension_id}' not found")
+    return detail
+
+
 # ============================================================================
 # PROJECT CONTAINER: HYBRID .BIMWORKS (zip), WALL JOINS, COMMAND BUS
 # ============================================================================

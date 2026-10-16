@@ -883,7 +883,11 @@ class CommandBusEngine:
         elif cmd_name == "DimensionValueSet":
             p: DimensionValueSetParams = validated
             res = self.manager.set_dimension_value(p.dimension_id, p.value, p.anchor)
-            return {"status": "updated", "dimension_id": p.dimension_id, "value": p.value, "result": res}
+            status = "error" if (isinstance(res, dict) and (res.get("status") == "error" or "error" in res)) else "updated"
+            out = {"status": status, "dimension_id": p.dimension_id, "value": p.value, "result": res}
+            if status == "error" and isinstance(res, dict) and "error" in res:
+                out["error"] = res["error"]
+            return out
 
         elif cmd_name == "DimensionDelete":
             p: DimensionDeleteParams = validated
@@ -1236,12 +1240,16 @@ class CommandBusEngine:
             p: DimensionValueSetParams = validated
             dim_pre = copy.deepcopy(getattr(self.manager, "dimensions", {}).get(p.dimension_id))
             res = self.manager.set_dimension_value(p.dimension_id, p.value, p.anchor)
+            status = "error" if (isinstance(res, dict) and (res.get("status") == "error" or "error" in res)) else "updated"
             def undo_fn(mgr):
                 if dim_pre and "value" in dim_pre:
                     mgr.set_dimension_value(p.dimension_id, dim_pre["value"], p.anchor)
             def redo_fn(mgr):
                 mgr.set_dimension_value(p.dimension_id, p.value, p.anchor)
-            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "dimension_id": p.dimension_id, "value": p.value, "result": res}
+            out = {"status": status, "dimension_id": p.dimension_id, "value": p.value, "result": res}
+            if status == "error" and isinstance(res, dict) and "error" in res:
+                out["error"] = res["error"]
+            return CommandMemento(cmd_name, undo_fn, redo_fn), out
 
         elif cmd_name == "DimensionDelete":
             p: DimensionDeleteParams = validated
