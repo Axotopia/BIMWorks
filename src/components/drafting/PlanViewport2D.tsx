@@ -174,6 +174,9 @@ export const PlanViewport2D: React.FC = () => {
     setActiveViewId,
     interactionSession,
     dispatchInteraction,
+    beginDrag,
+    endDrag,
+    modifyWallEnd,
   } = useBimStore();
 
   const currentView = views.find((v) => v.id === activeViewId) || {
@@ -209,6 +212,8 @@ export const PlanViewport2D: React.FC = () => {
     startClientX: number;
     startClientY: number;
   } | null>(null);
+
+  const activeDragGrip2DRef = useRef<{ guid: string; endKind: 'start' | 'end' } | null>(null);
 
   // Memoized snap segments for SnapEngine
   const snapSegments = useMemo<SnapSegment[]>(() => {
@@ -666,6 +671,16 @@ export const PlanViewport2D: React.FC = () => {
     if (!rawCoords) return;
     dispatchInteraction({ type: 'pointer_move', screenPoint: [e.clientX, e.clientY], point: [rawCoords[0], rawCoords[1]] });
 
+    if (activeDragGrip2DRef.current) {
+      const { guid, endKind } = activeDragGrip2DRef.current;
+      const el = elements[guid];
+      if (el) {
+        const z = el.start?.[2] ?? 0;
+        modifyWallEnd(guid, endKind, [rawCoords[0], rawCoords[1], z]);
+      }
+      return;
+    }
+
     if (selectionBox) {
       setSelectionBox((prev) => (prev ? { ...prev, currX: rawCoords[0], currY: rawCoords[1] } : null));
       return;
@@ -729,6 +744,12 @@ export const PlanViewport2D: React.FC = () => {
   const handleMouseUp = (e: React.MouseEvent) => {
     isPanningRef.current = false;
     dispatchInteraction({ type: 'pointer_up', screenPoint: [e.clientX, e.clientY] });
+
+    if (activeDragGrip2DRef.current) {
+      endDrag(true);
+      activeDragGrip2DRef.current = null;
+      return;
+    }
 
     if (selectionBox) {
       const dist = Math.hypot(e.clientX - selectionBox.startClientX, e.clientY - selectionBox.startClientY);
@@ -2204,21 +2225,33 @@ export const PlanViewport2D: React.FC = () => {
                   <circle
                     cx={sx}
                     cy={sy}
-                    r={5 / scale}
+                    r={6 / scale}
                     fill="#ffffff"
-                    stroke="#007acc"
-                    strokeWidth={2 / scale}
+                    stroke="#0284c7"
+                    strokeWidth={2.5 / scale}
                     className="hover:scale-125 transition-transform cursor-pointer"
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      activeDragGrip2DRef.current = { guid, endKind: 'start' };
+                      beginDrag('Drag Wall Start');
+                    }}
                   />
                   {/* End Point Grip */}
                   <circle
                     cx={ex}
                     cy={ey}
-                    r={5 / scale}
+                    r={6 / scale}
                     fill="#ffffff"
-                    stroke="#007acc"
-                    strokeWidth={2 / scale}
+                    stroke="#0284c7"
+                    strokeWidth={2.5 / scale}
                     className="hover:scale-125 transition-transform cursor-pointer"
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      activeDragGrip2DRef.current = { guid, endKind: 'end' };
+                      beginDrag('Drag Wall End');
+                    }}
                   />
                   {/* Interactive Flip Arrows Control */}
                   <g

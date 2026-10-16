@@ -3290,6 +3290,21 @@ class BimModelManager:
 
         meta = self.element_meta[guid]
         ifc_class = meta.get("ifc_class")
+
+        VALID_ELEMENT_UPDATE_KEYS = {
+            "IfcWall": {"name", "height", "thickness", "start", "end"},
+            "IfcWallStandardCase": {"name", "height", "thickness", "start", "end"},
+            "IfcRoof": {"name", "pitch", "pitch_degrees", "elevation", "thickness", "polygon"},
+            "IfcSlab": {"name", "pitch", "pitch_degrees", "elevation", "thickness", "polygon"},
+            "IfcDoor": {"name", "offset_along_wall", "width", "height", "sill_height", "swing_flipped"},
+            "IfcWindow": {"name", "offset_along_wall", "width", "height", "sill_height", "swing_flipped"},
+        }
+        allowed_keys = VALID_ELEMENT_UPDATE_KEYS.get(ifc_class)
+        if allowed_keys is not None:
+            unknown = [k for k in updates.keys() if k not in allowed_keys]
+            if unknown:
+                raise ValueError(f"Unrecognized update parameter(s) for {ifc_class}: {unknown}")
+
         # Pre-edit ends, captured before any branch mutates them. The join radius needs
         # them to find partners a reshape might pull away from.
         _old_ends = [
@@ -3407,6 +3422,46 @@ class BimModelManager:
             "width": meta.get("width", 0.9),
             "swing_flipped": meta.get("swing_flipped", False),
         }
+
+    def set_wall_height(self, guid: str, height: float) -> Dict[str, Any]:
+        """Sets unconnected height of a wall and rebuilds its representation."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Wall {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcWall", "IfcWallStandardCase"):
+            raise ValueError(f"Element {guid} is not a wall (is {meta.get('ifc_class')})")
+        if height <= 0:
+            raise ValueError(f"Wall height must be positive, got {height}")
+        return self.update_element(guid, {"height": float(height)})
+
+    def set_wall_thickness(self, guid: str, thickness: float) -> Dict[str, Any]:
+        """Sets thickness of a wall and rebuilds its representation."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Wall {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcWall", "IfcWallStandardCase"):
+            raise ValueError(f"Element {guid} is not a wall (is {meta.get('ifc_class')})")
+        if thickness <= 0:
+            raise ValueError(f"Wall thickness must be positive, got {thickness}")
+        return self.update_element(guid, {"thickness": float(thickness)})
+
+    def set_wall_end(self, guid: str, end: str, point: Any) -> Dict[str, Any]:
+        """Sets start or end point of a wall baseline and updates joins & openings."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Wall {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcWall", "IfcWallStandardCase"):
+            raise ValueError(f"Element {guid} is not a wall (is {meta.get('ifc_class')})")
+        if end not in ("start", "end"):
+            raise ValueError(f"Invalid end '{end}', expected 'start' or 'end'")
+        existing = meta.get(end, [0.0, 0.0, 0.0])
+        z = existing[2] if len(existing) > 2 else 0.0
+        pt = [float(point[0]), float(point[1]), float(point[2]) if len(point) > 2 else z]
+        other_key = "end" if end == "start" else "start"
+        other_pt = meta.get(other_key)
+        if other_pt and math.hypot(pt[0] - other_pt[0], pt[1] - other_pt[1]) < 0.001:
+            raise ValueError(f"Wall {guid} length cannot be zero")
+        return self.update_element(guid, {end: pt})
 
     # =========================================================================
     # PARAMETRIC CONSTRAINT ENGINE: ALIGN, LOCK, EQUALIZE (EQ), PERSISTENCE

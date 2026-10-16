@@ -433,10 +433,29 @@ class ElementSetTypeParams(BaseModel):
     type_id: str = Field(..., description="Type ID to assign")
 
 
+class WallSetHeightParams(BaseModel):
+    guid: str = Field(..., description="Target wall GUID")
+    height: float = Field(..., gt=0.0, description="New wall height in feet or meters (> 0)")
+
+
+class WallSetThicknessParams(BaseModel):
+    guid: str = Field(..., description="Target wall GUID")
+    thickness: float = Field(..., gt=0.0, description="New wall thickness in feet or meters (> 0)")
+
+
+class WallSetEndParams(BaseModel):
+    guid: str = Field(..., description="Target wall GUID")
+    end: Literal["start", "end"] = Field(..., description="Which endpoint to modify ('start' or 'end')")
+    point: List[float] = Field(..., min_length=2, max_length=3, description="New endpoint coordinates [x, y] or [x, y, z]")
+
+
 # Registry of command names to parameter classes
 COMMAND_REGISTRY = {
     "WallCreate": WallCreateParams,
     "WallMove": WallMoveParams,
+    "WallSetHeight": WallSetHeightParams,
+    "WallSetThickness": WallSetThicknessParams,
+    "WallSetEnd": WallSetEndParams,
     "DoorInsert": DoorInsertParams,
     "WindowInsert": WindowInsertParams,
     "SlabCreate": SlabCreateParams,
@@ -570,6 +589,21 @@ class CommandBusEngine:
             if not ok:
                 raise ValueError(f"Element {p.guid} could not be moved")
             return {"status": "moved", "guid": p.guid}
+
+        elif cmd_name == "WallSetHeight":
+            p: WallSetHeightParams = validated
+            res = self.manager.set_wall_height(p.guid, p.height)
+            return {"status": "updated", "guid": p.guid, "height": p.height, "element": res}
+
+        elif cmd_name == "WallSetThickness":
+            p: WallSetThicknessParams = validated
+            res = self.manager.set_wall_thickness(p.guid, p.thickness)
+            return {"status": "updated", "guid": p.guid, "thickness": p.thickness, "element": res}
+
+        elif cmd_name == "WallSetEnd":
+            p: WallSetEndParams = validated
+            res = self.manager.set_wall_end(p.guid, p.end, p.point)
+            return {"status": "updated", "guid": p.guid, "end": p.end, "point": p.point, "element": res}
 
         elif cmd_name == "ReferenceMove":
             p: ReferenceMoveParams = validated
@@ -1024,6 +1058,48 @@ class CommandBusEngine:
             def redo_fn(mgr):
                 mgr.translate_element(guid, dx, dy, dz)
             return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "moved", "guid": guid, "dx": dx, "dy": dy, "dz": dz}
+
+        elif cmd_name == "WallSetHeight":
+            p: WallSetHeightParams = validated
+            meta = self.manager.element_meta.get(p.guid)
+            if not meta:
+                raise KeyError(f"Wall {p.guid} not found")
+            old_h = float(meta.get("height", 10.0))
+            new_h = float(p.height)
+            res = self.manager.set_wall_height(p.guid, new_h)
+            def undo_fn(mgr):
+                mgr.set_wall_height(p.guid, old_h)
+            def redo_fn(mgr):
+                mgr.set_wall_height(p.guid, new_h)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "height": new_h, "element": res}
+
+        elif cmd_name == "WallSetThickness":
+            p: WallSetThicknessParams = validated
+            meta = self.manager.element_meta.get(p.guid)
+            if not meta:
+                raise KeyError(f"Wall {p.guid} not found")
+            old_th = float(meta.get("thickness", 0.2))
+            new_th = float(p.thickness)
+            res = self.manager.set_wall_thickness(p.guid, new_th)
+            def undo_fn(mgr):
+                mgr.set_wall_thickness(p.guid, old_th)
+            def redo_fn(mgr):
+                mgr.set_wall_thickness(p.guid, new_th)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "thickness": new_th, "element": res}
+
+        elif cmd_name == "WallSetEnd":
+            p: WallSetEndParams = validated
+            meta = self.manager.element_meta.get(p.guid)
+            if not meta:
+                raise KeyError(f"Wall {p.guid} not found")
+            old_pt = list(meta.get(p.end, [0.0, 0.0, 0.0]))
+            new_pt = list(p.point)
+            res = self.manager.set_wall_end(p.guid, p.end, new_pt)
+            def undo_fn(mgr):
+                mgr.set_wall_end(p.guid, p.end, old_pt)
+            def redo_fn(mgr):
+                mgr.set_wall_end(p.guid, p.end, new_pt)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "end": p.end, "point": new_pt, "element": res}
 
         elif cmd_name == "ReferenceMove":
             pre_coords = {

@@ -5,6 +5,7 @@ import { formatLength, tryParseLength } from '../../utils/units';
 import { Scissors, Maximize, RotateCw, Move, Lock } from 'lucide-react';
 import { ContextMenu } from '../common/ContextMenu';
 import { findSnapCandidate, SnapSegment } from '../../interaction/snapEngine';
+import { gripsFor, computeGripDragCommand, Grip } from '../../interaction/grips';
 
 /**
  * UI-P0-13: pointer capture over a React synthetic mouse event.
@@ -133,6 +134,11 @@ export const Viewport3D: React.FC = () => {
     displayUnit,
     interactionSession,
     dispatchInteraction,
+    beginDrag,
+    endDrag,
+    modifyWallHeight,
+    modifyWallThickness,
+    modifyWallEnd,
   } = useBimStore();
 
   // Internal Three.js state
@@ -163,6 +169,9 @@ export const Viewport3D: React.FC = () => {
   const [boxCurrentPoint, setBoxCurrentPoint] = useState<[number, number] | null>(null);
 
   const [editingDimValue, setEditingDimValue] = useState<string>('');
+  const [cameraTick, setCameraTick] = useState(0);
+  const [hoveredGripId, setHoveredGripId] = useState<string | null>(null);
+  const activeDragGripRef = useRef<{ grip: Grip; element: any } | null>(null);
   const [isEditingDim, setIsEditingDim] = useState<boolean>(false);
 
   const snapSegments = useMemo<SnapSegment[]>(() => {
@@ -270,6 +279,7 @@ export const Viewport3D: React.FC = () => {
 
     cameraRef.current.position.set(x, y, z);
     cameraRef.current.lookAt(target);
+    setCameraTick((t) => (t + 1) % 1000000);
   }, []);
 
   // Initialize Three.js WebGL2 scene
@@ -731,6 +741,53 @@ export const Viewport3D: React.FC = () => {
 
   const handleMouseMove = (e: React.MouseEvent) => {
     dispatchInteraction({ type: 'pointer_move', screenPoint: [e.clientX, e.clientY] });
+
+    if (activeDragGripRef.current) {
+      const { grip, element } = activeDragGripRef.current;
+      if (canvasRef.current && cameraRef.current) {
+        const rect = canvasRef.current.getBoundingClientRect();
+        const mouse = new THREE.Vector2(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          -((e.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, cameraRef.current);
+
+        let targetPoint: [number, number, number] | null = null;
+        if (grip.kind === 'wall_height') {
+          const camDir = new THREE.Vector3();
+          cameraRef.current.getWorldDirection(camDir);
+          const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+            camDir.clone().negate(),
+            new THREE.Vector3(grip.worldPoint[0], grip.worldPoint[1], grip.worldPoint[2])
+          );
+          const hitPt = new THREE.Vector3();
+          if (raycaster.ray.intersectPlane(plane, hitPt)) {
+            targetPoint = [hitPt.x, hitPt.y, hitPt.z];
+          }
+        } else {
+          const baseZ = Number(element.start?.[2] ?? 0);
+          const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -baseZ);
+          const hitPt = new THREE.Vector3();
+          if (raycaster.ray.intersectPlane(plane, hitPt)) {
+            targetPoint = [hitPt.x, hitPt.y, hitPt.z];
+          }
+        }
+
+        if (targetPoint) {
+          const cmd = computeGripDragCommand(grip, targetPoint, element);
+          if (cmd.action === 'modifyWallHeight') {
+            modifyWallHeight(element.guid, cmd.params.height);
+          } else if (cmd.action === 'modifyWallThickness') {
+            modifyWallThickness(element.guid, cmd.params.thickness);
+          } else if (cmd.action === 'modifyWallEnd') {
+            modifyWallEnd(element.guid, cmd.params.end, cmd.params.point);
+          }
+        }
+      }
+      return;
+    }
+
     // UI-P0-13: a navigation mode with no button held means the gesture's mouse-up
     // was missed (released off-canvas before capture existed, or a blink). Ending it
     // here is what stops the "the model pans whenever I move the mouse" state.
@@ -808,6 +865,10 @@ export const Viewport3D: React.FC = () => {
   };
 
   const handleMouseUp = (e: React.MouseEvent) => {
+    if (activeDragGripRef.current) {
+      endDrag(true);
+      activeDragGripRef.current = null;
+    }
     isNavigatingRef.current.mode = null;
     dispatchInteraction({ type: 'pointer_up', screenPoint: [e.clientX, e.clientY] });
     // UI-P0-13: release the capture taken on mousedown.
@@ -820,6 +881,10 @@ export const Viewport3D: React.FC = () => {
 
   /** A pointer that left the viewport must not leave a gesture latched. */
   const handlePointerLeave = () => {
+    if (activeDragGripRef.current) {
+      endDrag(false);
+      activeDragGripRef.current = null;
+    }
     isNavigatingRef.current.mode = null;
   };
 
@@ -997,6 +1062,70 @@ export const Viewport3D: React.FC = () => {
           <Maximize size={13} />
         </button>
       </div>
+
+      {/* Phase 3: Direct Manipulation Grips Overlay */}
+      {(() => {
+        if (!canvasRef.current || !cameraRef.current) return null;
+        const rect = canvasRef.current.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return null;
+        const camera = cameraRef.current;
+        const guidsToInspect = selectedGuids.length > 0 ? selectedGuids : (selectedGuid ? [selectedGuid] : []);
+
+        return guidsToInspect.map((guid) => {
+          const el = elements[guid];
+          if (!el) return null;
+          const grips = gripsFor(el);
+          return grips.map((grip) => {
+            const v = new THREE.Vector3(grip.worldPoint[0], grip.worldPoint[1], grip.worldPoint[2]);
+            v.project(camera);
+            if (v.z > 1.0) return null;
+            const screenX = ((v.x + 1) / 2) * rect.width;
+            const screenY = ((-v.y + 1) / 2) * rect.height;
+            const isHovered = hoveredGripId === grip.id;
+            const isDragging = activeDragGripRef.current?.grip.id === grip.id;
+
+            return (
+              <div
+                key={grip.id}
+                style={{ left: `${screenX}px`, top: `${screenY}px` }}
+                className="absolute -translate-x-1/2 -translate-y-1/2 z-30 group cursor-pointer pointer-events-auto select-none"
+                onMouseEnter={() => setHoveredGripId(grip.id)}
+                onMouseLeave={() => setHoveredGripId(null)}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  activeDragGripRef.current = { grip, element: el };
+                  beginDrag(`Drag ${grip.label}`);
+                }}
+                title={`${grip.label}: Drag to adjust`}
+              >
+                {/* Enlarged invisible hit proxy (28x28 px) */}
+                <div className="absolute -inset-2 w-7 h-7 -translate-x-1/2 -translate-y-1/2 left-1/2 top-1/2 cursor-pointer z-10" />
+
+                {/* Visible grip marker */}
+                <div
+                  className={`w-3.5 h-3.5 rounded-full border-2 shadow-md transition-all flex items-center justify-center ${
+                    isDragging || isHovered
+                      ? 'bg-[#38bdf8] border-white scale-125 ring-2 ring-sky-400'
+                      : 'bg-[#0284c7] border-white hover:scale-125 hover:bg-[#38bdf8]'
+                  }`}
+                >
+                  <div className="w-1 h-1 rounded-full bg-white" />
+                </div>
+
+                {/* Hover tooltip */}
+                <div
+                  className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-0.5 bg-black/90 text-white text-[10px] font-mono whitespace-nowrap rounded pointer-events-none shadow border border-sky-500/40 ${
+                    isHovered || isDragging ? 'block' : 'hidden group-hover:block'
+                  }`}
+                >
+                  {grip.label}: {formatLength(grip.value, displayUnit)}
+                </div>
+              </div>
+            );
+          });
+        });
+      })()}
 
       {/* Dynamic Temporary Dimension Pill Overlay */}
       {tempDimension && (

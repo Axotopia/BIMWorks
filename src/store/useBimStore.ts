@@ -148,6 +148,10 @@ export const UI_ACTION_COMMANDS = {
   setElementType: 'ElementSetType',
   updateType: 'TypeUpdate',
   duplicateType: 'TypeDuplicate',
+  // Direct manipulation typed commands
+  modifyWallHeight: 'WallSetHeight',
+  modifyWallThickness: 'WallSetThickness',
+  modifyWallEnd: 'WallSetEnd',
 } as const;
 
 export type UiAction = keyof typeof UI_ACTION_COMMANDS;
@@ -638,6 +642,9 @@ interface BimStoreState {
   updateElement: (guid: string, updates: Partial<BimElement>) => Promise<void>;
   deleteElement: (guid: string) => Promise<void>;
   translateElement: (guid: string, dx: number, dy: number, dz?: number) => Promise<void>;
+  modifyWallHeight: (guid: string, height: number) => Promise<void>;
+  modifyWallThickness: (guid: string, thickness: number) => Promise<void>;
+  modifyWallEnd: (guid: string, end: 'start' | 'end', point: [number, number] | [number, number, number]) => Promise<void>;
   moveReference: (source: any, target: any, axis?: string) => Promise<void>;
   updateGeoreferencing: (data: BimStoreState['georeference']) => Promise<void>;
   createSheet: (sheetNumber: string, sheetTitle: string, paperSize?: 'ARCH_D' | 'ARCH_C' | 'ISO_A1') => Promise<void>;
@@ -986,6 +993,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   },
 
   resetInteraction: (reason) => {
+    if (get().activeDragSessionId) {
+      get().endDrag(false);
+    }
     get().dispatchInteraction({ type: 'cancel' });
     set((state) => ({
       interactionResetToken: state.interactionResetToken + 1,
@@ -2229,6 +2239,33 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     } catch (e) {
       set({ statusMessage: `Move reference failed: ${failureMessage(e)}` });
       console.error('Failed to move reference', e);
+    }
+  },
+
+  modifyWallHeight: async (guid: string, height: number) => {
+    try {
+      await get().dispatchTransaction('modifyWallHeight', { guid, height }, 'Modify wall height');
+    } catch (e) {
+      set({ statusMessage: `Modify wall height failed: ${failureMessage(e)}` });
+      console.error('Failed to modify wall height', e);
+    }
+  },
+
+  modifyWallThickness: async (guid: string, thickness: number) => {
+    try {
+      await get().dispatchTransaction('modifyWallThickness', { guid, thickness }, 'Modify wall thickness');
+    } catch (e) {
+      set({ statusMessage: `Modify wall thickness failed: ${failureMessage(e)}` });
+      console.error('Failed to modify wall thickness', e);
+    }
+  },
+
+  modifyWallEnd: async (guid: string, end: 'start' | 'end', point: [number, number] | [number, number, number]) => {
+    try {
+      await get().dispatchTransaction('modifyWallEnd', { guid, end, point }, 'Modify wall endpoint');
+    } catch (e) {
+      set({ statusMessage: `Modify wall end failed: ${failureMessage(e)}` });
+      console.error('Failed to modify wall end', e);
     }
   },
 
