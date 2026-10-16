@@ -6,6 +6,7 @@ import { Scissors, Maximize, RotateCw, Move, Lock } from 'lucide-react';
 import { ContextMenu } from '../common/ContextMenu';
 import { findSnapCandidate, SnapSegment, SnapCandidate } from '../../interaction/snapEngine';
 import { gripsFor, computeGripDragCommand, Grip } from '../../interaction/grips';
+import { WallFaceHit, detectWallFaceHover, computePushPullCommand } from '../../interaction/pushpull';
 import { ValueControlBox } from './ValueControlBox';
 
 /**
@@ -181,6 +182,13 @@ export const Viewport3D: React.FC = () => {
   const [hoveredGripId, setHoveredGripId] = useState<string | null>(null);
   const [activeSnapCandidate, setActiveSnapCandidate] = useState<SnapCandidate | null>(null);
   const activeDragGripRef = useRef<{ grip: Grip; element: any } | null>(null);
+  const [hoveredFace, setHoveredFace] = useState<WallFaceHit | null>(null);
+  const activePushPullRef = useRef<{
+    face: WallFaceHit;
+    element: any;
+    startScreen: [number, number];
+    didMove: boolean;
+  } | null>(null);
   const [liveGripValue, setLiveGripValue] = useState<{ label: string; value: number } | null>(null);
   const [isEditingDim, setIsEditingDim] = useState<boolean>(false);
 
@@ -235,6 +243,16 @@ export const Viewport3D: React.FC = () => {
       }
       endDrag(true);
       activeDragGripRef.current = null;
+      setLiveGripValue(null);
+    } else if (activePushPullRef.current) {
+      const { face, element } = activePushPullRef.current;
+      if (face.param === 'height') {
+        modifyWallHeight(element.guid, feet);
+      } else if (face.param === 'thickness') {
+        modifyWallThickness(element.guid, feet);
+      }
+      endDrag(true);
+      activePushPullRef.current = null;
       setLiveGripValue(null);
     }
   }, [
@@ -808,6 +826,33 @@ export const Viewport3D: React.FC = () => {
         if (intersects.length > 0 && intersects[0].object.userData.guid === consumed) return;
       }
 
+      // Tool: Select (default)
+      // Phase 7: Face push/pull gesture on wall
+      if (activeTool === 'select' && !activeDragGripRef.current) {
+        let faceToPush = hoveredFace;
+        if (!faceToPush) {
+          const wallMeshes = Array.from(threeMeshesRef.current.values()).filter((m) =>
+            m.userData?.ifc_class === 'IfcWall' || m.userData?.ifc_class === 'IfcWallStandardCase'
+          );
+          const intersects = raycaster.intersectObjects(wallMeshes, false);
+          if (intersects.length > 0) {
+            faceToPush = detectWallFaceHover(intersects[0], elements);
+          }
+        }
+        if (faceToPush && elements[faceToPush.guid]) {
+          const el = elements[faceToPush.guid];
+          activePushPullRef.current = {
+            face: faceToPush,
+            element: el,
+            startScreen: [e.clientX, e.clientY],
+            didMove: false,
+          };
+          beginDrag(`Push/Pull ${faceToPush.label}`);
+          setLiveGripValue({ label: faceToPush.label, value: faceToPush.currentValue });
+          return;
+        }
+      }
+
       const meshesList = Array.from(threeMeshesRef.current.values());
       const intersects = raycaster.intersectObjects(meshesList, false);
 
@@ -822,6 +867,56 @@ export const Viewport3D: React.FC = () => {
 
   const handleMouseMove = (e: React.MouseEvent) => {
     dispatchInteraction({ type: 'pointer_move', screenPoint: [e.clientX, e.clientY] });
+
+    if (activePushPullRef.current) {
+      const { face, element, startScreen } = activePushPullRef.current;
+      const wobbleDist = Math.hypot(e.clientX - startScreen[0], e.clientY - startScreen[1]);
+      if (wobbleDist > 5) {
+        activePushPullRef.current.didMove = true;
+      }
+      if (activePushPullRef.current.didMove && canvasRef.current && cameraRef.current) {
+        const rect = canvasRef.current.getBoundingClientRect();
+        const mouse = new THREE.Vector2(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          -((e.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, cameraRef.current);
+
+        let targetPoint: [number, number, number] | null = null;
+        if (face.param === 'height') {
+          const camDir = new THREE.Vector3();
+          cameraRef.current.getWorldDirection(camDir);
+          const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+            camDir.clone().negate(),
+            new THREE.Vector3(face.hitPoint[0], face.hitPoint[1], face.hitPoint[2])
+          );
+          const hitPt = new THREE.Vector3();
+          if (raycaster.ray.intersectPlane(plane, hitPt)) {
+            targetPoint = [hitPt.x, hitPt.y, hitPt.z];
+          }
+        } else {
+          const baseZ = Number(element.start?.[2] ?? element.elevation ?? 0);
+          const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -baseZ);
+          const hitPt = new THREE.Vector3();
+          if (raycaster.ray.intersectPlane(plane, hitPt)) {
+            targetPoint = [hitPt.x, hitPt.y, hitPt.z];
+          }
+        }
+
+        if (targetPoint) {
+          const cmd = computePushPullCommand(face, targetPoint, element);
+          if (cmd.action === 'modifyWallHeight' && cmd.params.height !== undefined) {
+            modifyWallHeight(element.guid, cmd.params.height);
+            setLiveGripValue({ label: 'Wall Height', value: cmd.params.height });
+          } else if (cmd.action === 'modifyWallThickness' && cmd.params.thickness !== undefined) {
+            modifyWallThickness(element.guid, cmd.params.thickness);
+            setLiveGripValue({ label: 'Wall Thickness', value: cmd.params.thickness });
+          }
+        }
+      }
+      return;
+    }
 
     if (activeDragGripRef.current) {
       const { grip, element } = activeDragGripRef.current;
@@ -976,12 +1071,45 @@ export const Viewport3D: React.FC = () => {
         setBoxCurrentPoint([x, y]);
       }
     }
+
+    // Phase 7: Face hover detection for Push/Pull
+    if (activeTool === 'select' && !activeDragGripRef.current && !activePushPullRef.current && !isNavigatingRef.current.mode && cameraRef.current && canvasRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const mouse = new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(mouse, cameraRef.current);
+      const wallMeshes = Array.from(threeMeshesRef.current.values()).filter((m) =>
+        m.userData?.ifc_class === 'IfcWall' || m.userData?.ifc_class === 'IfcWallStandardCase'
+      );
+      const intersects = raycaster.intersectObjects(wallMeshes, false);
+      if (intersects.length > 0) {
+        const faceHit = detectWallFaceHover(intersects[0], elements);
+        setHoveredFace(faceHit);
+      } else if (hoveredFace !== null) {
+        setHoveredFace(null);
+      }
+    } else if (hoveredFace !== null) {
+      setHoveredFace(null);
+    }
   };
 
   const handleMouseUp = (e: React.MouseEvent) => {
     if (activeDragGripRef.current) {
       endDrag(true);
       activeDragGripRef.current = null;
+      setLiveGripValue(null);
+    }
+    if (activePushPullRef.current) {
+      if (activePushPullRef.current.didMove) {
+        endDrag(true);
+      } else {
+        endDrag(false);
+        setSelectedGuid(activePushPullRef.current.face.guid);
+      }
+      activePushPullRef.current = null;
       setLiveGripValue(null);
     }
     isNavigatingRef.current.mode = null;
@@ -1001,6 +1129,12 @@ export const Viewport3D: React.FC = () => {
       activeDragGripRef.current = null;
       setLiveGripValue(null);
     }
+    if (activePushPullRef.current) {
+      endDrag(false);
+      activePushPullRef.current = null;
+      setLiveGripValue(null);
+    }
+    setHoveredFace(null);
     isNavigatingRef.current.mode = null;
   };
 
@@ -1134,7 +1268,11 @@ export const Viewport3D: React.FC = () => {
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full bg-[#202022] overflow-hidden select-none cursor-crosshair"
+      className={`relative w-full h-full bg-[#202022] overflow-hidden select-none ${
+        activePushPullRef.current || hoveredFace
+          ? (hoveredFace?.param === 'height' || activePushPullRef.current?.face.param === 'height' ? 'cursor-ns-resize' : 'cursor-ew-resize')
+          : 'cursor-crosshair'
+      }`}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -1242,6 +1380,33 @@ export const Viewport3D: React.FC = () => {
             );
           });
         });
+      })()}
+
+      {/* Phase 7: Face-Based Push/Pull HUD Indicator */}
+      {(() => {
+        const currentFace = activePushPullRef.current?.face || hoveredFace;
+        if (!currentFace || !canvasRef.current || !cameraRef.current) return null;
+        const rect = canvasRef.current.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return null;
+        const pt = new THREE.Vector3(currentFace.hitPoint[0], currentFace.hitPoint[1], currentFace.hitPoint[2]);
+        pt.project(cameraRef.current);
+        if (pt.z > 1.0) return null;
+        const screenX = ((pt.x + 1) / 2) * rect.width;
+        const screenY = ((-pt.y + 1) / 2) * rect.height;
+
+        return (
+          <div
+            style={{ left: `${screenX}px`, top: `${screenY}px` }}
+            className="absolute -translate-x-1/2 -translate-y-full mb-3 pointer-events-none z-30 select-none"
+          >
+            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-neutral-900/90 text-white text-xs font-mono rounded-md shadow-lg border border-sky-400/50 backdrop-blur-sm">
+              <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
+              <span className="font-semibold text-sky-300">Push/Pull:</span>
+              <span>{currentFace.label}</span>
+              <span className="text-neutral-400">({formatLength(liveGripValue?.value ?? currentFace.currentValue, displayUnit)})</span>
+            </div>
+          </div>
+        );
       })()}
 
       {/* Phase 4: Value Control Box & Direct Numeric Entry HUD */}

@@ -36,6 +36,7 @@ const SUITES = [
   'scratch/test_snap_engine.py',
   'scratch/test_grips_beyond_walls.py',
   'scratch/test_validity_predicates.py',
+  'scratch/test_face_pushpull.py',
 ];
 
 let failed = false;
