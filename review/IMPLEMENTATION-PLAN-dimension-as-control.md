@@ -9,20 +9,23 @@
 ## 0. Why this plan exists
 
 The companion document establishes that a Revit dimension is a **constraint element** — an ordered array of
-durable references plus a binding — and that BIMWorks has the solver, the overlay, the dependency graph and
-the command bus, but **no dimension object**. Every visible dimension in the shipped build has
-`guid: None` and is measured by regex over rendered SVG (`ifc_service.py:4650-4703`).
+durable references plus a binding. In previous revisions, BIMWorks had the solver, the overlay, the dependency graph and
+the command bus, but lacked persistent dimension objects and reference identity. While dimension objects arrived in
+commit `d786484` (`self.dimensions` at `ifc_service.py:249`, `create_dimension` at `:3464`, `DimensionCreate` verb at
+`command_bus.py:430`, overlay persistence at `:6391`/`:6532`), the missing foundation was **durable, typed geometric
+reference identity** (`backend/references.py`), explicit resolution outcomes, repair, and multi-source provenance.
 
-This plan closes that gap. It is not "build a constraint engine"; it is "give dimensions identity, give the
-solver references to drive, and wire the dependency edge that already exists."
+This plan is amended to consume `backend/references.py` per [`IMPLEMENTATION-PLAN-geometric-references.md`](IMPLEMENTATION-PLAN-geometric-references.md).
+It gives dimensions durable reference identity, drives the solver via explicit outcomes (`exact`, `repaired`, `ambiguous`, `lost`),
+and wires the dependency edge that already exists.
 
 **Three things make this smaller than it looks:**
 
 | Already present | Where | Consequence |
 |---|---|---|
-| A real Newton solver (`planegcs` / PlaneGCS) | `backend/constraint_solver.py:199-309` | no solver to write |
+| A real Newton solver (`planegcs` / PlaneGCS) | `backend/constraint_solver.py:200-300` | no solver to write |
 | A `constraint` edge kind, built, but unused for work | `dependency_graph.py:35,71-87`; `recompute()` at `:160-216` mutates only via the `join` pass | wiring, not building |
-| An overlay + typed bus + journal + undo | `ifc_service.py:5136-5182`, `command_bus.py:309-340` | persistence and commands are additive |
+| An overlay + typed bus + journal + undo | `ifc_service.py:685-850`, `command_bus.py:530-580,870-890` | persistence and commands are additive |
 
 **One thing makes it riskier than it looks:** the reference primitive (§3.1) changes the identity model.
 Getting it wrong converts today's *silent dangling constraint* into *silent wrong geometry*. §6 addresses this.
@@ -46,17 +49,18 @@ seam (Phase 8); the constraint heuristics on the drag path.
 The end state, stated once so every phase can be checked against it.
 
 ```
-ReferenceKind = "wall_start" | "wall_end" | "wall_face_pos" | "wall_face_neg" | "host_offset"
-              | "level_plane"  | "grid_axis" | "point"
+ReferenceKind = "wall_start" | "wall_end" | "wall_center" | "wall_face_pos" | "wall_face_neg" | "host_offset"
+              | "level_plane"  | "grid_axis" | "intersection" | "extension" | "point"
 
 Reference {
-  element_guid : str          # which element owns the geometry
+  sources      : [{element_guid: str, ordinal: int}, ...]  # multi-source provenance
   kind         : ReferenceKind
-  ordinal      : int = 0      # which face/axis, when kind is ambiguous
-  hint         : {            # repair-only; NEVER the identity
-      point    : [x,y,z]      # world position when captured, decimal feet
+  hint         : {                                          # repair-only; NEVER the identity
+      point    : [x,y,z]                                    # world position when captured, decimal feet
       normal   : [x,y,z] | null
   }
+  guid         : str | null                                 # backward-compatible primary guid
+  ref          : str | null                                 # backward-compatible semantic string
 }
 
 Dimension {
@@ -102,31 +106,27 @@ element publishes, and nothing else is addressable. This is a deliberate scope l
 
 ## 3. Architecture decisions
 
-### 3.1 The reference primitive — `backend/references.py` (new)
+### 3.1 The reference primitive — `backend/references.py` (implemented per geometric-references plan)
 
 The load-bearing change. A single module owns reference construction, comparison, serialisation, resolution
-and repair. Nothing else may construct a reference dict.
+and repair. Nothing else may construct an un-normalized reference dict.
 
 ```python
 # backend/references.py
-REFERENCE_KINDS = ("wall_start","wall_end","wall_face_pos","wall_face_neg",
-                   "host_offset","level_plane","grid_axis","point")
+ReferenceKind = Literal[
+    "wall_start", "wall_end", "wall_center", "wall_face_pos", "wall_face_neg",
+    "host_offset", "level_plane", "grid_axis", "intersection", "extension", "point"
+]
 
-def normalize_reference(manager, raw: dict) -> dict: ...
-def referenceable_kinds(manager, guid: str) -> list[str]: ...
-def reference_point(manager, ref: dict) -> Optional[tuple[float,float,float]]: ...
-def reference_solve_coord(manager, ref: dict, axis: str) -> Optional[float]: ...
-def reference_key(ref: dict) -> str: ...            # canonical, order-stable, for dedup + equality
-def reference_to_overlay(ref: dict) -> dict: ...
-def reference_from_overlay(raw: dict) -> dict: ...
-def repair_reference(manager, ref: dict) -> tuple[dict, str]:
-    """Re-resolve against current geometry using hint. Returns (ref, outcome)
-       where outcome in {"exact","repaired","ambiguous","lost"}."""
+def normalize_reference(raw: Dict[str, Any]) -> Dict[str, Any]: ...
+def reference_key(ref: Dict[str, Any]) -> str: ...
+def resolve_reference(manager: Any, ref: Dict[str, Any]) -> Tuple[Optional[Tuple[float, float]], str]: ...
+def resolve_reference_axis(manager: Any, ref: Dict[str, Any], axis: str) -> Tuple[Optional[float], str]: ...
+def repair_reference(manager: Any, ref: Dict[str, Any], candidate_guids: Optional[List[str]] = None, tolerance: float = 2.0) -> Tuple[Dict[str, Any], str]: ...
 ```
 
 `repair_reference` is the BIMWorks counterpart of `Reference.Refresh` +
-`DimensionReferenceRecoveryManager`, reduced to the minimum that is honest: exact match, nearest-candidate
-repair within a tolerance, ambiguity refusal, or declared loss.
+`DimensionReferenceRecoveryManager`, returning explicit outcomes in `{"exact", "repaired", "ambiguous", "lost"}`.
 
 ### 3.2 Dimensions live beside constraints, not inside them
 

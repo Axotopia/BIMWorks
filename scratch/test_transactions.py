@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 from ifc_service import BimModelManager
 from command_bus import CommandBusEngine
 from command_bus import CommandRequest, TransactionRequest
+from references import resolve_reference
 
 PASS = []
 FAIL = []
@@ -140,6 +141,58 @@ check("redo restores opening entity ref",
       isinstance(mgr.element_meta[door_guid].get("opening_entity"), object)
       and mgr.element_meta[door_guid]["opening_entity"] is not None
       and hasattr(mgr.element_meta[door_guid]["opening_entity"], "GlobalId"))
+
+# ------------------------------------- 10. Phase 5: Reference-aware memento in Undo/Redo
+print("10. Reference-aware memento in Undo/Redo")
+# Create Wall D
+rd = bus.execute_transaction([CommandRequest(command="WallCreate", params={
+    "start": [50.0, 0.0, 0.0], "end": [60.0, 0.0, 0.0], "height": 3.0, "thickness": 0.2})],
+    description="wall D")
+guid_d = rd["results"][0]["result"]["guid"]
+
+# Create dimension between Wall A and Wall D
+r_dim = bus.execute_transaction([CommandRequest(command="DimensionCreate", params={
+    "ref_a": {"guid": guid_a, "ref": "end"},
+    "ref_b": {"guid": guid_d, "ref": "start"},
+    "axis": "x",
+})], description="dim A-D")
+dim_id = r_dim["results"][0]["result"]["dimension_id"]
+check("dimension created via transaction", dim_id in mgr.dimensions)
+
+# Verify references resolve as exact initially
+pt_a, out_a = resolve_reference(mgr, mgr.dimensions[dim_id]["ref_a"])
+pt_b, out_b = resolve_reference(mgr, mgr.dimensions[dim_id]["ref_b"])
+check("dimension ref_a resolves exact", out_a == "exact" and pt_a is not None)
+check("dimension ref_b resolves exact", out_b == "exact" and pt_b is not None)
+
+# Verify snapshot_state / restore_state round-trips dimensions and resolvable references
+snap = mgr.snapshot_state()
+check("snapshot captures dimensions", dim_id in snap["dimensions"])
+mgr.restore_state(snap)
+check("restore_state restores dimensions", dim_id in mgr.dimensions)
+pt_a2, out_a2 = resolve_reference(mgr, mgr.dimensions[dim_id]["ref_a"])
+check("restored ref_a resolves exact", out_a2 == "exact" and pt_a2 == pt_a)
+
+# Delete Wall D via transaction: dimension should be cleaned up
+bus.execute_transaction([CommandRequest(command="DeleteElement", params={"guid": guid_d})], description="delete D")
+check("Wall D deleted", guid_d not in mgr.element_meta)
+check("referencing dimension removed upon element delete", dim_id not in mgr.dimensions)
+
+# Undo delete: Wall D resurrected AND referencing dimension restored with resolvable references
+bus.undo()
+check("undo restores Wall D", guid_d in mgr.element_meta)
+check("undo restores referencing dimension", dim_id in mgr.dimensions)
+pt_b_restored, out_b_restored = resolve_reference(mgr, mgr.dimensions[dim_id]["ref_b"])
+check("restored dimension ref_b resolves exact after undo", out_b_restored == "exact" and pt_b_restored is not None)
+
+# Redo delete: Wall D deleted again, dimension removed again
+bus.redo()
+check("redo re-deletes Wall D", guid_d not in mgr.element_meta)
+check("redo removes dimension again", dim_id not in mgr.dimensions)
+
+# Undo once more to leave in clean state
+bus.undo()
+check("second undo brings Wall D and dimension back", guid_d in mgr.element_meta and dim_id in mgr.dimensions)
 
 print()
 print(f"RESULT: {len(PASS)} passed, {len(FAIL)} failed")

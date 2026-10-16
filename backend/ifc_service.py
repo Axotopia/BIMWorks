@@ -2713,7 +2713,11 @@ class BimModelManager:
         if hasattr(self, "dimensions") and self.dimensions:
             dead_dims = [
                 did for did, d in self.dimensions.items()
-                if (d.get("ref_a", {}).get("guid") == guid or d.get("ref_b", {}).get("guid") == guid)
+                if (
+                    d.get("ref_a", {}).get("guid") == guid
+                    or d.get("ref_b", {}).get("guid") == guid
+                    or any(s.get("element_guid") == guid for s in (d.get("ref_a", {}).get("sources", []) + d.get("ref_b", {}).get("sources", [])))
+                )
             ]
             for did in dead_dims:
                 self.delete_dimension(did)

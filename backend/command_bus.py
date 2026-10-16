@@ -967,6 +967,14 @@ class CommandBusEngine:
             guid = p.guid
             raw_meta = self.manager.element_meta.get(guid)
             meta_pre = {k: copy.deepcopy(v) for k, v in raw_meta.items() if k != "entity" and not k.endswith("_entity") and not hasattr(v, "is_a")} if raw_meta else None
+            dims_pre = copy.deepcopy({
+                did: d for did, d in getattr(self.manager, "dimensions", {}).items()
+                if (
+                    d.get("ref_a", {}).get("guid") == guid
+                    or d.get("ref_b", {}).get("guid") == guid
+                    or any(s.get("element_guid") == guid for s in (d.get("ref_a", {}).get("sources", []) + d.get("ref_b", {}).get("sources", [])))
+                )
+            })
             ok = self.manager.delete_element(guid)
             if not ok:
                 raise ValueError(f"Element {guid} could not be deleted")
@@ -983,6 +991,9 @@ class CommandBusEngine:
                         mgr.add_slab(meta_pre.get("polygon", []), elevation=meta_pre.get("elevation", 0.0), thickness=meta_pre.get("thickness", 0.25), name=meta_pre.get("name", "Floor"), guid=guid)
                     elif ifc_cls == "IfcRoof":
                         mgr.add_roof(meta_pre.get("polygon", []), elevation=meta_pre.get("elevation", 6.0), thickness=meta_pre.get("thickness", 0.3), pitch=meta_pre.get("pitch", 15.0), name=meta_pre.get("name", "Roof"), guid=guid)
+                if dims_pre:
+                    mgr.dimensions.update(copy.deepcopy(dims_pre))
+                    mgr.dimensions_rev += 1
             def redo_fn(mgr):
                 mgr.delete_element(guid)
             return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "deleted", "guid": guid}
