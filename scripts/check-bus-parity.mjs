@@ -36,6 +36,9 @@ const ALLOWED_NON_GET = [
   '/transaction',        // the bus itself
   '/transaction/undo',
   '/transaction/redo',
+  '/drag/begin',         // drag session lifecycle on the bus
+  '/drag/update',        // drag session mid-gesture updates on the bus
+  '/drag/end',           // drag session commit/cancel on the bus
   '/sample',             // document lifecycle: replaces the model, not an edit
   '/load-file',          // document lifecycle
   '/project/load-bimworks', // document lifecycle

@@ -281,6 +281,21 @@ class AiQueryRequest(BaseModel):
     max_y: Optional[float] = None
 
 
+class DragBeginRequest(BaseModel):
+    origin: str = "ui"
+    description: str = "Drag gesture"
+
+
+class DragUpdateRequest(BaseModel):
+    session_id: str
+    commands: List[CommandRequest]
+
+
+class DragEndRequest(BaseModel):
+    session_id: str
+    commit: bool = True
+
+
 # Endpoints
 @app.get("/health")
 @app.get("/api/health")
@@ -898,6 +913,38 @@ def redo_transaction():
 def get_transaction_journal(limit: int = 50):
     """Returns the append-only transaction journal."""
     return command_bus.get_journal(limit=limit)
+
+
+# ----------------------------------------------------------------------------
+# Drag Session Endpoints (Track B Phase 2)
+# ----------------------------------------------------------------------------
+@app.post("/api/drag/begin")
+def drag_begin(req: Optional[DragBeginRequest] = None):
+    """Begins an interactive drag session with a single state snapshot."""
+    origin = req.origin if req else "ui"
+    description = req.description if req else "Drag gesture"
+    try:
+        return command_bus.begin_drag(origin=origin, description=description)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/drag/update")
+def drag_update(req: DragUpdateRequest):
+    """Executes per-frame drag updates without snapshotting or advancing rev."""
+    try:
+        return command_bus.update_drag(req.session_id, req.commands)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/drag/end")
+def drag_end(req: DragEndRequest):
+    """Ends a drag session. Commits one transaction/rev, or rolls back to begin snapshot."""
+    try:
+        return command_bus.end_drag(req.session_id, commit=req.commit)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ============================================================================

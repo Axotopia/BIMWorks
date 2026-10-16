@@ -531,6 +531,7 @@ class CommandBusEngine:
         self.rev: int = 0
         self.max_undo_depth = max_undo_depth
         self._lock = threading.RLock()
+        self.drag_sessions: Dict[str, Dict[str, Any]] = {}
 
     def get_schemas(self) -> Dict[str, Any]:
         """Exports JSON Schema 2020-12 specifications for all registered commands."""
@@ -1695,6 +1696,149 @@ class CommandBusEngine:
                 entries = [j for j in self.journal if j.get("rev", 0) > since]
                 return entries[-limit:] if limit else entries
             return list(self.journal[-limit:])
+
+    def begin_drag(self, origin: str = "ui", description: str = "Drag gesture") -> Dict[str, Any]:
+        """
+        Begins an interactive drag gesture session.
+        Takes ONE snapshot of pre-drag state and returns a unique session_id.
+        Does NOT advance revision.
+        """
+        with self._lock:
+            session_id = f"drag_{uuid.uuid4().hex[:8]}"
+            snapshot = self.manager.snapshot_state()
+            self.drag_sessions[session_id] = {
+                "session_id": session_id,
+                "origin": origin,
+                "description": description,
+                "snapshot": snapshot,
+                "commands": [],
+                "mementos": [],
+                "dirty_guids": set(),
+                "start_rev": self.rev,
+                "timestamp": time.time(),
+            }
+            return {
+                "status": "started",
+                "session_id": session_id,
+                "rev": self.rev,
+            }
+
+    def update_drag(self, session_id: str, commands: List[Any]) -> Dict[str, Any]:
+        """
+        Executes one frame of drag updates against the live model WITHOUT snapshotting.
+        Does NOT advance revision.
+        Marks dirty guids and returns the changed meshes (slice2d: null).
+        """
+        with self._lock:
+            if session_id not in self.drag_sessions:
+                raise RuntimeError(f"Unknown or expired drag session '{session_id}'")
+            session = self.drag_sessions[session_id]
+            results = []
+
+            for item in commands:
+                cmd_name = item.command if hasattr(item, "command") else item.get("command")
+                params = item.params if hasattr(item, "params") else item.get("params", {})
+                memento, res = self._execute_with_memento(cmd_name, params)
+                session["commands"].append({"command": cmd_name, "params": params})
+                session["mementos"].append(memento)
+                results.append({"command": cmd_name, "result": self.manager._jsonable(res)})
+
+                if "guid" in params:
+                    session["dirty_guids"].add(params["guid"])
+                if isinstance(res, dict):
+                    for k in ("guid", "wall_id", "element_id"):
+                        if k in res and res[k]:
+                            session["dirty_guids"].add(res[k])
+
+            changed_meshes = []
+            for guid in session["dirty_guids"]:
+                meta = self.manager.element_meta.get(guid)
+                if meta:
+                    try:
+                        m = self.manager._build_element_mesh(guid, meta)
+                        if m:
+                            changed_meshes.append(self.manager._jsonable(m))
+                    except Exception:
+                        pass
+
+            return {
+                "status": "updated",
+                "session_id": session_id,
+                "rev": self.rev,
+                "commands_executed": len(commands),
+                "dirty_guids": list(session["dirty_guids"]),
+                "changed_meshes": changed_meshes,
+                "slice2d": None,
+            }
+
+    def end_drag(self, session_id: str, commit: bool = True) -> Dict[str, Any]:
+        """
+        Ends an interactive drag session.
+        If commit=True:
+            Advances rev ONCE, creates ONE journal entry and ONE undo entry.
+        If commit=False:
+            Restores the begin snapshot, leaves rev unchanged and geometry byte-identical.
+        """
+        with self._lock:
+            if session_id not in self.drag_sessions:
+                raise RuntimeError(f"Unknown or expired drag session '{session_id}'")
+            session = self.drag_sessions.pop(session_id)
+
+            if not commit:
+                self.manager.restore_state(session["snapshot"])
+                return {
+                    "status": "cancelled",
+                    "session_id": session_id,
+                    "rev": self.rev,
+                    "committed": False,
+                }
+
+            self.rev += 1
+            if hasattr(self.manager, "commit_revision"):
+                self.manager.commit_revision(self.rev)
+
+            tx_id = f"tx_{uuid.uuid4().hex[:8]}"
+            tx_record = {
+                "rev": self.rev,
+                "transaction_id": tx_id,
+                "origin": session["origin"],
+                "description": session["description"],
+                "timestamp": time.time(),
+                "commands": session["commands"],
+                "results": [],
+            }
+            self.journal.append(tx_record)
+
+            snap = session["snapshot"]
+            def undo_drag(mgr):
+                mgr.restore_state(snap)
+
+            def redo_drag(mgr):
+                for c in session["commands"]:
+                    self.execute_single_command(c["command"], c["params"])
+
+            undo_memento = CommandMemento("DragGesture", undo_drag, redo_drag, session["description"])
+
+            self.undo_stack.append({
+                "rev": self.rev,
+                "transaction_id": tx_id,
+                "origin": session["origin"],
+                "description": session["description"],
+                "mementos": [undo_memento],
+            })
+            if len(self.undo_stack) > self.max_undo_depth:
+                self.undo_stack.pop(0)
+            self.redo_stack.clear()
+
+            return {
+                "status": "committed",
+                "session_id": session_id,
+                "transaction_id": tx_id,
+                "rev": self.rev,
+                "committed": True,
+                "commands_executed": len(session["commands"]),
+                "dirty_guids": list(session["dirty_guids"]),
+            }
 
 
 # Singleton CommandBus instance

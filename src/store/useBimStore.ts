@@ -695,6 +695,9 @@ interface BimStoreState {
    * engine. Any mutation that does not go through here is a bug.
    */
   dispatchTransaction: (action: UiAction, params: Record<string, unknown>, description?: string) => Promise<any>;
+  activeDragSessionId: string | null;
+  beginDrag: (description?: string) => Promise<string>;
+  endDrag: (commit?: boolean) => Promise<any>;
   undoTransaction: () => Promise<void>;
   redoTransaction: () => Promise<void>;
   transactionJournal: TransactionJournalEntry[];
@@ -957,6 +960,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   // Unified Interaction Session (Track B Phase 1)
   interactionSession: createInitialSession('select'),
+  activeDragSessionId: null,
   dispatchInteraction: (action: InteractionAction) =>
     set((state) => ({
       interactionSession: interactionReducer(state.interactionSession, action),
@@ -2822,11 +2826,72 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   dispatchTransaction: async (action, params, description = 'Edit') => {
     const command = UI_ACTION_COMMANDS[action];
+    const dragSessionId = get().activeDragSessionId;
+    if (dragSessionId) {
+      // Gesture in progress mode (Track B Phase 2)
+      const res = await fetch(`${API_BASE}/drag/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: dragSessionId,
+          commands: [{ command, params, origin: 'ui' }],
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(describeApiError(err));
+      }
+      const data = await res.json();
+      if (data.changed_meshes && Array.isArray(data.changed_meshes)) {
+        set((state) => {
+          const meshMap = new Map(state.meshes.map((m) => [m.guid, m]));
+          for (const m of data.changed_meshes) {
+            meshMap.set(m.guid, m);
+          }
+          return { meshes: Array.from(meshMap.values()) };
+        });
+      }
+      return data;
+    }
+
     return get().executeTransaction(
       [{ command, params, origin: 'ui' }],
       'ui',
       description || command
     );
+  },
+
+  beginDrag: async (description = 'Drag gesture') => {
+    const res = await fetch(`${API_BASE}/drag/begin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: 'ui', description }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(describeApiError(err));
+    }
+    const data = await res.json();
+    set({ activeDragSessionId: data.session_id });
+    return data.session_id;
+  },
+
+  endDrag: async (commit = true) => {
+    const dragSessionId = get().activeDragSessionId;
+    if (!dragSessionId) return null;
+    const res = await fetch(`${API_BASE}/drag/end`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: dragSessionId, commit }),
+    });
+    set({ activeDragSessionId: null });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(describeApiError(err));
+    }
+    const data = await res.json();
+    await get().fetchStateBundle();
+    return data;
   },
 
   undoTransaction: async () => {
