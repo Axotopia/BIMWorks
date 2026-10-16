@@ -81,7 +81,7 @@ It also records three defects found since, one of which violates an **existing**
 
 | Gap | Evidence | Severity |
 |---|---|---|
-| **The embedded solver is not installed.** `planegcs>=0.9.6` is declared in `requirements.txt` but `import planegcs` raises `ImportError`. `_require_solver()` (`backend/constraint_solver.py:96-102`) raises `SolverUnavailable`, and `_solve_constraints_after_move` (`backend/ifc_service.py:2964-2966`) catches every exception and **returns silently**. The constraint system is therefore **inert and reporting nothing**. | `[OBS]` execution; also `docs/REFACTOR-PLAN.md:75-77` | **High** — violates v0.2 §12 |
+| **The embedded solver is not installed.** `planegcs>=0.9.6` is declared in `requirements.txt` but `import planegcs` raises `ImportError`. `_require_solver()` (`backend/constraint_solver.py:96-102`) raises `SolverUnavailable`, and `_solve_constraints_after_move` (`backend/ifc_service.py:2964-2966`) catches every exception and **returns silently**. The constraint system is therefore **inert and reporting nothing**. **RESOLVED 2026-10-16:** at `ec2c99c` `import planegcs` succeeds, `ConstraintSolver._solver_available()` is `True` (`Sketch is not None`, `backend/constraint_solver.py:119-120`), `/health` reports `"solver_available": true`, and the solver capability gate passes 17/17 alongside `scratch/test_pure_python_solver.py` (13). §29.1 is what keeps this checkable — do not delete the gate. | `[OBS]` execution, 2026-10-16 | **Closed** (was High) — violated v0.2 §12 until this date |
 | **An open boundary passes sketch validation.** An open 3-segment chain returns `is_closed() == True` and `validate() == None`, and the missing edge is **invented**. The only gate on the commit path (`backend/ifc_service.py:644-649`) therefore admits a boundary that was never closed. | `[OBS]` in `review/REVIEW-ingetrazo-…md` §4.2, reproduced by `review/probe-sketch-validation.py` | **High** |
 | **An invalid polygon degrades silently.** `_triangulate_polygon_2d` swallows a Shapely failure or an invalid polygon and returns a fan (`backend/ifc_service.py:2188-2211`) — wrong area, no diagnostic. | `[OBS]` as above | Medium |
 | **`ElementUpdate` silently ignores what it does not understand.** `updates: Dict[str, Any]` (`backend/command_bus.py:189-191`) is untyped, and `update_element` applies recognised keys and **still reports `"updated"`** for the rest (`backend/ifc_service.py:3279-3404`). | `[OBS]` | Medium |
@@ -357,6 +357,10 @@ constraint behaviour is measured, asserted, or tuned.
 > This is a direct consequence of the §0.4 gap. Because `_solve_constraints_after_move` swallows
 > `SolverUnavailable` and returns, **an absent solver is indistinguishable from an unconstrained model.**
 > A gate that does not check for it measures nothing and reports success.
+>
+> **Status 2026-10-16:** the §0.4 gap is closed in this environment (planegcs imports; the solver gate
+> passes 17/17), so the requirement is now *satisfied rather than aspirational*. It stays a requirement:
+> an environment without planegcs must still be detected by the gate, not inferred from behaviour.
 
 **[REQ]** A missing solver MUST NOT be indistinguishable from success at the model level. Either it
 fails loudly on the paths that require it, or a gate asserts its presence.
