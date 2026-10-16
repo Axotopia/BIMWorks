@@ -117,6 +117,62 @@ wall2_restored = bim_manager.element_meta[wall2_guid]
 check("wall2 start restored to 0.0", abs(wall2_restored["start"][0] - 0.0) < 1e-4)
 check("wall2 end restored to 10.0", abs(wall2_restored["end"][0] - 10.0) < 1e-4)
 
+# 7. Performance Evidence on 250-Wall Fixture (W10 / Plan §8)
+print("\n--- 7. Performance Benchmark on 250-Wall Fixture (W10) ---")
+import time
+
+bim_manager.reset_model()
+wall_250_guids = []
+for i in range(250):
+    gx = float(i % 25) * 12.0
+    gy = float(i // 25) * 12.0
+    w_res = bim_manager.add_wall(
+        start_pt=(gx, gy, 0.0),
+        end_pt=(gx + 10.0, gy, 0.0),
+        height=10.0,
+        thickness=0.67,
+    )
+    wall_250_guids.append(w_res["guid"])
+
+check("250-wall fixture created", len(wall_250_guids) == 250)
+
+# Begin drag session on 250-wall fixture
+bench_session = command_bus.begin_drag(origin="ui", description="250-wall drag benchmark")
+bench_sid = bench_session["session_id"]
+
+frame_latencies = []
+slice2d_suppressed = True
+target_wall = wall_250_guids[0]
+
+for f in range(60):
+    t0 = time.perf_counter()
+    res = command_bus.update_drag(
+        bench_sid,
+        [CommandRequest(command="WallSetHeight", params={"guid": target_wall, "height": 10.0 + f * 0.1})]
+    )
+    t1 = time.perf_counter()
+    frame_latencies.append((t1 - t0) * 1000.0)
+    if res.get("slice2d") is not None:
+        slice2d_suppressed = False
+
+sorted_lats = sorted(frame_latencies)
+p50_engine = sorted_lats[int(len(sorted_lats) * 0.50)]
+p95_engine = sorted_lats[int(len(sorted_lats) * 0.95)]
+max_engine = max(sorted_lats)
+
+check("slice2d is suppressed during drag on 250-wall fixture", slice2d_suppressed)
+check(
+    f"p95 engine latency under 8.0 ms budget (N=60 frames)",
+    p95_engine < 8.0,
+    f"p50={p50_engine:.3f}ms, p95={p95_engine:.3f}ms, max={max_engine:.3f}ms (budget: 8.0ms)"
+)
+
+# Negative control: budget made 10x stricter (0.01 ms) must fail
+budget_fail = p95_engine < 0.01
+check("negative control: 10x stricter budget (< 0.01ms) fails", budget_fail is False)
+
+command_bus.end_drag(bench_sid, commit=False)
+
 print("\n------------------------------------------------------------------------")
 print(f"DRAG SESSION GATE: {passed} passed, {failed} failed")
 if failed > 0:

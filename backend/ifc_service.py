@@ -2106,6 +2106,12 @@ class BimModelManager:
             if name == "Basic Wall : Exterior - 8\" CMU":
                 name = type_rec.get("name", name)
 
+        from validity import validate_finite_point, validate_thickness, validate_wall_height
+        validate_finite_point(start_pt, "Wall start point")
+        validate_finite_point(end_pt, "Wall end point")
+        validate_thickness(thickness)
+        validate_wall_height(height)
+
         dx = end_pt[0] - start_pt[0]
         dy = end_pt[1] - start_pt[1]
         length = math.hypot(dx, dy)
@@ -2259,6 +2265,9 @@ class BimModelManager:
             if name == 'Single-Flush : 36" x 84"':
                 name = type_rec.get("name", name)
 
+        from validity import validate_opening_placement
+        validate_opening_placement(self, host_wall_guid, offset_along_wall, width)
+
         wall_meta = self.element_meta[host_wall_guid]
         wall = wall_meta["entity"]
         wall_thickness = wall_meta["thickness"]
@@ -2400,6 +2409,9 @@ class BimModelManager:
             if name == 'Fixed Window : 48" x 48"':
                 name = type_rec.get("name", name)
 
+        from validity import validate_opening_placement
+        validate_opening_placement(self, host_wall_guid, offset_along_wall, width)
+
         wall_meta = self.element_meta[host_wall_guid]
         wall = wall_meta["entity"]
         wall_thickness = wall_meta["thickness"]
@@ -2509,6 +2521,10 @@ class BimModelManager:
         guid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Creates an IfcSlab with boundary polygon."""
+        from validity import validate_polygon_footprint, validate_thickness
+        validate_polygon_footprint(polygon_pts, "Slab polygon")
+        validate_thickness(thickness)
+
         storey = self.get_storey_by_id(level_id)
         slab = ifcopenshell.api.run("root.create_entity", self.model, ifc_class="IfcSlab", name=name)
         guid = self._apply_guid(slab, guid)
@@ -2596,6 +2612,10 @@ class BimModelManager:
         the overlay; `polygon_pts`/`pitch_degrees` remain for the simple case and
         for callers that predate sketches.
         """
+        from validity import validate_polygon_footprint, validate_thickness
+        validate_polygon_footprint(polygon_pts, "Roof polygon")
+        validate_thickness(thickness)
+
         storey = self.get_storey_by_id(level_id)
         roof = ifcopenshell.api.run("root.create_entity", self.model, ifc_class="IfcRoof", name=name)
         guid = self._apply_guid(roof, guid)
@@ -3383,9 +3403,11 @@ class BimModelManager:
             # A changed start/end moves the baseline, so refresh the wall's own
             # placement and then re-assert its hosted openings in that frame. Without
             # this, resizing a wall orphans its doors exactly as translating one did.
-            self._refresh_wall_placement(guid)
-            self._reseat_hosted_openings(guid)
-            self._recompute_after_joined_edit(guid, old_points=_old_ends, new_points=_new_ends)
+            if "start" in updates or "end" in updates:
+                self._refresh_wall_placement(guid)
+                self._reseat_hosted_openings(guid)
+            if "start" in updates or "end" in updates or "thickness" in updates:
+                self._recompute_after_joined_edit(guid, old_points=_old_ends, new_points=_new_ends)
 
         # Case 3: Door / Window
         elif ifc_class in ("IfcDoor", "IfcWindow"):
@@ -3467,6 +3489,7 @@ class BimModelManager:
         other_key = "end" if end == "start" else "start"
         other_pt = meta.get(other_key)
 
+        expl = None
         if clamp:
             clamped_2d, expl = clamp_wall_end(self, guid, end, raw_pt)
             pt = [clamped_2d[0], clamped_2d[1], raw_pt[2]]
@@ -3478,7 +3501,10 @@ class BimModelManager:
                     raise ValueError(f"Wall {guid} length cannot be zero")
                 validate_wall_length_for_openings(self, guid, proposed_len)
 
-        return self.update_element(guid, {end: pt})
+        res = self.update_element(guid, {end: pt})
+        if expl:
+            res["clamp_reason"] = expl
+        return res
 
     def set_opening_offset(self, guid: str, offset: float, clamp: bool = False) -> Dict[str, Any]:
         """Sets offset_along_wall for a hosted opening (door/window)."""
@@ -3491,13 +3517,17 @@ class BimModelManager:
         from validity import validate_opening_placement, clamp_opening_offset
         host_guid = meta.get("host_wall_guid")
         width = float(meta.get("width", 3.0))
+        expl = None
         if host_guid and clamp:
             clamped_off, expl = clamp_opening_offset(self, host_guid, offset, width)
             offset = clamped_off
         elif host_guid:
             validate_opening_placement(self, host_guid, offset, width)
 
-        return self.update_element(guid, {"offset_along_wall": float(offset)})
+        res = self.update_element(guid, {"offset_along_wall": float(offset)})
+        if expl:
+            res["clamp_reason"] = expl
+        return res
 
     def set_opening_width(self, guid: str, width: float) -> Dict[str, Any]:
         """Sets width of a hosted opening (door/window)."""

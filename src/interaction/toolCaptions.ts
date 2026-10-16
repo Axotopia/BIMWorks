@@ -46,6 +46,7 @@ export const TOOL_CAPTIONS: Record<ActiveTool, ToolCaption> = {
   TG: { caption: 'Tag', shortcut: 'TG', implemented: false },
   TX: { caption: 'Text', shortcut: 'TX', implemented: false },
   SEC: { caption: 'Section', shortcut: 'SEC', implemented: true },
+  EL: { caption: 'Elevation', shortcut: 'EL', implemented: true },
   SHT: { caption: 'Sheet', shortcut: 'SHT', implemented: false },
 };
 
@@ -95,6 +96,8 @@ export function toolPrompt(
     case 'SEC':
       if (phase === 'picking' || picksCount >= 1) return 'Click second point to place section cut line.';
       return 'Click first point, then click second point to place section cut line.';
+    case 'EL':
+      return 'Click location on floor plan to place elevation marker and create elevation view.';
     case 'sketch':
       return 'Draw sketch boundary lines. Press Enter to finish, Esc to cancel.';
     case 'select':

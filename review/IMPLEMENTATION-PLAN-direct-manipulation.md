@@ -58,6 +58,25 @@ ten commands without a memento) and is likewise unwired. Until both are wired, `
 not evidence about the first-run path or the interaction session. That asymmetry is what §8's "each must be
 able to fail" exists to prevent; W7 and W8 of the rework order close it.
 
+### 0b. Post-Rework Audit — 2026-10-16 (Rework Order W1–W13 Complete)
+
+Following execution of `review/REWORK-ORDER-direct-manipulation-2026-10-16.md`:
+- **A5 is ✅ gated (W5)**: Section A5b in `scripts/check-ui-p0.mjs` asserts drawn content occupies 60–90% of viewport and is centered across plan, section, and elevation fixtures. Negative control verifies identity transform fails the gate.
+- **A7 is ✅ DONE (W4)**: Added elevation tool (`EL`) to `ActiveTool` in `src/types/bim.ts`, `toolCaptions.ts:46` (`implemented: true`), Ribbon, and pick gesture in `PlanViewport2D.tsx`.
+- **P1 is ✅ DONE (W6)**: Retired local `useState` for tool-points in `Viewport3D.tsx` and `PlanViewport2D.tsx`; single source of truth is `interactionSession`. Asserted in `scripts/check-interaction-session.mjs` Section 5 with negative control.
+- **P7 is ✅ DONE (W9, W10, W11)**:
+  - W9a: Raycasts all scene meshes before classification; nearest object selected.
+  - W9b: Wobble threshold (>5px) delays drag session initiation; fast clicks release cleanly without stranding session.
+  - W10: Drag update p95 on 250-wall fixture measured at 0.155 ms (< 8.0 ms budget), recorded in `docs/DELTA-MEASUREMENT.md` §2.3.
+  - W11: Node gate `scripts/check-pushpull-engine.mjs` imports shipped `pushpull.ts` directly; `scratch/test_face_pushpull.py` verifies exact `MIN_THICKNESS_FT = 1.0/12.0` round-trip through `WallSetThickness`.
+- **P8 is ✅ DONE (W1, W2, W3)**:
+  - W1: `MIN_THICKNESS_FT = 1.0 / 12.0` floor is committable from both grips and pushpull without lossy rounding; engine comparison relaxed to `float(thickness) < min_thickness - 1e-6`.
+  - W2: `clamp_reason` returned by `set_wall_end` / `set_opening_offset`, propagated through envelope (`command_bus.py`) and surfaced in store (`useBimStore.ts`).
+  - W3: Creation paths guarded by Pydantic bounds and model validity predicates (`test_validity_predicates.py` 63/63).
+- **Gates Wired (W7, W8)**:
+  - W7: `"check:interaction": "node scripts/check-interaction-session.mjs"` wired into `package.json` and `npm run check`.
+  - W8: All 50 registered commands declare a `CommandMemento` (probe check G: 0 of 50 fall back to snapshot). `scratch/_probe_engine_smoke.py` is wired into `scripts/check-python-suites.mjs` and verified by `npm run check`.
+
 ---
 
 ## 0. Why this plan exists

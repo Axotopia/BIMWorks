@@ -68,7 +68,7 @@ def validate_thickness(thickness: float, min_thickness: float = MIN_THICKNESS_FT
     """Validates that element thickness is positive and above the minimum threshold."""
     if not is_finite_coord(thickness) or float(thickness) <= 0:
         raise ValueError(f"Thickness must be positive (> 0), got {thickness}")
-    if float(thickness) < min_thickness:
+    if float(thickness) < min_thickness - 1e-6:
         raise ValueError(
             f"Thickness {thickness:.4f} ft is below minimum allowable thickness {min_thickness:.4f} ft (1 inch)"
         )

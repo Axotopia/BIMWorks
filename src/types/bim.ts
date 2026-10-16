@@ -308,6 +308,7 @@ export type ActiveTool =
   | 'TG' // Tag
   | 'TX' // Text
   | 'SEC' // Section
+  | 'EL' // Elevation
   | 'SHT' // Sheet
   | 'BX' // Section Box
   | 'AL' // Align & Lock

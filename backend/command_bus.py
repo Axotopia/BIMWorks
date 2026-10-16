@@ -23,8 +23,8 @@ from references import normalize_reference, resolve_reference
 class WallCreateParams(BaseModel):
     start: List[float] = Field(..., description="Start point [x, y, z] in decimal feet or meters")
     end: List[float] = Field(..., description="End point [x, y, z] in decimal feet or meters")
-    height: float = Field(default=3.0, description="Unconnected wall height")
-    thickness: float = Field(default=0.2, description="Wall thickness")
+    height: float = Field(default=3.0, gt=0, description="Unconnected wall height")
+    thickness: float = Field(default=0.2, gt=0, description="Wall thickness")
     level_id: Optional[str] = Field(default=None, description="Host level GUID")
     name: str = Field(default='Basic Wall : Exterior - 8" CMU', description="Wall type name")
 
@@ -45,25 +45,25 @@ class ReferenceMoveParams(BaseModel):
 
 class DoorInsertParams(BaseModel):
     host_wall_guid: str = Field(..., description="Host wall GUID")
-    offset_along_wall: float = Field(..., description="Distance from wall start point along baseline")
-    width: float = Field(default=0.95, description="Door opening width")
-    height: float = Field(default=2.1, description="Door opening height")
+    offset_along_wall: float = Field(..., ge=0, description="Distance from wall start point along baseline")
+    width: float = Field(default=0.95, gt=0, description="Door opening width")
+    height: float = Field(default=2.1, gt=0, description="Door opening height")
     name: str = Field(default='Single Flush : 36" x 84"', description="Door family/type name")
     swing_flipped: bool = Field(default=False, description="Whether door swing direction is flipped")
 
 
 class WindowInsertParams(BaseModel):
     host_wall_guid: str = Field(..., description="Host wall GUID")
-    offset_along_wall: float = Field(..., description="Distance from wall start point along baseline")
-    width: float = Field(default=1.2, description="Window width")
-    height: float = Field(default=1.2, description="Window height")
-    sill_height: float = Field(default=0.9, description="Window sill height from floor")
+    offset_along_wall: float = Field(..., ge=0, description="Distance from wall start point along baseline")
+    width: float = Field(default=1.2, gt=0, description="Window width")
+    height: float = Field(default=1.2, gt=0, description="Window height")
+    sill_height: float = Field(default=0.9, ge=0, description="Window sill height from floor")
     name: str = Field(default='Fixed Window : 48" x 48"', description="Window family/type name")
 
 
 class SlabCreateParams(BaseModel):
     polygon: List[List[float]] = Field(..., description="Closed 2D polygon vertices [[x,y], ...]")
-    thickness: float = Field(default=0.25, description="Slab thickness")
+    thickness: float = Field(default=0.25, gt=0, description="Slab thickness")
     elevation: float = Field(default=0.0, description="Base elevation")
     level_id: Optional[str] = Field(default=None, description="Host level GUID")
     name: str = Field(default='Floor : 10" Concrete Slab', description="Floor type name")
@@ -71,7 +71,7 @@ class SlabCreateParams(BaseModel):
 
 class RoofCreateParams(BaseModel):
     polygon: List[List[float]] = Field(..., description="Closed 2D polygon vertices [[x,y], ...]")
-    thickness: float = Field(default=0.3, description="Roof thickness")
+    thickness: float = Field(default=0.3, gt=0, description="Roof thickness")
     elevation: float = Field(default=3.0, description="Base roof plate elevation")
     pitch_degrees: float = Field(default=15.0, description="Roof pitch slope in degrees")
     level_id: Optional[str] = Field(default=None, description="Host level GUID")
@@ -643,13 +643,19 @@ class CommandBusEngine:
             p: WallSetEndParams = validated
             res = self.manager.set_wall_end(p.guid, p.end, p.point, clamp=p.clamp)
             final_pt = res.get(p.end, p.point)
-            return {"status": "updated", "guid": p.guid, "end": p.end, "point": final_pt, "element": res}
+            envelope = {"status": "updated", "guid": p.guid, "end": p.end, "point": final_pt, "element": res}
+            if "clamp_reason" in res:
+                envelope["clamp_reason"] = res["clamp_reason"]
+            return envelope
 
         elif cmd_name == "OpeningSetOffset":
             p: OpeningSetOffsetParams = validated
             res = self.manager.set_opening_offset(p.guid, p.offset, clamp=p.clamp)
             final_off = float(res.get("offset_along_wall", p.offset))
-            return {"status": "updated", "guid": p.guid, "offset": final_off, "element": res}
+            envelope = {"status": "updated", "guid": p.guid, "offset": final_off, "element": res}
+            if "clamp_reason" in res:
+                envelope["clamp_reason"] = res["clamp_reason"]
+            return envelope
 
         elif cmd_name == "OpeningSetWidth":
             p: OpeningSetWidthParams = validated
@@ -1170,7 +1176,10 @@ class CommandBusEngine:
                 mgr.set_wall_end(p.guid, p.end, old_pt, clamp=False)
             def redo_fn(mgr):
                 mgr.set_wall_end(p.guid, p.end, final_pt, clamp=False)
-            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "end": p.end, "point": final_pt, "element": res}
+            envelope = {"status": "updated", "guid": p.guid, "end": p.end, "point": final_pt, "element": res}
+            if "clamp_reason" in res:
+                envelope["clamp_reason"] = res["clamp_reason"]
+            return CommandMemento(cmd_name, undo_fn, redo_fn), envelope
 
         elif cmd_name == "OpeningSetOffset":
             p: OpeningSetOffsetParams = validated
@@ -1184,7 +1193,10 @@ class CommandBusEngine:
                 mgr.set_opening_offset(p.guid, old_off, clamp=False)
             def redo_fn(mgr):
                 mgr.set_opening_offset(p.guid, final_off, clamp=False)
-            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "guid": p.guid, "offset": final_off, "element": res}
+            envelope = {"status": "updated", "guid": p.guid, "offset": final_off, "element": res}
+            if "clamp_reason" in res:
+                envelope["clamp_reason"] = res["clamp_reason"]
+            return CommandMemento(cmd_name, undo_fn, redo_fn), envelope
 
         elif cmd_name == "OpeningSetWidth":
             p: OpeningSetWidthParams = validated
@@ -1751,6 +1763,194 @@ class CommandBusEngine:
                 mgr.move_viewport(p.viewport_id, p.x, p.y, p.sheet_id)
             return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "moved", "viewport_id": p.viewport_id, "x": vp["x"], "y": vp["y"]}
 
+        elif cmd_name == "SetWallJoin":
+            p: SetWallJoinParams = validated
+            prev_policy = copy.deepcopy(self.manager.join_policies.get(p.wall_guid))
+            res = self.manager.set_wall_join(
+                wall_guid=p.wall_guid,
+                end_index=p.end_index,
+                allow_join=p.allow_join,
+                mode=p.mode,
+            )
+            def undo_fn(mgr):
+                if prev_policy is not None:
+                    mgr.join_policies[p.wall_guid] = copy.deepcopy(prev_policy)
+                else:
+                    mgr.join_policies.pop(p.wall_guid, None)
+                mgr.recompute_wall_joins()
+            def redo_fn(mgr):
+                mgr.set_wall_join(
+                    wall_guid=p.wall_guid,
+                    end_index=p.end_index,
+                    allow_join=p.allow_join,
+                    mode=p.mode,
+                )
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "join_policy": res}
+
+        elif cmd_name == "ConstraintAlign":
+            p: ConstraintAlignParams = validated
+            if p.ref_guid not in self.manager.element_meta or p.target_guid not in self.manager.element_meta:
+                raise ValueError("Reference or target element not found.")
+            ref_pos = self.manager.get_element_coord(p.ref_guid, p.axis)
+            target_pos = self.manager.get_element_coord(p.target_guid, p.axis)
+            delta = ref_pos - target_pos
+            dx = delta if p.axis == "x" else 0.0
+            dy = delta if p.axis == "y" else 0.0
+            dz = delta if p.axis == "z" else 0.0
+
+            c = self.manager.add_align_constraint(p.ref_guid, p.target_guid, p.axis, p.lock)
+            cid = c["id"]
+            saved_c = copy.deepcopy(c)
+
+            def undo_fn(mgr):
+                if abs(delta) > 1e-4:
+                    mgr.translate_element(p.target_guid, -dx, -dy, -dz)
+                if cid in mgr.constraints:
+                    del mgr.constraints[cid]
+                    mgr.save_constraints_to_ifc()
+            def redo_fn(mgr):
+                if abs(delta) > 1e-4:
+                    mgr.translate_element(p.target_guid, dx, dy, dz)
+                mgr.constraints[cid] = copy.deepcopy(saved_c)
+                mgr.save_constraints_to_ifc()
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "aligned", "constraint": c}
+
+        elif cmd_name == "ConstraintLockDim":
+            p: ConstraintLockDimParams = validated
+            c = self.manager.add_dimension_lock(p.guid_a, p.guid_b, p.locked_distance, p.lock, p.axis)
+            cid = c["id"]
+            saved_c = copy.deepcopy(c)
+            def undo_fn(mgr):
+                if cid in mgr.constraints:
+                    del mgr.constraints[cid]
+                    mgr.save_constraints_to_ifc()
+            def redo_fn(mgr):
+                mgr.constraints[cid] = copy.deepcopy(saved_c)
+                mgr.save_constraints_to_ifc()
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "locked", "constraint": c}
+
+        elif cmd_name == "ConstraintEqualize":
+            p: ConstraintEqualizeParams = validated
+            prev_meta = {
+                g: copy.deepcopy(self.manager.element_meta[g])
+                for g in p.interior_guids if g in self.manager.element_meta
+            }
+            prev_c_id = None
+            prev_c_val = None
+            for existing_id, existing in self.manager.constraints.items():
+                if (
+                    existing.get("type") == "equalize"
+                    and existing.get("span_start_guid") == p.span_start_guid
+                    and existing.get("span_end_guid") == p.span_end_guid
+                    and existing.get("axis", "x") == p.axis
+                ):
+                    prev_c_id = existing_id
+                    prev_c_val = copy.deepcopy(existing)
+                    break
+
+            c = self.manager.equalize_span(p.span_start_guid, p.span_end_guid, p.interior_guids, p.axis)
+            cid = c["id"]
+
+            def undo_fn(mgr):
+                for g, meta in prev_meta.items():
+                    if g in mgr.element_meta:
+                        mgr.element_meta[g].update(copy.deepcopy(meta))
+                        mgr.mark_mesh_dirty(g)
+                if prev_c_id and prev_c_val:
+                    mgr.constraints[prev_c_id] = copy.deepcopy(prev_c_val)
+                elif cid in mgr.constraints:
+                    del mgr.constraints[cid]
+                mgr.save_constraints_to_ifc()
+
+            def redo_fn(mgr):
+                mgr.equalize_span(p.span_start_guid, p.span_end_guid, p.interior_guids, p.axis)
+
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "equalized", "constraint": c}
+
+        elif cmd_name == "SketchCurveAdd":
+            p: SketchCurveAddParams = validated
+            prev_sketch_dict = copy.deepcopy(self.manager.element_meta.get(p.guid, {}).get("sketch"))
+            res = self.manager.add_sketch_curve(
+                p.guid, p.curve_id, (p.start[0], p.start[1]), (p.end[0], p.end[1]),
+                p.defines_slope, p.slope_angle,
+            )
+            def undo_fn(mgr):
+                if prev_sketch_dict:
+                    from sketch_model import Sketch
+                    mgr.set_roof_sketch(p.guid, Sketch.from_dict(prev_sketch_dict))
+                else:
+                    mgr.remove_sketch_curve(p.guid, p.curve_id)
+            def redo_fn(mgr):
+                mgr.add_sketch_curve(
+                    p.guid, p.curve_id, (p.start[0], p.start[1]), (p.end[0], p.end[1]),
+                    p.defines_slope, p.slope_angle,
+                )
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "SketchCurveMoveVertex":
+            p: SketchCurveMoveVertexParams = validated
+            prev_sketch_dict = copy.deepcopy(self.manager.element_meta.get(p.guid, {}).get("sketch"))
+            res = self.manager.move_sketch_vertex(
+                p.guid, p.curve_id, p.end_index, (p.to[0], p.to[1])
+            )
+            def undo_fn(mgr):
+                if prev_sketch_dict:
+                    from sketch_model import Sketch
+                    mgr.set_roof_sketch(p.guid, Sketch.from_dict(prev_sketch_dict))
+            def redo_fn(mgr):
+                mgr.move_sketch_vertex(p.guid, p.curve_id, p.end_index, (p.to[0], p.to[1]))
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "SketchCurveMoveEdge":
+            p: SketchCurveMoveEdgeParams = validated
+            res = self.manager.move_sketch_curve(p.guid, p.curve_id, p.dx, p.dy)
+            def undo_fn(mgr):
+                mgr.move_sketch_curve(p.guid, p.curve_id, -p.dx, -p.dy)
+            def redo_fn(mgr):
+                mgr.move_sketch_curve(p.guid, p.curve_id, p.dx, p.dy)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "SketchCurveSetSlope":
+            p: SketchCurveSlopeParams = validated
+            prev_sketch_dict = copy.deepcopy(self.manager.element_meta.get(p.guid, {}).get("sketch"))
+            res = self.manager.set_sketch_slope(
+                p.guid, p.curve_id, p.defines_slope, p.slope_angle
+            )
+            def undo_fn(mgr):
+                if prev_sketch_dict:
+                    from sketch_model import Sketch
+                    mgr.set_roof_sketch(p.guid, Sketch.from_dict(prev_sketch_dict))
+            def redo_fn(mgr):
+                mgr.set_sketch_slope(p.guid, p.curve_id, p.defines_slope, p.slope_angle)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), res
+
+        elif cmd_name == "ConstraintLockToggle":
+            p: ConstraintLockToggleParams = validated
+            prev_locked = self.manager.constraints.get(p.constraint_id, {}).get("is_locked")
+            ok = self.manager.toggle_constraint_lock(p.constraint_id, p.is_locked)
+            if not ok:
+                raise ValueError(f"Constraint {p.constraint_id} not found")
+            def undo_fn(mgr):
+                if prev_locked is not None:
+                    mgr.toggle_constraint_lock(p.constraint_id, prev_locked)
+            def redo_fn(mgr):
+                mgr.toggle_constraint_lock(p.constraint_id, p.is_locked)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "updated", "constraint_id": p.constraint_id, "is_locked": p.is_locked}
+
+        elif cmd_name == "ConstraintDelete":
+            p: ConstraintDeleteParams = validated
+            prev_c = copy.deepcopy(self.manager.constraints.get(p.constraint_id))
+            ok = self.manager.delete_constraint(p.constraint_id)
+            if not ok:
+                raise ValueError(f"Constraint {p.constraint_id} not found")
+            def undo_fn(mgr):
+                if prev_c is not None:
+                    mgr.constraints[p.constraint_id] = copy.deepcopy(prev_c)
+                    mgr.save_constraints_to_ifc()
+            def redo_fn(mgr):
+                mgr.delete_constraint(p.constraint_id)
+            return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "deleted", "constraint_id": p.constraint_id}
+
         else:
             # Fallback for any other registered command (e.g. constraints, sketch curves, etc.)
             pre_snap = self.manager.snapshot_state()
@@ -1988,6 +2188,12 @@ class CommandBusEngine:
                     except Exception:
                         pass
 
+            clamp_reasons = [
+                r["result"].get("clamp_reason")
+                for r in results
+                if isinstance(r.get("result"), dict) and r["result"].get("clamp_reason")
+            ]
+
             return {
                 "status": "updated",
                 "session_id": session_id,
@@ -1996,6 +2202,8 @@ class CommandBusEngine:
                 "dirty_guids": list(session["dirty_guids"]),
                 "changed_meshes": changed_meshes,
                 "slice2d": None,
+                "results": results,
+                "clamp_reason": clamp_reasons[0] if clamp_reasons else None,
             }
 
     def end_drag(self, session_id: str, commit: bool = True) -> Dict[str, Any]:

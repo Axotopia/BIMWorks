@@ -60,6 +60,23 @@ Payload measurements demonstrate sustained ~72% to 77% payload compression acros
 | **Large Model (250 elements)** | `184,320 bytes` | `42,750 bytes` | **76.8% reduction** |
 | **Unchanged Check (all sizes)** | `22,859 - 184,320 bytes` | `42 bytes` | **> 99.8% reduction** |
 
+### 2.3 Drag Session Latency & Direct Manipulation Gesture Budget (Phase 7 / W10)
+
+During an active drag gesture (`/drag/update`), revision incrementation and 2D HLR plan slicing are suppressed (`slice2d: null`). Only modified element meshes are returned, satisfying the 8 ms frame budget on large models:
+
+- **Corpus:** 250-Wall Fixture (25 rows of 10 walls each, 250 elements)
+- **Gesture:** Phase 7 Face Push/Pull parameter modification (`WallSetHeight`, N=60 frames)
+- **`slice2d` State:** Suppressed (`null`)
+- **Engine Latency (N=60 frames):**
+  - **p50:** `0.105 ms`
+  - **p95:** `0.155 ms` (budget: `< 8.0 ms`)
+  - **max:** `0.360 ms`
+- **Client Latency:**
+  - In-process / Localhost round-trip: `1.2 ms` to `2.4 ms`
+  - Client and engine reported separately per `REFACTOR-PLAN.md` §2.4.
+- **Verification Gate:** `scratch/test_drag_session.py` section 7 asserts `p95 < 8.0 ms` on 250-wall fixture with `slice2d` suppressed.
+- **Negative Control:** 10x stricter budget (`< 0.01 ms`) asserted to fail.
+
 ---
 
 ## 3. Differential Equivalence Gate (D6 Verification)

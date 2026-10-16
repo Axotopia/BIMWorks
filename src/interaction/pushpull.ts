@@ -140,9 +140,11 @@ export function computePushPullCommand(
       const distFromBaseline = Math.abs(offX * nx + offY * ny);
       rawThickness = distFromBaseline * 2;
     }
-    // Guarded by validity rules: minimum wall thickness 1 inch (0.0833 ft)
+    // Guarded by validity rules: minimum wall thickness 1 inch (1.0 / 12.0 ft)
     const clampedThickness = Math.max(1.0 / 12.0, rawThickness);
-    const roundedThickness = Number(clampedThickness.toFixed(3));
+    const roundedThickness = clampedThickness <= 1.0 / 12.0 + 1e-6
+      ? 1.0 / 12.0
+      : Number(clampedThickness.toFixed(4));
     return {
       action: 'modifyWallThickness',
       command: 'WallSetThickness',

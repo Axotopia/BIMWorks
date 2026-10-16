@@ -106,7 +106,10 @@ def compute_pushpull_param(
         dist_from_baseline = abs(off_x * nx + off_y * ny)
         raw_thickness = dist_from_baseline * 2.0
         clamped_thickness = max(MIN_THICKNESS_FT, raw_thickness)
-        return round(clamped_thickness, 3)
+        # Note on file history (W11):
+        # Do not round to 3 decimals (0.083), which truncates below 1 inch (1/12 ft = 0.083333...)
+        # and gets rejected by the validity engine. Exactly match src/interaction/pushpull.ts:
+        return MIN_THICKNESS_FT if clamped_thickness <= MIN_THICKNESS_FT + 1e-6 else round(clamped_thickness, 4)
 
 
 def run_face_pushpull_gate():
@@ -186,9 +189,45 @@ def run_face_pushpull_gate():
     th_pull = compute_pushpull_param("side", wall_elem, [10.0, 1.0, 5.0])
     check("Thickness pull computes 2.0 ft", abs(th_pull - 2.0) < 1e-3)
 
-    # Pushing side face inward to y=0.01 (thickness 0.02 ft < 1 inch) -> clamped to 1 inch (0.0833 ft)
+    # Pushing side face inward to y=0.01 (thickness 0.02 ft < 1 inch) -> clamped to 1 inch (exact 1/12 ft)
     th_clamp = compute_pushpull_param("side", wall_elem, [10.0, 0.01, 5.0])
-    check("Thickness push clamped to minimum 1 inch (0.0833 ft)", abs(th_clamp - round(MIN_THICKNESS_FT, 3)) < 1e-3)
+    # Exact value assertion (no 1e-3 tolerance, closes W11):
+    check("Thickness push clamped to exact floor MIN_THICKNESS_FT (1/12 ft)", th_clamp == MIN_THICKNESS_FT)
+
+    # Engine round-trip check: feed th_clamp to WallSetThickness and assert it commits
+    commit_res = bus.execute_transaction(
+        [
+            CommandRequest(
+                command="WallSetThickness",
+                params={"guid": wall_guid, "thickness": th_clamp},
+                origin="ui",
+            )
+        ],
+        "Commit clamped 1-inch thickness"
+    )
+    check("Engine commits WallSetThickness with clamped floor 1/12 ft", commit_res.get("status") == "committed")
+    check("Model reflects exact 1/12 ft thickness", abs(mgr.element_meta[wall_guid]["thickness"] - MIN_THICKNESS_FT) < 1e-9)
+
+    # Undo round-trip transaction to return wall to baseline 0.67 ft thickness
+    bus.undo()
+    check("Baseline 0.67 ft restored after round-trip check", abs(mgr.element_meta[wall_guid]["thickness"] - 0.67) < 1e-9)
+
+    # Negative control: verify that rounding to 3 decimals (0.083 ft) is rejected by engine
+    try:
+        bus.execute_transaction(
+            [
+                CommandRequest(
+                    command="WallSetThickness",
+                    params={"guid": wall_guid, "thickness": 0.083},
+                    origin="ui",
+                )
+            ],
+            "Reject sub-1-inch 0.083ft"
+        )
+        rejected = False
+    except Exception:
+        rejected = True
+    check("W11 negative control: engine rejects rounded 0.083ft clamp floor", rejected)
 
     # 4. Bus Drag Session for Height Push/Pull (10 frames)
     initial_rev = bus.rev

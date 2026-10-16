@@ -313,9 +313,11 @@ def run_validity_predicates_gate():
         ],
         "Shorten wall with clamp"
     )
-    clamped_result_pt = res_clamped["results"][0]["result"]["point"]
+    clamped_result = res_clamped["results"][0]["result"]
+    clamped_result_pt = clamped_result["point"]
     check("Bus transaction with clamp=True succeeded", abs(clamped_result_pt[0] - 15.0) < 0.01)
     check("Model element updated to clamped endpoint", abs(mgr.element_meta[wall_guid]["end"][0] - 15.0) < 0.01)
+    check("W2 Gate B8: clamp sentence in envelope for WallSetEnd", "cannot be shorter than hosted openings" in clamped_result.get("clamp_reason", ""))
 
     # Undo/Redo of clamped WallSetEnd
     bus.undo()
@@ -363,9 +365,11 @@ def run_validity_predicates_gate():
         ],
         "Set door offset past wall with clamp"
     )
-    door_clamped_off = res_door_clamp["results"][0]["result"]["offset"]
+    door_clamped_result = res_door_clamp["results"][0]["result"]
+    door_clamped_off = door_clamped_result["offset"]
     check("OpeningSetOffset with clamp=True clamped to 17.0", abs(door_clamped_off - 17.0) < 0.01)
     check("Model door element updated to clamped offset 17.0", abs(mgr.element_meta[door_guid]["offset_along_wall"] - 17.0) < 0.01)
+    check("W2 Gate B8: clamp sentence in envelope for OpeningSetOffset", "fit within wall length" in door_clamped_result.get("clamp_reason", ""))
 
     # Undo/Redo of clamped OpeningSetOffset
     bus.undo()
@@ -401,9 +405,134 @@ def run_validity_predicates_gate():
             ],
             "Set negative height"
         )
-        check("WallSetHeight negative rejected", False)
     except (ValidationError, RuntimeError):
         check("WallSetHeight negative rejected with ValidationError/RuntimeError", True)
+
+    # -------------------------------------------------------------------------
+    # 12. W1: Minimum Thickness Floor Commits on Both Paths & Rejects < 1/12 ft
+    # -------------------------------------------------------------------------
+    # Client declared floor is exactly 1 inch = 1.0 / 12.0 ft
+    min_floor = 1.0 / 12.0
+    res_floor = bus.execute_transaction(
+        [
+            CommandRequest(
+                command="WallSetThickness",
+                params={"guid": wall_guid, "thickness": min_floor},
+            )
+        ],
+        "Set thickness to client-declared floor (1 inch)"
+    )
+    committed_th = mgr.element_meta[wall_guid]["thickness"]
+    check("W1: WallSetThickness at declared floor 1/12 ft commits", abs(committed_th - min_floor) < 1e-9)
+
+    # Sub-inch values (0.083, 0.0833) must be refused
+    for bad_th in (0.083, 0.0833):
+        try:
+            bus.execute_transaction(
+                [
+                    CommandRequest(
+                        command="WallSetThickness",
+                        params={"guid": wall_guid, "thickness": bad_th},
+                    )
+                ],
+                f"Set sub-inch thickness {bad_th}"
+            )
+            check(f"W1 negative control: {bad_th} ft thickness rejected", False)
+        except RuntimeError as e:
+            check(f"W1 negative control: {bad_th} ft thickness rejected by engine", "below minimum allowable" in str(e))
+
+    # -------------------------------------------------------------------------
+    # 13. W3: Create Path Unguarded — All 10 Reproductions Refused
+    # -------------------------------------------------------------------------
+    # 1. WallCreate thickness=0.0
+    try:
+        bus.execute_transaction([
+            CommandRequest(command="WallCreate", params={"start": [0,0,0], "end": [10,0,0], "height": 10.0, "thickness": 0.0})
+        ], "Create wall thickness=0.0")
+        check("W3.1: WallCreate thickness=0.0 refused", False)
+    except (ValidationError, RuntimeError) as e:
+        check("W3.1: WallCreate thickness=0.0 refused", "greater than 0" in str(e) or "positive" in str(e))
+
+    # 2. WallCreate thickness=-1.0
+    try:
+        bus.execute_transaction([
+            CommandRequest(command="WallCreate", params={"start": [0,0,0], "end": [10,0,0], "height": 10.0, "thickness": -1.0})
+        ], "Create wall thickness=-1.0")
+        check("W3.2: WallCreate thickness=-1.0 refused", False)
+    except (ValidationError, RuntimeError) as e:
+        check("W3.2: WallCreate thickness=-1.0 refused", "greater than 0" in str(e) or "positive" in str(e))
+
+    # 3. WallCreate height=0.0
+    try:
+        bus.execute_transaction([
+            CommandRequest(command="WallCreate", params={"start": [0,0,0], "end": [10,0,0], "height": 0.0, "thickness": 0.5})
+        ], "Create wall height=0.0")
+        check("W3.3: WallCreate height=0.0 refused", False)
+    except (ValidationError, RuntimeError) as e:
+        check("W3.3: WallCreate height=0.0 refused", "greater than 0" in str(e) or "positive" in str(e))
+
+    # 4. DoorInsert offset=25 (host wall length 20.0)
+    try:
+        bus.execute_transaction([
+            CommandRequest(command="DoorInsert", params={"host_wall_guid": wall_guid, "offset_along_wall": 25.0, "width": 3.0, "height": 7.0})
+        ], "DoorInsert offset=25")
+        check("W3.4: DoorInsert offset=25 on 20ft wall refused", False)
+    except (ValidationError, RuntimeError) as e:
+        check("W3.4: DoorInsert offset=25 on 20ft wall refused", "exceeds host wall length" in str(e))
+
+    # 5. DoorInsert offset=-5
+    try:
+        bus.execute_transaction([
+            CommandRequest(command="DoorInsert", params={"host_wall_guid": wall_guid, "offset_along_wall": -5.0, "width": 3.0, "height": 7.0})
+        ], "DoorInsert offset=-5")
+        check("W3.5: DoorInsert offset=-5 refused", False)
+    except (ValidationError, RuntimeError) as e:
+        check("W3.5: DoorInsert offset=-5 refused", "greater than or equal to 0" in str(e) or "cannot be negative" in str(e))
+
+    # 6. WindowInsert offset=99
+    try:
+        bus.execute_transaction([
+            CommandRequest(command="WindowInsert", params={"host_wall_guid": wall_guid, "offset_along_wall": 99.0, "width": 3.0, "height": 4.0})
+        ], "WindowInsert offset=99")
+        check("W3.6: WindowInsert offset=99 refused", False)
+    except (ValidationError, RuntimeError) as e:
+        check("W3.6: WindowInsert offset=99 refused", "exceeds host wall length" in str(e))
+
+    # 7. SlabCreate zero-area polygon (4 identical points)
+    try:
+        bus.execute_transaction([
+            CommandRequest(command="SlabCreate", params={"polygon": [[5,5],[5,5],[5,5],[5,5]], "thickness": 0.5})
+        ], "SlabCreate zero-area polygon")
+        check("W3.7: SlabCreate zero-area polygon refused", False)
+    except (ValidationError, RuntimeError) as e:
+        check("W3.7: SlabCreate zero-area polygon refused", "must be positive" in str(e))
+
+    # 8. SlabCreate 2-vertex polygon
+    try:
+        bus.execute_transaction([
+            CommandRequest(command="SlabCreate", params={"polygon": [[0,0],[10,10]], "thickness": 0.5})
+        ], "SlabCreate 2-vertex polygon")
+        check("W3.8: SlabCreate 2-vertex polygon refused", False)
+    except (ValidationError, RuntimeError) as e:
+        check("W3.8: SlabCreate 2-vertex polygon refused", "at least 3 vertices" in str(e))
+
+    # 9. SlabCreate thickness=0.0
+    try:
+        bus.execute_transaction([
+            CommandRequest(command="SlabCreate", params={"polygon": [[0,0],[10,0],[10,10],[0,10]], "thickness": 0.0})
+        ], "SlabCreate thickness=0.0")
+        check("W3.9: SlabCreate thickness=0.0 refused", False)
+    except (ValidationError, RuntimeError) as e:
+        check("W3.9: SlabCreate thickness=0.0 refused", "greater than 0" in str(e) or "positive" in str(e))
+
+    # 10. RoofCreate zero-area polygon (3 identical points)
+    try:
+        bus.execute_transaction([
+            CommandRequest(command="RoofCreate", params={"polygon": [[2,2],[2,2],[2,2]], "thickness": 0.5})
+        ], "RoofCreate zero-area polygon")
+        check("W3.10: RoofCreate zero-area polygon refused", False)
+    except (ValidationError, RuntimeError) as e:
+        check("W3.10: RoofCreate zero-area polygon refused", "must be positive" in str(e))
 
     print(f"\nPhase 8 Gate Total: {passed} passed, {failed} failed")
     if failed > 0:

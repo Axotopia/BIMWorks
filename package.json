@@ -13,8 +13,10 @@
     "check:state": "node scripts/check-state-bundle.mjs",
     "check:delta": "node scripts/check-delta-equivalence.mjs",
     "check:snap": "node scripts/check-snap-engine.mjs",
+    "check:interaction": "node scripts/check-interaction-session.mjs",
+    "check:pushpull": "node scripts/check-pushpull-engine.mjs",
     "check:py": "node scripts/check-python-suites.mjs",
-    "check": "npm run check:bus && npm run check:ui && npm run check:state && npm run check:delta && npm run check:snap && npm run check:py && tsc --noEmit",
+    "check": "npm run check:bus && npm run check:ui && npm run check:state && npm run check:delta && npm run check:snap && npm run check:interaction && npm run check:pushpull && npm run check:py && tsc --noEmit",
     "diagnose": "node scripts/diagnose-blank-page.mjs"
   },
   "bugs": {

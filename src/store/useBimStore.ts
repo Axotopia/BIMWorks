@@ -774,6 +774,8 @@ const DEFAULT_VIEW_RANGE = { top: 8.0, cut: 4.0, bottom: 0.0, viewDepth: 0.0 } a
 const ROOF_VIEW_RANGE = { top: 30.0, cut: 20.0, bottom: 0.0, viewDepth: 0.0 } as const;
 
 let activeDragTracking: { action?: UiAction; params?: Record<string, any>; guid?: string; paramKey?: string } | null = null;
+let pendingBeginDragPromise: Promise<string | null> | null = null;
+let cancelPendingBeginDrag = false;
 
 export const useBimStore = create<BimStoreState>((set, get) => ({
   activeRibbonTab: 'Architecture',
@@ -2928,6 +2930,10 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         const msg = `Constraint Conflict on ${c.axis || 'solve'} axis: ${c.constraints?.length || 0} conflicting constraints.`;
         set({ statusMessage: msg });
       }
+      const clampReason = data?.results?.find((r: any) => r?.result?.clamp_reason)?.result?.clamp_reason;
+      if (clampReason) {
+        set({ statusMessage: clampReason });
+      }
       // View state is refreshed from the engine after every commit; the store
       // holds no independent model state. This is ONE round trip: the previous
       // sequence issued seven serial requests and fetched /api/constraints twice.
@@ -2964,6 +2970,9 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         throw new Error(describeApiError(err));
       }
       const data = await res.json();
+      if (data?.clamp_reason) {
+        set({ statusMessage: data.clamp_reason });
+      }
       if (data.changed_meshes && Array.isArray(data.changed_meshes)) {
         set((state) => {
           const meshMap = new Map(state.meshes.map((m) => [m.guid, m]));
@@ -2997,29 +3006,55 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   beginDrag: async (description = 'Drag gesture') => {
     activeDragTracking = null;
-    const res = await fetch(`${API_BASE}/drag/begin`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ origin: 'ui', description }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(describeApiError(err));
+    cancelPendingBeginDrag = false;
+    const beginPromise = (async () => {
+      const res = await fetch(`${API_BASE}/drag/begin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin: 'ui', description }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(describeApiError(err));
+      }
+      const data = await res.json();
+      if (cancelPendingBeginDrag) {
+        // Fast release aborted gesture before begin completed: end session cleanly without commit
+        fetch(`${API_BASE}/drag/end`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: data.session_id, commit: false }),
+        }).catch(() => {});
+        set({ activeDragSessionId: null });
+        return null;
+      }
+      set({ activeDragSessionId: data.session_id });
+      return data.session_id;
+    })();
+    pendingBeginDragPromise = beginPromise;
+    try {
+      return await beginPromise;
+    } finally {
+      if (pendingBeginDragPromise === beginPromise) {
+        pendingBeginDragPromise = null;
+      }
     }
-    const data = await res.json();
-    set({ activeDragSessionId: data.session_id });
-    return data.session_id;
   },
 
   endDrag: async (commit = true) => {
+    if (pendingBeginDragPromise) {
+      cancelPendingBeginDrag = true;
+      await pendingBeginDragPromise.catch(() => {});
+      pendingBeginDragPromise = null;
+    }
     const dragSessionId = get().activeDragSessionId;
     if (!dragSessionId) return null;
+    set({ activeDragSessionId: null });
     const res = await fetch(`${API_BASE}/drag/end`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: dragSessionId, commit }),
     });
-    set({ activeDragSessionId: null });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(describeApiError(err));

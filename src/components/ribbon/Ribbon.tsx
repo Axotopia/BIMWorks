@@ -886,15 +886,12 @@ export const Ribbon: React.FC = () => {
                 notYet('SEC')
               )}
               {renderToolButton(
-                'select',
+                'EL',
                 'Elevation',
                 'EL',
                 <Eye size={22} className="text-[#0284c7]" />,
-                () => {
-                  const firstElev = views.find((v) => v.type === 'elevation');
-                  if (firstElev) setActiveViewId(firstElev.id);
-                },
-                views.some((v) => v.type === 'elevation') ? undefined : 'No elevation in this project'
+                undefined,
+                notYet('EL')
               )}
               {renderToolButton(
                 'SHT',

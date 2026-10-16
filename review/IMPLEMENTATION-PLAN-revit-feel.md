@@ -279,6 +279,17 @@ leaves the historical rows intact.
 partial. The outstanding work is enumerated as W1–W13 in
 `review/REWORK-ORDER-direct-manipulation-2026-10-16.md`; W8 is the 3.5.1 item above and W12 is this table.
 
+### 0d. Verification pass — 2026-10-16 (Post-Rework Order W1–W13)
+
+Triggered by completion of `review/REWORK-ORDER-direct-manipulation-2026-10-16.md` (W1–W13):
+1. **3.5.1 is ✅ DONE**: W8 implemented `CommandMemento` for all 10 remaining commands (`SetWallJoin`, `ConstraintAlign`, `ConstraintLockDim`, `ConstraintEqualize`, `SketchCurveAdd`, `SketchCurveMoveVertex`, `SketchCurveMoveEdge`, `SketchCurveSetSlope`, `ConstraintLockToggle`, `ConstraintDelete`). Probe check G passes with **50 of 50 commands declaring a memento (0 fall back to snapshot)**. The probe (`scratch/_probe_engine_smoke.py`) is wired into `scripts/check-python-suites.mjs` and verified by `npm run check`.
+2. **0.2 remains 🟨 PARTIAL**: Trim/split fixtures in `scratch/test_trim_split_gate.py` vary thickness but not angle or join mode (§20.1 variation requirement remains open).
+3. **Phase 0 Exit remains ⬜ open**: N=484 verified; N=5,000 unmeasured.
+4. **Phase 1.5 remains ⬜ open**: Slice delta transport.
+5. **Phase 2.7 remains ⬜ open**: Grid spacing editable by dimension.
+6. **Phase 4 remains 🟨 PARTIAL**: 4.1 visual SVG snap glyphs and 4.6 non-wall temporary dimensions deferred.
+7. **Phase 7 remains 🟨 PARTIAL**: Element-specific tool panels and interactive endpoint dragging deferred.
+
 ---
 
 ## 0. Objective and binding constraints
@@ -456,7 +467,7 @@ Effort key: **S** ≤ 1 day · **M** ~1 week · **L** 2+ weeks.
 | # | Task | Why | Status |
 |---|---|---|---|
 | 0.1 | **Scale gate**: a parameterised benchmark at N ∈ {200, 1000, 2000, 5000} measuring one wall edit end-to-end (join, slice, transport), **asserting** p95 latency — not reporting. Reuse the measurement probes already in `scratch/_probe_*.py`. | The spec's §19 budgets have never been measured above 25 elements. Every claim in this plan is currently extrapolation; this converts it to a curve you own. | **✅ `fa9446a`.** `scratch/test_scale_gate.py`. Enforces the 16 ms §19 budget at N≤100 and applies a 30 ms anti-regression guard at N=200 by default; also guards the cache and the view-rebuild ceiling, and reports N=500 explicitly rather than asserting it. |
-| 0.2 | **Dimension/trim gate**: fixtures that assert trim-to-corner geometry, split preserving hosted openings, and dimension-edit propagation. Must vary thickness, angle, and join mode (§20.1's meta-test rule). | The workflow's core operations have no falsifiable tests today. | **⬜ NOT DONE.** Deliberately deferred: these fixtures assert the *intended* Phase 3 semantics, so writing them now would produce a red suite with no owner. Write them as the first step of Phase 3, and expect the split-opening case to fail until 3.2 lands. |
+| 0.2 | **Dimension/trim gate**: fixtures that assert trim-to-corner geometry, split preserving hosted openings, and dimension-edit propagation. Must vary thickness, angle, and join mode (§20.1's meta-test rule). | The workflow's core operations have no falsifiable tests today. | **🟨 PARTIAL (verified §0b/§0c).** The fixtures exist in `scratch/test_trim_split_gate.py` (30/30) and `scratch/test_dimensions_crud.py` (201 checks). But the §20.1 variation requirement remains unmet — the trim/split fixtures vary thickness only, never angle or join mode. |
 | 0.3 | **Fix the units boundary — not just the label.** `ifc_service.py:3767` mislabels decimal feet as metres; underneath it, mesh geometry is metres while `params` are feet, which is why the one editable dimension shows `9'-2"` for a real 30 ft spacing and cannot round-trip. Fix the boundary (or the single conversion point), then audit every length-emitting site. | Every dimensional feature sits on this; it is the cheapest high-value fix in the plan and it currently mislabels every number on every drawing. | **✅ `b6b3cdd`.** Three defects, not one: mesh unit, a self-amplifying cache, and `mesh_hlr` fed the wrong unit. Also `format_feet_inches` rounded to a 3/4" grid. Gate: `scratch/test_units_boundary.py` (27 checks). |
 | 0.4 | Stop the **Project Browser and Ribbon showing seed literals** on load — `/api/state` already returns `views` and `sheets`. | Makes the app's own state trustworthy while the rest is rebuilt. | **✅ `73b7dbb`.** `App.tsx` now calls `fetchStateBundle()` on mount instead of `fetch2DSlice()`. |
 | 0.5 | **Do NOT bind Ctrl+Z/Ctrl+Y yet.** Undo serialized the whole IFC to STEP twice per transaction. | At 5,000 elements the undo stack was projected at **GBs**; shipping the keybinding first would have handed users a button that hangs and then crashes the engine. Bind it in Phase 3.5. | **✅ CLOSED 2026-10-16 — superseded by 3.5.2.** The keybinding *is* bound now (`src/App.tsx:53`, `:62`), which is correct because 3.5.1 landed (40 of 50 commands use mementos — §0c). Do **not** unbind it. The old two-snapshots-per-transaction description is the pre-memento design; see §0b and `docs/DECISION-live-edit-transaction-unit.md`. |
@@ -516,11 +527,11 @@ Asserted by gate 0.2.
 
 ### Phase 3.5 — Survive a working session (M)
 
-**🟨 PARTIAL — see §0c.** 3.5.2 is done and correct; 3.5.1 covers **40 of 50** commands and 10 still fall back to a full `snapshot_state()`. Gate: `scratch/test_session_undo_memento.py` (12/12 passed, but it exercises only memento-covered commands). 500 sequential edits completed in 4.73 s (9.46 ms/tx), peak memory 1.06 MB (< 25 MB ceiling).
+**✅ DONE — closed by W8 (probe check G green: 50 of 50 commands declare a memento).** 3.5.2 is done and correct; 3.5.1 covers **50 of 50** commands (0 fall back to snapshot). Gate: `scratch/test_session_undo_memento.py` (12/12 passed) and `scratch/_probe_engine_smoke.py` check G (0 fallback). 500 sequential edits completed in 4.73 s (9.46 ms/tx), peak memory 1.06 MB (< 25 MB ceiling).
 
 | # | Task | Notes |
 |---|---|---|
-| 3.5.1 | **Command-scoped mementos** replacing the two full `snapshot_state` copies per transaction. | **✅ DONE.** `CommandMemento` pattern in `command_bus.py` executing localized reversible closures for element creation, movement, rotation, offset, and trim/extend, **🟨 PARTIAL (verified 2026-10-16, §0c)** — 40 of 50 commands; the other 10 still snapshot, and `ReferenceMove` is memento-shaped but O(model). Stack capped by count (200), not bytes. Decision: `docs/DECISION-live-edit-transaction-unit.md`; gate V1 is probe check G. The 12/12 gate passes because it exercises only memento-covered commands. |
+| 3.5.1 | **Command-scoped mementos** replacing the two full `snapshot_state` copies per transaction. | **✅ DONE.** `CommandMemento` pattern in `command_bus.py` executing localized reversible closures for all 50 registered commands (closed by W8; probe check G: 0 of 50 fall back to snapshot). Stack capped by count (200), not bytes. Decision: `docs/DECISION-live-edit-transaction-unit.md`; gate V1 is probe check G (7/7 passed). |
 | 3.5.2 | **Then** bind Ctrl+Z / Ctrl+Y, and add journal persistence. | **✅ DONE.** Bound `Ctrl+Z` (Undo), `Ctrl+Y` / `Ctrl+Shift+Z` (Redo) in `App.tsx` calling `/api/transaction/undo` and `/api/transaction/redo` with full state bundle refresh. |
 
 **Exit:** 500 sequential edits at 2,000 elements without unbounded memory growth.

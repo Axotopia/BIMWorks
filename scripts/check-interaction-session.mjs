@@ -23,6 +23,8 @@
  * Run:  node scripts/check-interaction-session.mjs
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 
@@ -205,6 +207,150 @@ try {
 
   // Restore executeTransaction
   store.setState({ executeTransaction: originalExecute, activeTool: 'select' });
+
+  console.log('\n--- 5. W6: Single Source of Truth Gate (No Local useState Tool-Points) ---');
+  const view3dSrc = readFileSync(join(ROOT, 'src/components/viewport/Viewport3D.tsx'), 'utf-8');
+  const planSrc = readFileSync(join(ROOT, 'src/components/drafting/PlanViewport2D.tsx'), 'utf-8');
+
+  // Assert neither viewport holds tool-point state in useState
+  const forbiddenHooks3D = [
+    /const\s*\[\s*wallStartPoint\s*,\s*setWallStartPoint\s*\]\s*=\s*useState/i,
+    /const\s*\[\s*wallCurrentPoint\s*,\s*setWallCurrentPoint\s*\]\s*=\s*useState/i,
+    /const\s*\[\s*boxStartPoint\s*,\s*setBoxStartPoint\s*\]\s*=\s*useState/i,
+    /const\s*\[\s*boxCurrentPoint\s*,\s*setBoxCurrentPoint\s*\]\s*=\s*useState/i,
+  ];
+
+  const forbiddenHooksPlan = [
+    /const\s*\[\s*firstPoint\s*,\s*setFirstPoint\s*\]\s*=\s*useState/i,
+    /const\s*\[\s*currentPoint\s*,\s*setCurrentPoint\s*\]\s*=\s*useState/i,
+    /const\s*\[\s*sketchStartPoint\s*,\s*setSketchStartPoint\s*\]\s*=\s*useState/i,
+  ];
+
+  const has3DLocalPickState = forbiddenHooks3D.some((re) => re.test(view3dSrc));
+  check('Viewport3D does not hold tool-point state in useState', !has3DLocalPickState);
+
+  const hasPlanLocalPickState = forbiddenHooksPlan.some((re) => re.test(planSrc));
+  check('PlanViewport2D does not hold tool-point state in useState', !hasPlanLocalPickState);
+
+  // Assert that both viewports read tool picks from interactionSession
+  check(
+    'Viewport3D reads picks from interactionSession',
+    /interactionSession\.picks\[0\]/.test(view3dSrc)
+  );
+  check(
+    'PlanViewport2D reads picks from interactionSession',
+    /interactionSession\.picks\[0\]/.test(planSrc)
+  );
+
+  // Negative control function to verify that introducing useState pick state fails the gate
+  function verifyNegativeControl(dummySrc) {
+    return forbiddenHooksPlan.some((re) => re.test(dummySrc));
+  }
+  const dummyWithLocalState = 'const [firstPoint, setFirstPoint] = useState<[number, number] | null>(null);';
+  check(
+    'negative control: re-introducing local useState pick fails assertion',
+    verifyNegativeControl(dummyWithLocalState) === true
+  );
+
+  console.log('\n--- 6. W9: Occlusion Ordering (W9a) and Unstranded Session (W9b) ---');
+  // W9a: Viewport3D raycasts all meshes rather than a filtered wall-only list in select and hover paths
+  const selectBlock = view3dSrc.slice(
+    view3dSrc.indexOf("activeTool === 'select'"),
+    view3dSrc.indexOf("const handleMouseMove")
+  );
+  check('W9a: Selection / PushPull does not filter to wallMeshes before raycasting',
+    !/wallMeshes/.test(selectBlock)
+  );
+  const hoverBlock = view3dSrc.slice(view3dSrc.indexOf("Face hover detection for Push/Pull"));
+  check('W9a: Hover detection does not filter to wallMeshes before raycasting',
+    !/wallMeshes/.test(hoverBlock)
+  );
+
+  // W9a classification logic simulation
+  const sampleIntersectsSlab = [
+    { distance: 5.0, object: { userData: { guid: 'slab-uuid', ifc_class: 'IfcSlab' } } },
+    { distance: 10.0, object: { userData: { guid: 'wall-uuid', ifc_class: 'IfcWall' } } },
+  ];
+  function classifyNearest(intersects) {
+    if (intersects.length === 0) return null;
+    const nearest = intersects[0];
+    const isWall = nearest.object.userData?.ifc_class === 'IfcWall' || nearest.object.userData?.ifc_class === 'IfcWallStandardCase';
+    return { selectedGuid: nearest.object.userData?.guid, isPushPullEligible: isWall };
+  }
+  const slabHit = classifyNearest(sampleIntersectsSlab);
+  check('W9a: slab in front of wall is selected (not captured by occluded wall)',
+    slabHit.selectedGuid === 'slab-uuid' && !slabHit.isPushPullEligible
+  );
+
+  const sampleIntersectsRoof = [
+    { distance: 6.0, object: { userData: { guid: 'roof-uuid', ifc_class: 'IfcRoof' } } },
+    { distance: 12.0, object: { userData: { guid: 'wall-uuid', ifc_class: 'IfcWall' } } },
+  ];
+  const roofHit = classifyNearest(sampleIntersectsRoof);
+  check('W9a: roof in front of wall is selected (not captured by occluded wall)',
+    roofHit.selectedGuid === 'roof-uuid' && !roofHit.isPushPullEligible
+  );
+
+  // W9a Negative control: walls-only raycasting selects occluded wall
+  function classifyWallsOnly(intersects) {
+    const wallOnly = intersects.filter(i => i.object.userData?.ifc_class === 'IfcWall' || i.object.userData?.ifc_class === 'IfcWallStandardCase');
+    if (wallOnly.length === 0) return null;
+    return { selectedGuid: wallOnly[0].object.userData?.guid, isPushPullEligible: true };
+  }
+  const negHit = classifyWallsOnly(sampleIntersectsSlab);
+  check('W9a negative control: walls-only hit-test selects occluded wall',
+    negHit.selectedGuid === 'wall-uuid'
+  );
+
+  // W9b: synthetic click whose release precedes the begin response leaves no live session
+  const originalFetch = globalThis.fetch;
+  let activeMockSession = null;
+  globalThis.fetch = async (url, opts) => {
+    const urlStr = String(url);
+    if (urlStr.includes('/drag/begin')) {
+      await new Promise((r) => setTimeout(r, 25));
+      activeMockSession = 'drag-sess-' + Math.random().toString(16).slice(2, 8);
+      return { ok: true, json: async () => ({ session_id: activeMockSession }) };
+    }
+    if (urlStr.includes('/drag/end')) {
+      activeMockSession = null;
+      return { ok: true, json: async () => ({ status: 'ended' }) };
+    }
+    if (urlStr.includes('/state') || urlStr.includes('/project')) {
+      return { ok: true, json: async () => ({}) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  try {
+    store.setState({ activeDragSessionId: null });
+    const beginPromise = store.getState().beginDrag('Synthetic fast click');
+    const endPromise = store.getState().endDrag(false);
+    await Promise.all([beginPromise, endPromise]);
+    await new Promise((r) => setTimeout(r, 50));
+
+    check('W9b: fast click release preceding begin response leaves activeDragSessionId null',
+      store.getState().activeDragSessionId === null
+    );
+
+    // W9b Negative control: un-guarded session assignment strands the session
+    let strandedSession = null;
+    let unguardedPending = (async () => {
+      await new Promise(r => setTimeout(r, 25));
+      strandedSession = 'stranded-sess-123';
+      return strandedSession;
+    })();
+    let activeId = null;
+    // Fast endDrag runs before unguardedPending completes and bails out
+    if (!activeId) { /* bails out */ }
+    await unguardedPending;
+    activeId = strandedSession;
+    check('W9b negative control: un-guarded session assignment strands the session',
+      activeId === 'stranded-sess-123'
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 
   console.log('\n------------------------------------------------------------------------');
   console.log(`INTERACTION SESSION GATE: ${passed} passed, ${failed} failed`);

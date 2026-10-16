@@ -362,7 +362,7 @@ export function gripsFor(element: any, context?: any): Grip[] {
       axis: [nx, ny, 0],
       value: thickness,
       unit: 'ft',
-      range: [0.0833, 10.0],
+      range: [1.0 / 12.0, 10.0],
       label: 'Wall Thickness (+)',
     },
     // 5. Wall Thickness Grip Negative (-normal side face center)
@@ -374,7 +374,7 @@ export function gripsFor(element: any, context?: any): Grip[] {
       axis: [-nx, -ny, 0],
       value: thickness,
       unit: 'ft',
-      range: [0.0833, 10.0],
+      range: [1.0 / 12.0, 10.0],
       label: 'Wall Thickness (-)',
     },
   ];
@@ -482,13 +482,16 @@ export function computeGripDragCommand(
       const distFromBaseline = Math.abs(offX * nx + offY * ny);
       const rawThickness = distFromBaseline * 2;
       const clampedThickness = Math.max(range[0], Math.min(range[1], rawThickness));
+      const roundedThickness = clampedThickness <= range[0] + 1e-6
+        ? range[0]
+        : Number(clampedThickness.toFixed(4));
 
       return {
         action: 'modifyWallThickness',
         command: 'WallSetThickness',
         params: {
           guid: grip.elementGuid,
-          thickness: Number(clampedThickness.toFixed(3)),
+          thickness: roundedThickness,
         },
         previewValue: clampedThickness,
       };

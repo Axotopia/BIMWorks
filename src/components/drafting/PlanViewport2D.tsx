@@ -188,9 +188,19 @@ export const PlanViewport2D: React.FC = () => {
 
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const [firstPoint, setFirstPoint] = useState<[number, number] | null>(null);
-  const [currentPoint, setCurrentPoint] = useState<[number, number] | null>(null);
-  const [sketchStartPoint, setSketchStartPoint] = useState<[number, number] | null>(null);
+  // Track B Phase 1: Tool placement pick state derived from interactionSession single source
+  const firstPoint = (interactionSession.picks[0] as [number, number] | undefined) ?? null;
+  const currentPoint = (interactionSession.hover as [number, number] | undefined) ?? null;
+  const sketchStartPoint = (interactionSession.picks[interactionSession.picks.length - 1] as [number, number] | undefined) ?? null;
+  const setFirstPoint = useCallback((pt: [number, number] | null) => {
+    if (pt) dispatchInteraction({ type: 'point', point: pt });
+  }, [dispatchInteraction]);
+  const setCurrentPoint = useCallback((pt: [number, number] | null) => {
+    dispatchInteraction({ type: 'hover', point: pt });
+  }, [dispatchInteraction]);
+  const setSketchStartPoint = useCallback((pt: [number, number] | null) => {
+    if (pt) dispatchInteraction({ type: 'point', point: pt });
+  }, [dispatchInteraction]);
   const [editingDimension, setEditingDimension] = useState<{ id: string; mx: number; my: number } | null>(null);
   const [dimInputVal, setDimInputVal] = useState<string>('');
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; guid: string | null } | null>(null);
@@ -263,7 +273,7 @@ export const PlanViewport2D: React.FC = () => {
    * dimension, and inserting a door both inserted and selected it. Placement and
    * selection are different intents and must not run from one click.
    */
-  const PLACEMENT_TOOLS = ['WA', 'DR', 'WN', 'RF', 'SB', 'DI', 'SEC'];
+  const PLACEMENT_TOOLS = ['WA', 'DR', 'WN', 'RF', 'SB', 'DI', 'SEC', 'EL'];
 
   const getRawModelCoords = useCallback(
     (clientX: number, clientY: number): [number, number] | null => {
@@ -650,6 +660,22 @@ export const PlanViewport2D: React.FC = () => {
           setFirstPoint(null);
           setCurrentPoint(null);
         }
+      } else if (activeTool === 'EL') {
+        const elevNum = views.filter((v) => v.type === 'elevation').length + 1;
+        const newId = `view-elevation-${Date.now()}`;
+        addView({
+          id: newId,
+          name: `Building Elevation ${elevNum}`,
+          type: 'elevation',
+          scale: '1/4" = 1\'-0"',
+          detailLevel: 'fine',
+          visualStyle: 'hidden_line',
+          viewRange: { top: 10.0, cut: 4.0, bottom: 0.0, viewDepth: 0.0 },
+          line: { start: [x, y], end: [x + 10.0, y] },
+        });
+        setStatusMessage(`Created Building Elevation ${elevNum}`);
+        setActiveViewId(newId);
+        dispatchInteraction({ type: 'commit' });
       }
     }
   };
@@ -1537,6 +1563,46 @@ export const PlanViewport2D: React.FC = () => {
                     <text
                       x={e[0]}
                       y={-e[1] + 0.16}
+                      transform="scale(1, -1)"
+                      textAnchor="middle"
+                      fontSize="0.4"
+                      fontWeight="bold"
+                      fill="#ffffff"
+                      className="pointer-events-none"
+                    >
+                      {tag}
+                    </text>
+                  </g>
+                );
+              })}
+
+          {/* 6d. Elevation Markers on Floor Plans */}
+          {currentView?.type === 'floor_plan' &&
+            views
+              .filter((v) => v.type === 'elevation')
+              .map((elevView, elevIdx) => {
+                const pt = elevView.line?.start || [0, 0];
+                const tag = String(elevIdx + 1);
+                return (
+                  <g key={`elev-marker-${elevView.id}`} className="elevation-marker select-none">
+                    <circle
+                      cx={pt[0]}
+                      cy={pt[1]}
+                      r={0.65}
+                      fill="#0284c7"
+                      className="cursor-pointer hover:fill-sky-700 transition-colors"
+                      onClick={(evt) => {
+                        evt.stopPropagation();
+                        setActiveViewId(elevView.id);
+                      }}
+                    />
+                    <polygon
+                      points={`${pt[0]},${pt[1] + 1.1} ${pt[0] - 0.45},${pt[1] + 0.45} ${pt[0] + 0.45},${pt[1] + 0.45}`}
+                      fill="#0284c7"
+                    />
+                    <text
+                      x={pt[0]}
+                      y={-pt[1] + 0.16}
                       transform="scale(1, -1)"
                       textAnchor="middle"
                       fontSize="0.4"

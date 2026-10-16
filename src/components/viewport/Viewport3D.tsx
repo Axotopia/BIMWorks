@@ -169,13 +169,25 @@ export const Viewport3D: React.FC = () => {
     startY: 0,
   });
 
-  // Wall placement interaction
-  const [wallStartPoint, setWallStartPoint] = useState<[number, number, number] | null>(null);
-  const [wallCurrentPoint, setWallCurrentPoint] = useState<[number, number, number] | null>(null);
+  // Track B Phase 1: Tool placement pick state derived from interactionSession single source
+  const wallStartPoint = (interactionSession.picks[0] as [number, number, number] | undefined) ?? null;
+  const wallCurrentPoint = (interactionSession.hover as [number, number, number] | undefined) ?? null;
+  const setWallStartPoint = useCallback((pt: [number, number, number] | null) => {
+    if (pt) dispatchInteraction({ type: 'point', point: pt });
+  }, [dispatchInteraction]);
+  const setWallCurrentPoint = useCallback((pt: [number, number, number] | null) => {
+    dispatchInteraction({ type: 'hover', point: pt });
+  }, [dispatchInteraction]);
 
-  // Box footprint interaction (Roof / Slab)
-  const [boxStartPoint, setBoxStartPoint] = useState<[number, number] | null>(null);
-  const [boxCurrentPoint, setBoxCurrentPoint] = useState<[number, number] | null>(null);
+  // Box footprint interaction (Roof / Slab) derived from interactionSession
+  const boxStartPoint = interactionSession.picks[0] ? [interactionSession.picks[0][0], interactionSession.picks[0][1]] as [number, number] : null;
+  const boxCurrentPoint = interactionSession.hover ? [interactionSession.hover[0], interactionSession.hover[1]] as [number, number] : null;
+  const setBoxStartPoint = useCallback((pt: [number, number] | null) => {
+    if (pt) dispatchInteraction({ type: 'point', point: [pt[0], pt[1]] });
+  }, [dispatchInteraction]);
+  const setBoxCurrentPoint = useCallback((pt: [number, number] | null) => {
+    dispatchInteraction({ type: 'hover', point: pt });
+  }, [dispatchInteraction]);
 
   const [editingDimValue, setEditingDimValue] = useState<string>('');
   const [cameraTick, setCameraTick] = useState(0);
@@ -188,6 +200,7 @@ export const Viewport3D: React.FC = () => {
     element: any;
     startScreen: [number, number];
     didMove: boolean;
+    dragStarted?: boolean;
   } | null>(null);
   const [liveGripValue, setLiveGripValue] = useState<{ label: string; value: number } | null>(null);
   const [isEditingDim, setIsEditingDim] = useState<boolean>(false);
@@ -827,40 +840,40 @@ export const Viewport3D: React.FC = () => {
       }
 
       // Tool: Select (default)
-      // Phase 7: Face push/pull gesture on wall
+      // Phase 7 / W9a: Face push/pull gesture on wall (nearest-object raycasting, deferred drag)
       if (activeTool === 'select' && !activeDragGripRef.current) {
-        let faceToPush = hoveredFace;
-        if (!faceToPush) {
-          const wallMeshes = Array.from(threeMeshesRef.current.values()).filter((m) =>
-            m.userData?.ifc_class === 'IfcWall' || m.userData?.ifc_class === 'IfcWallStandardCase'
-          );
-          const intersects = raycaster.intersectObjects(wallMeshes, false);
-          if (intersects.length > 0) {
-            faceToPush = detectWallFaceHover(intersects[0], elements);
+        const meshesList = Array.from(threeMeshesRef.current.values());
+        const intersects = raycaster.intersectObjects(meshesList, false);
+
+        if (intersects.length > 0) {
+          const nearestHit = intersects[0];
+          const hitIfcClass = nearestHit.object.userData?.ifc_class;
+          const isWall = hitIfcClass === 'IfcWall' || hitIfcClass === 'IfcWallStandardCase';
+          let faceToPush: WallFaceHit | null = null;
+          if (isWall) {
+            faceToPush = detectWallFaceHover(nearestHit, elements);
           }
-        }
-        if (faceToPush && elements[faceToPush.guid]) {
-          const el = elements[faceToPush.guid];
-          activePushPullRef.current = {
-            face: faceToPush,
-            element: el,
-            startScreen: [e.clientX, e.clientY],
-            didMove: false,
-          };
-          beginDrag(`Push/Pull ${faceToPush.label}`);
-          setLiveGripValue({ label: faceToPush.label, value: faceToPush.currentValue });
+
+          if (faceToPush && elements[faceToPush.guid]) {
+            const el = elements[faceToPush.guid];
+            activePushPullRef.current = {
+              face: faceToPush,
+              element: el,
+              startScreen: [e.clientX, e.clientY],
+              didMove: false,
+              dragStarted: false,
+            };
+            return;
+          }
+
+          // Nearest hit is not a pushable wall face (e.g. slab, roof, door, window) or non-pushable face
+          const hitGuid = nearestHit.object.userData.guid;
+          setSelectedGuid(hitGuid);
+          return;
+        } else {
+          setSelectedGuid(null);
           return;
         }
-      }
-
-      const meshesList = Array.from(threeMeshesRef.current.values());
-      const intersects = raycaster.intersectObjects(meshesList, false);
-
-      if (intersects.length > 0) {
-        const hitGuid = intersects[0].object.userData.guid;
-        setSelectedGuid(hitGuid);
-      } else {
-        setSelectedGuid(null);
       }
     }
   };
@@ -873,8 +886,13 @@ export const Viewport3D: React.FC = () => {
       const wobbleDist = Math.hypot(e.clientX - startScreen[0], e.clientY - startScreen[1]);
       if (wobbleDist > 5) {
         activePushPullRef.current.didMove = true;
+        if (!activePushPullRef.current.dragStarted) {
+          activePushPullRef.current.dragStarted = true;
+          beginDrag(`Push/Pull ${face.label}`);
+          setLiveGripValue({ label: face.label, value: face.currentValue });
+        }
       }
-      if (activePushPullRef.current.didMove && canvasRef.current && cameraRef.current) {
+      if (activePushPullRef.current.didMove && activePushPullRef.current.dragStarted && canvasRef.current && cameraRef.current) {
         const rect = canvasRef.current.getBoundingClientRect();
         const mouse = new THREE.Vector2(
           ((e.clientX - rect.left) / rect.width) * 2 - 1,
@@ -1081,12 +1099,13 @@ export const Viewport3D: React.FC = () => {
       );
       const raycaster = new THREE.Raycaster();
       raycaster.setFromCamera(mouse, cameraRef.current);
-      const wallMeshes = Array.from(threeMeshesRef.current.values()).filter((m) =>
-        m.userData?.ifc_class === 'IfcWall' || m.userData?.ifc_class === 'IfcWallStandardCase'
-      );
-      const intersects = raycaster.intersectObjects(wallMeshes, false);
+      const meshesList = Array.from(threeMeshesRef.current.values());
+      const intersects = raycaster.intersectObjects(meshesList, false);
       if (intersects.length > 0) {
-        const faceHit = detectWallFaceHover(intersects[0], elements);
+        const nearestHit = intersects[0];
+        const hitIfcClass = nearestHit.object.userData?.ifc_class;
+        const isWall = hitIfcClass === 'IfcWall' || hitIfcClass === 'IfcWallStandardCase';
+        const faceHit = isWall ? detectWallFaceHover(nearestHit, elements) : null;
         setHoveredFace(faceHit);
       } else if (hoveredFace !== null) {
         setHoveredFace(null);
@@ -1103,10 +1122,9 @@ export const Viewport3D: React.FC = () => {
       setLiveGripValue(null);
     }
     if (activePushPullRef.current) {
-      if (activePushPullRef.current.didMove) {
+      if (activePushPullRef.current.dragStarted) {
         endDrag(true);
       } else {
-        endDrag(false);
         setSelectedGuid(activePushPullRef.current.face.guid);
       }
       activePushPullRef.current = null;
@@ -1130,7 +1148,9 @@ export const Viewport3D: React.FC = () => {
       setLiveGripValue(null);
     }
     if (activePushPullRef.current) {
-      endDrag(false);
+      if (activePushPullRef.current.dragStarted) {
+        endDrag(false);
+      }
       activePushPullRef.current = null;
       setLiveGripValue(null);
     }
