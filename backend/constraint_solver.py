@@ -284,7 +284,9 @@ class ConstraintSolver:
                     applied.append(cid)
             elif ctype == "dimension_lock":
                 a, b = c.get("guid_a"), c.get("guid_b")
-                dist = c.get("locked_distance")
+                dist = c.get("origin_distance")
+                if dist is None:
+                    dist = c.get("locked_distance")
                 if dist is None:
                     ref = self._position(a, axis)
                     cur = self._position(b, axis)
@@ -414,7 +416,9 @@ class ConstraintSolver:
                 elif ctype == "dimension_lock":
                     a = c.get("guid_a")
                     b = c.get("guid_b")
-                    dist = c.get("locked_distance")
+                    dist = c.get("origin_distance")
+                    if dist is None:
+                        dist = c.get("locked_distance")
                     if a in out and b in out:
                         orig_a = self._position(a, axis) or 0.0
                         orig_b = self._position(b, axis) or 0.0

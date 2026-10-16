@@ -3033,16 +3033,35 @@ class BimModelManager:
                     self.last_constraint_conflict = None
                     solver.apply_solve(result)
                 elif result.status == "conflict":
+                    resolutions = []
+                    conflicting_cids = result.conflicting or []
+                    conflicting_dids = []
+                    for cid in conflicting_cids:
+                        matched_did = None
+                        for d_id, d_val in self.dimensions.items():
+                            if d_val.get("constraint_id") == cid:
+                                matched_did = d_id
+                                break
+                        if matched_did:
+                            conflicting_dids.append(matched_did)
+                            resolutions.append({
+                                "kind": "unlock_dimension",
+                                "dimension_id": matched_did,
+                                "segment_index": 0,
+                                "constraint_id": cid,
+                            })
+                        else:
+                            resolutions.append({
+                                "kind": "unlock_constraint",
+                                "constraint_id": cid,
+                            })
                     self.last_constraint_conflict = {
                         "status": "conflict",
                         "axis": axis,
-                        "constraints": result.conflicting or [],
-                        "dimensions": [],
+                        "constraints": conflicting_cids,
+                        "dimensions": conflicting_dids,
                         "triggered_by": moved_guid,
-                        "resolutions": [
-                            {"action": "unlock_constraint", "constraint_id": cid}
-                            for cid in (result.conflicting or [])
-                        ],
+                        "resolutions": resolutions,
                     }
         except SolverUnavailable:
             # Solver unavailable (e.g. planegcs not installed): surfaced error per Gate 0
@@ -3456,6 +3475,8 @@ class BimModelManager:
         locked_distance: Optional[float] = None,
         is_locked: bool = True,
         axis: str = "x",
+        ref_a: Optional[Dict[str, Any]] = None,
+        ref_b: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Locks the dimension delta between two elements."""
         if guid_a not in self.element_meta or guid_b not in self.element_meta:
@@ -3466,6 +3487,18 @@ class BimModelManager:
             pos_b = self.get_element_coord(guid_b, axis)
             locked_distance = abs(pos_b - pos_a)
 
+        origin_distance = float(locked_distance)
+        if ref_a and ref_b:
+            ca, _ = resolve_reference_axis(self, ref_a, axis)
+            cb, _ = resolve_reference_axis(self, ref_b, axis)
+            oa = self.get_element_coord(guid_a, axis)
+            ob = self.get_element_coord(guid_b, axis)
+            if ca is not None and cb is not None:
+                delta_a = ca - oa
+                delta_b = cb - ob
+                s = 1.0 if (cb - ca) >= 0 else -1.0
+                origin_distance = abs(s * float(locked_distance) - (delta_b - delta_a))
+
         cid = f"dimlock_{uuid.uuid4().hex[:8]}"
         constraint = {
             "id": cid,
@@ -3473,8 +3506,11 @@ class BimModelManager:
             "guid_a": guid_a,
             "guid_b": guid_b,
             "locked_distance": float(locked_distance),
+            "origin_distance": float(origin_distance),
             "axis": axis,
             "is_locked": is_locked,
+            "ref_a": ref_a,
+            "ref_b": ref_b,
         }
         self.constraints[cid] = constraint
         self.save_constraints_to_ifc()
@@ -3602,9 +3638,15 @@ class BimModelManager:
         If `is_locked` is True, registers an active distance constraint lock.
         References are normalized to the canonical Reference schema (Phase 1).
         """
-        # Phase 5.2 binding validation: reject locked + label, and reject locked on len(refs) > 2 unless binding == 'equal'
-        if is_locked and label:
-            raise ValueError("Dimension binding error: cannot be both locked and labeled")
+        # Phase 5.2 & §2 Rule 1 binding validation
+        if binding == "parameter":
+            if not label:
+                raise ValueError("label must be set when binding == 'parameter'")
+            if is_locked:
+                raise ValueError("Dimension binding error: cannot be both locked and labeled")
+        else:
+            if label is not None:
+                raise ValueError(f"label cannot be set when binding == '{binding}' (only when binding == 'parameter')")
         if is_locked and refs and len(refs) > 2 and binding != "equal":
             raise ValueError("Dimension binding error: cannot lock multi-segment dimension without equal binding")
 
@@ -3615,7 +3657,12 @@ class BimModelManager:
 
         # Derive initial value if not explicitly passed
         if value is None:
-            if norm_ref_a.get("guid") == norm_ref_b.get("guid") and norm_ref_a.get("guid") in self.element_meta:
+            if (
+                norm_ref_a.get("guid") == norm_ref_b.get("guid")
+                and norm_ref_a.get("guid") in self.element_meta
+                and {norm_ref_a.get("kind"), norm_ref_b.get("kind")} == {"wall_start", "wall_end"}
+                and axis.lower() == "aligned"
+            ):
                 meta = self.element_meta[norm_ref_a["guid"]]
                 if "start" in meta and "end" in meta and meta["start"] and meta["end"]:
                     sp, ep = meta["start"], meta["end"]
@@ -3658,15 +3705,33 @@ class BimModelManager:
         if is_locked:
             guid_a = norm_ref_a.get("guid")
             guid_b = norm_ref_b.get("guid")
-            if guid_a and guid_b and guid_a != guid_b and guid_a in self.element_meta and guid_b in self.element_meta:
-                c = self.add_dimension_lock(
-                    guid_a=guid_a,
-                    guid_b=guid_b,
-                    locked_distance=val_float,
-                    is_locked=True,
-                    axis=axis if axis in ("x", "y") else "x",
-                )
-                constraint_id = c.get("id")
+            if guid_a and guid_a in self.element_meta:
+                if guid_b and guid_b in self.element_meta and guid_a != guid_b:
+                    c = self.add_dimension_lock(
+                        guid_a=guid_a,
+                        guid_b=guid_b,
+                        locked_distance=val_float,
+                        is_locked=True,
+                        axis=axis if axis in ("x", "y") else "x",
+                        ref_a=norm_ref_a,
+                        ref_b=norm_ref_b,
+                    )
+                    constraint_id = c.get("id")
+                elif not guid_b or guid_a == guid_b:
+                    cid = f"dimlock_{uuid.uuid4().hex[:8]}"
+                    c = {
+                        "id": cid,
+                        "type": "dimension_lock",
+                        "guid_a": guid_a,
+                        "guid_b": guid_a,
+                        "locked_distance": val_float,
+                        "axis": axis,
+                        "is_locked": True,
+                        "ref_a": norm_ref_a,
+                        "ref_b": norm_ref_b,
+                    }
+                    self.constraints[cid] = c
+                    constraint_id = cid
 
         dim = {
             "id": dim_id,
@@ -3709,9 +3774,15 @@ class BimModelManager:
         if not refs or len(refs) < 2:
             raise ValueError("add_dimension requires an ordered list of at least 2 references")
 
-        # Phase 5.2 binding validation: reject locked + label, and reject locked on len(refs) > 2 unless binding == 'equal'
-        if is_locked and label:
-            raise ValueError("Dimension binding error: cannot be both locked and labeled")
+        # Phase 5.2 & §2 Rule 1 binding validation
+        if binding == "parameter":
+            if not label:
+                raise ValueError("label must be set when binding == 'parameter'")
+            if is_locked:
+                raise ValueError("Dimension binding error: cannot be both locked and labeled")
+        else:
+            if label is not None:
+                raise ValueError(f"label cannot be set when binding == '{binding}' (only when binding == 'parameter')")
         if is_locked and len(refs) > 2 and binding != "equal":
             raise ValueError("Dimension binding error: cannot lock multi-segment dimension without equal binding")
 
@@ -4082,38 +4153,165 @@ class BimModelManager:
             is_same_element = guid_a and (guid_a == guid_b or not guid_b)
 
             if is_same_element:
-                # Single-element dimension (H1 / M4)
-                if {kind_a, kind_b} == {"wall_start", "wall_end"}:
-                    target_len = val_float
-                elif {kind_a, kind_b} in ({"wall_start", "wall_center"}, {"wall_end", "wall_center"}):
-                    target_len = 2.0 * val_float
-                elif {kind_a, kind_b} in ({"wall_start", "wall_face_pos"}, {"wall_start", "wall_face_neg"}, {"wall_end", "wall_face_pos"}, {"wall_end", "wall_face_neg"}):
-                    meta = self.element_meta.get(guid_a, {})
-                    th = float(meta.get("thickness", 0.5))
-                    dim_axis = dim.get("axis", "aligned")
-                    if dim_axis in ("x", "y"):
-                        target_len = 2.0 * val_float
+                meta = self.element_meta.get(guid_a, {})
+                sp = meta.get("start", [0.0, 0.0])
+                ep = meta.get("end", [0.0, 0.0])
+                dx = float(ep[0]) - float(sp[0])
+                dy = float(ep[1]) - float(sp[1])
+                cur_L = math.hypot(dx, dy)
+                if cur_L < 1e-6:
+                    return {"status": "failed", "dimension_id": dimension_id, "error": "Wall has degenerate zero length"}
+                ux, uy = dx / cur_L, dy / cur_L
+                nx, ny = -uy, ux
+                th = float(meta.get("thickness", 0.5))
+                dim_axis = dim.get("axis", "aligned").lower()
+
+                # Case A: Thickness between positive and negative faces
+                if {kind_a, kind_b} == {"wall_face_pos", "wall_face_neg"}:
+                    if dim_axis == "aligned":
+                        new_th = val_float
+                    elif dim_axis == "x":
+                        if abs(nx) < 1e-4:
+                            return {"status": "failed", "dimension_id": dimension_id, "error": f"Cannot change thickness along x for wall on axis {dim_axis}"}
+                        new_th = val_float / abs(nx)
+                    elif dim_axis == "y":
+                        if abs(ny) < 1e-4:
+                            return {"status": "failed", "dimension_id": dimension_id, "error": f"Cannot change thickness along y for wall on axis {dim_axis}"}
+                        new_th = val_float / abs(ny)
                     else:
-                        target_len = 2.0 * math.sqrt(max(0.0, val_float**2 - (th / 2.0)**2))
-                elif {kind_a, kind_b} in ({"wall_center", "wall_face_pos"}, {"wall_center", "wall_face_neg"}):
-                    new_thickness = 2.0 * val_float
-                    self.update_element(guid_a, {"thickness": new_thickness})
+                        return {"status": "failed", "dimension_id": dimension_id, "error": f"Unsupported axis {dim_axis}"}
+
+                    if new_th <= 0.0:
+                        return {"status": "failed", "dimension_id": dimension_id, "error": "Target thickness must be positive"}
+
+                    self.update_element(guid_a, {"thickness": new_th})
                     self.last_constraint_conflict = None
                     dim["value"] = val_float
                     if "segments" in dim and len(dim["segments"]) > segment_index:
                         dim["segments"][segment_index]["value"] = val_float
+                    cid = dim.get("constraint_id")
+                    if cid and cid in self.constraints:
+                        self.constraints[cid]["locked_distance"] = val_float
                     self._solve_constraints_after_move(guid_a)
                     self.dimensions_rev += 1
                     self.constraints_rev += 1
                     self.project_rev += 1
                     return {"status": "updated", "dimension_id": dimension_id, "value": val_float}
+
+                # Case B: Half-thickness between center and a face
+                elif {kind_a, kind_b} in ({"wall_center", "wall_face_pos"}, {"wall_center", "wall_face_neg"}):
+                    if dim_axis == "aligned":
+                        new_th = 2.0 * val_float
+                    elif dim_axis == "x":
+                        if abs(nx) < 1e-4:
+                            return {"status": "failed", "dimension_id": dimension_id, "error": f"Cannot change thickness along x for wall on axis {dim_axis}"}
+                        new_th = 2.0 * val_float / abs(nx)
+                    elif dim_axis == "y":
+                        if abs(ny) < 1e-4:
+                            return {"status": "failed", "dimension_id": dimension_id, "error": f"Cannot change thickness along y for wall on axis {dim_axis}"}
+                        new_th = 2.0 * val_float / abs(ny)
+                    else:
+                        return {"status": "failed", "dimension_id": dimension_id, "error": f"Unsupported axis {dim_axis}"}
+
+                    if new_th <= 0.0:
+                        return {"status": "failed", "dimension_id": dimension_id, "error": "Target thickness must be positive"}
+
+                    self.update_element(guid_a, {"thickness": new_th})
+                    self.last_constraint_conflict = None
+                    dim["value"] = val_float
+                    if "segments" in dim and len(dim["segments"]) > segment_index:
+                        dim["segments"][segment_index]["value"] = val_float
+                    cid = dim.get("constraint_id")
+                    if cid and cid in self.constraints:
+                        self.constraints[cid]["locked_distance"] = val_float
+                    self._solve_constraints_after_move(guid_a)
+                    self.dimensions_rev += 1
+                    self.constraints_rev += 1
+                    self.project_rev += 1
+                    return {"status": "updated", "dimension_id": dimension_id, "value": val_float}
+
+                # Case C: Full length between start and end
+                elif {kind_a, kind_b} == {"wall_start", "wall_end"}:
+                    if dim_axis == "aligned":
+                        target_len = val_float
+                    elif dim_axis == "x":
+                        if abs(ux) < 1e-4:
+                            return {"status": "failed", "dimension_id": dimension_id, "error": "Cannot change wall length along x for y-aligned wall"}
+                        target_len = val_float / abs(ux)
+                    elif dim_axis == "y":
+                        if abs(uy) < 1e-4:
+                            return {"status": "failed", "dimension_id": dimension_id, "error": "Cannot change wall length along y for x-aligned wall"}
+                        target_len = val_float / abs(uy)
+                    else:
+                        return {"status": "failed", "dimension_id": dimension_id, "error": f"Unsupported axis {dim_axis}"}
+
+                # Case D: Half length between start/end and center
+                elif {kind_a, kind_b} in ({"wall_start", "wall_center"}, {"wall_end", "wall_center"}):
+                    if dim_axis == "aligned":
+                        target_len = 2.0 * val_float
+                    elif dim_axis == "x":
+                        if abs(ux) < 1e-4:
+                            return {"status": "failed", "dimension_id": dimension_id, "error": "Cannot change wall length along x for y-aligned wall"}
+                        target_len = 2.0 * val_float / abs(ux)
+                    elif dim_axis == "y":
+                        if abs(uy) < 1e-4:
+                            return {"status": "failed", "dimension_id": dimension_id, "error": "Cannot change wall length along y for x-aligned wall"}
+                        target_len = 2.0 * val_float / abs(uy)
+                    else:
+                        return {"status": "failed", "dimension_id": dimension_id, "error": f"Unsupported axis {dim_axis}"}
+
+                # Case E: Distance between start/end and a face
+                elif {kind_a, kind_b} in (
+                    {"wall_start", "wall_face_pos"}, {"wall_start", "wall_face_neg"},
+                    {"wall_end", "wall_face_pos"}, {"wall_end", "wall_face_neg"}
+                ):
+                    pa, out_a = resolve_reference(self, ref_a)
+                    pb, out_b = resolve_reference(self, ref_b)
+                    if pa is None or pb is None or out_a == "lost" or out_b == "lost":
+                        return {"status": "failed", "dimension_id": dimension_id, "error": "Witness references unresolved"}
+
+                    face_ref = ref_a if "face" in kind_a else ref_b
+                    sign_face = 1.0 if face_ref.get("kind") == "wall_face_pos" else -1.0
+                    c_L = 1.0 if ("wall_start" in {kind_a, kind_b}) else -1.0
+
+                    if dim_axis == "aligned":
+                        if val_float <= (th / 2.0):
+                            return {"status": "failed", "dimension_id": dimension_id, "error": "Target dimension less than or equal to half-thickness"}
+                        target_len = 2.0 * math.sqrt(val_float**2 - (th / 2.0)**2)
+                    elif dim_axis == "x":
+                        if abs(ux) < 1e-4:
+                            return {"status": "failed", "dimension_id": dimension_id, "error": "Cannot change wall length along x for y-aligned wall"}
+                        cur_dx = pb[0] - pa[0] if (ref_b == face_ref) else pa[0] - pb[0]
+                        cur_sign = 1.0 if cur_dx >= 0 else -1.0
+                        th_term = sign_face * (th / 2.0) * nx
+                        target_len = 2.0 * (cur_sign * val_float - th_term) / (c_L * ux)
+                    elif dim_axis == "y":
+                        if abs(uy) < 1e-4:
+                            return {"status": "failed", "dimension_id": dimension_id, "error": "Cannot change wall length along y for x-aligned wall"}
+                        cur_dy = pb[1] - pa[1] if (ref_b == face_ref) else pa[1] - pb[1]
+                        cur_sign = 1.0 if cur_dy >= 0 else -1.0
+                        th_term = sign_face * (th / 2.0) * ny
+                        target_len = 2.0 * (cur_sign * val_float - th_term) / (c_L * uy)
+                    else:
+                        return {"status": "failed", "dimension_id": dimension_id, "error": f"Unsupported axis {dim_axis}"}
+
                 else:
-                    target_len = val_float
+                    return {
+                        "status": "failed",
+                        "dimension_id": dimension_id,
+                        "error": f"Unsupported same-element dimension pair ({kind_a}, {kind_b}) on axis {dim_axis}",
+                    }
+
+                if target_len <= 0.0:
+                    return {
+                        "status": "failed",
+                        "dimension_id": dimension_id,
+                        "error": "Target dimension requires non-positive wall length",
+                    }
 
                 from constraint_solver import ConstraintSolver
                 solver = ConstraintSolver(self)
                 dim_axis = dim.get("axis", "aligned")
-                meta = self.element_meta.get(guid_a, {})
                 sp, ep = meta.get("start", [0.0, 0.0]), meta.get("end", [0.0, 0.0])
                 if dim_axis in ("x", "y"):
                     solve_axis = dim_axis
@@ -4130,6 +4328,9 @@ class BimModelManager:
                     dim["value"] = val_float
                     if "segments" in dim and len(dim["segments"]) > segment_index:
                         dim["segments"][segment_index]["value"] = val_float
+                    cid = dim.get("constraint_id")
+                    if cid and cid in self.constraints:
+                        self.constraints[cid]["locked_distance"] = val_float
                     self._solve_constraints_after_move(guid_a)
                 else:
                     if anchor == "start":

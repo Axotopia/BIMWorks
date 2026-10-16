@@ -283,8 +283,15 @@ class AiQueryRequest(BaseModel):
 
 # Endpoints
 @app.get("/health")
+@app.get("/api/health")
 def health():
-    return {"status": "ok", "engine": "IfcOpenShell / IFC4", "version": "1.0.0"}
+    from constraint_solver import ConstraintSolver
+    return {
+        "status": "ok",
+        "engine": "IfcOpenShell / IFC4",
+        "version": "1.0.0",
+        "solver_available": ConstraintSolver._solver_available(),
+    }
 
 
 @app.get("/api/project")
@@ -715,16 +722,6 @@ def get_constraint_conflict():
     """Returns the last constraint conflict report (Phase 3.6)."""
     return getattr(bim_manager, "last_constraint_conflict", None)
 
-
-@app.get("/health")
-@app.get("/api/health")
-def get_health():
-    """Returns health status including solver availability (L3 / Phase 0.3 / §5)."""
-    from constraint_solver import ConstraintSolver
-    return {
-        "status": "healthy",
-        "solver_available": ConstraintSolver._solver_available(),
-    }
 
 
 @app.post("/api/constraints/align")

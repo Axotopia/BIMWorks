@@ -127,15 +127,29 @@ class DimensionCreateParams(BaseModel):
     kind: Literal["aligned", "linear", "angular", "radial"] = Field(default="aligned", description="Dimension type")
     ref_a: Dict[str, Any] = Field(..., description="First witness reference, e.g. {'guid': str, 'ref': 'start'}")
     ref_b: Dict[str, Any] = Field(..., description="Second witness reference, e.g. {'guid': str, 'ref': 'end'}")
-    axis: Literal["x", "y", "aligned"] = Field(default="aligned", description="Measurement axis")
+    axis: Literal["x", "y", "z", "aligned"] = Field(default="aligned", description="Measurement axis")
     offset: float = Field(default=1.0, description="Dimension line offset from reference in feet")
     value: Optional[float] = Field(default=None, description="Optional explicit initial value in feet")
     is_locked: bool = Field(default=False, description="Whether dimension is locked as constraint")
     eq_group: Optional[str] = Field(default=None, description="Optional EQ group identifier")
     refs: Optional[List[Dict[str, Any]]] = Field(default=None, description="Optional ordered list of chained references")
-    binding: Literal["literal", "equal", "formula"] = Field(default="literal", description="Binding mode")
+    binding: Literal["literal", "parameter", "equal"] = Field(default="literal", description="Binding mode")
     label: Optional[str] = Field(default=None, description="Optional parameter label")
     eq_anchor: Optional[int] = Field(default=None, description="Optional anchor index for equal binding")
+
+    @model_validator(mode="after")
+    def _validate_binding_rules(self) -> "DimensionCreateParams":
+        if self.binding == "parameter":
+            if not self.label:
+                raise ValueError("label must be set when binding == 'parameter'")
+            if self.is_locked:
+                raise ValueError("Dimension binding error: cannot be both locked and labeled")
+        else:
+            if self.label is not None:
+                raise ValueError(f"label cannot be set when binding == '{self.binding}' (only when binding == 'parameter')")
+        if self.is_locked and self.refs and len(self.refs) > 2 and self.binding != "equal":
+            raise ValueError("Dimension binding error: cannot lock multi-segment dimension without equal binding")
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -898,15 +912,33 @@ class CommandBusEngine:
                     ref_b = dim.get("ref_b", {})
                     guid_a = ref_a.get("guid") or (ref_a.get("sources") and ref_a["sources"][0]["element_guid"])
                     guid_b = ref_b.get("guid") or (ref_b.get("sources") and ref_b["sources"][0]["element_guid"])
-                    if guid_a and guid_b and guid_a != guid_b and guid_a in self.manager.element_meta and guid_b in self.manager.element_meta:
-                        c = self.manager.add_dimension_lock(
-                            guid_a=guid_a,
-                            guid_b=guid_b,
-                            locked_distance=float(dim.get("value", 0.0)),
-                            is_locked=True,
-                            axis=dim.get("axis", "x") if dim.get("axis") in ("x", "y") else "x",
-                        )
-                        dim["constraint_id"] = c.get("id")
+                    if guid_a and guid_a in self.manager.element_meta:
+                        if guid_b and guid_b in self.manager.element_meta and guid_a != guid_b:
+                            c = self.manager.add_dimension_lock(
+                                guid_a=guid_a,
+                                guid_b=guid_b,
+                                locked_distance=float(dim.get("value", 0.0)),
+                                is_locked=True,
+                                axis=dim.get("axis", "x") if dim.get("axis") in ("x", "y") else "x",
+                                ref_a=ref_a,
+                                ref_b=ref_b,
+                            )
+                            dim["constraint_id"] = c.get("id")
+                        elif not guid_b or guid_a == guid_b:
+                            c_id = f"dimlock_{uuid.uuid4().hex[:8]}"
+                            c = {
+                                "id": c_id,
+                                "type": "dimension_lock",
+                                "guid_a": guid_a,
+                                "guid_b": guid_a,
+                                "locked_distance": float(dim.get("value", 0.0)),
+                                "axis": dim.get("axis", "aligned"),
+                                "is_locked": True,
+                                "ref_a": ref_a,
+                                "ref_b": ref_b,
+                            }
+                            self.manager.constraints[c_id] = c
+                            dim["constraint_id"] = c_id
             else:
                 if cid and cid in self.manager.constraints:
                     self.manager.constraints[cid]["is_locked"] = False
@@ -1212,6 +1244,8 @@ class CommandBusEngine:
             res = self.execute_single_command(cmd_name, p.model_dump())
 
             post_cid = self.manager.dimensions.get(did, {}).get("constraint_id")
+            post_constraint = copy.deepcopy(self.manager.constraints.get(post_cid)) if post_cid and post_cid in self.manager.constraints else None
+
             def undo_fn(mgr):
                 if did in mgr.dimensions:
                     mgr.dimensions[did]["is_locked"] = prev_locked
@@ -1238,16 +1272,16 @@ class CommandBusEngine:
                     if "segments" in mgr.dimensions[did]:
                         for s in mgr.dimensions[did]["segments"]:
                             s["locked"] = p.is_locked
-                    target_cid = mgr.dimensions[did].get("constraint_id")
-                    if p.is_locked:
-                        if target_cid and target_cid in mgr.constraints:
-                            mgr.constraints[target_cid]["is_locked"] = True
-                    else:
-                        if target_cid and target_cid in mgr.constraints:
-                            mgr.constraints[target_cid]["is_locked"] = False
                     mgr.dimensions_rev += 1
+                if post_cid and post_constraint is not None:
+                    mgr.constraints[post_cid] = copy.deepcopy(post_constraint)
+                    if did in mgr.dimensions:
+                        mgr.dimensions[did]["constraint_id"] = post_cid
                     mgr.constraints_rev += 1
-                    mgr.project_rev += 1
+                elif cid and cid in mgr.constraints:
+                    mgr.constraints[cid]["is_locked"] = p.is_locked
+                    mgr.constraints_rev += 1
+                mgr.project_rev += 1
 
             return CommandMemento(cmd_name, undo_fn, redo_fn), res
 

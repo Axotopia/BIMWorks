@@ -438,7 +438,17 @@ def resolve_reference_axis(
             guid = sources[0]["element_guid"]
             meta = getattr(manager, "element_meta", {})
             if guid in meta:
-                return (float(meta[guid].get("elevation", 0.0)), outcome)
+                elev = meta[guid].get("elevation")
+                if elev is not None:
+                    return (float(elev), outcome)
+                lid = meta[guid].get("level_id")
+                if lid and hasattr(manager, "levels") and manager.levels:
+                    if lid in manager.levels:
+                        return (float(manager.levels[lid].get("elevation", 0.0)), outcome)
+                    for k, lv in manager.levels.items():
+                        if k.lower() == str(lid).lower() or lv.get("name", "").lower() == str(lid).lower():
+                            return (float(lv.get("elevation", 0.0)), outcome)
+                return (0.0, outcome)
         return (0.0, outcome)
 
     return (None, "lost")

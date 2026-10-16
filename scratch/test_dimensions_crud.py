@@ -351,10 +351,27 @@ def run_tests():
     # 18c: binding slot validations
     val_err_lock_label = False
     try:
-        mgr.add_dimension(refs_d[:2], is_locked=True, label="LengthParam")
+        mgr.add_dimension(refs_d[:2], is_locked=True, binding="parameter", label="LengthParam")
     except ValueError:
         val_err_lock_label = True
     check("validator rejects locked + label together", val_err_lock_label)
+
+    val_err_literal_label = False
+    try:
+        mgr.add_dimension(refs_d[:2], binding="literal", label="ForbiddenLabel")
+    except ValueError:
+        val_err_literal_label = True
+    check("validator rejects label when binding == 'literal'", val_err_literal_label)
+
+    val_err_param_nolabel = False
+    try:
+        mgr.add_dimension(refs_d[:2], binding="parameter", label=None)
+    except ValueError:
+        val_err_param_nolabel = True
+    check("validator rejects binding == 'parameter' without label", val_err_param_nolabel)
+
+    dim_param = mgr.add_dimension(refs_d[:2], binding="parameter", label="ValidParam")
+    check("binding == 'parameter' with label succeeds", dim_param is not None and dim_param.get("binding") == "parameter" and dim_param.get("label") == "ValidParam")
 
     val_err_multi_locked = False
     try:
@@ -435,11 +452,15 @@ def run_tests():
     tx_lock = engine.execute_transaction([
         CommandRequest(command="DimensionLockToggle", params={"dimension_id": dim_oc2["id"], "is_locked": True})
     ], origin="ui", description="Lock dimension")
+    cid_oc2 = mgr.dimensions[dim_oc2["id"]].get("constraint_id")
     check("DimensionLockToggle executed", dim_oc2["id"] in mgr.dimensions and mgr.dimensions[dim_oc2["id"]].get("is_locked") is True)
+    check("DimensionLockToggle created constraint in manager.constraints", cid_oc2 is not None and cid_oc2 in mgr.constraints)
     engine.undo()
     check("undo restores unlocked state", mgr.dimensions[dim_oc2["id"]].get("is_locked") is False)
+    check("undo removes constraint from manager.constraints", cid_oc2 not in mgr.constraints)
     engine.redo()
     check("redo restores locked state", mgr.dimensions[dim_oc2["id"]].get("is_locked") is True)
+    check("redo restores constraint in manager.constraints", cid_oc2 in mgr.constraints)
 
     # 19f. H1: Same-wall reference pairs (not length dimensions) round-trip without corrupting wall length
     w_h1 = mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], height=10.0, thickness=0.5)
@@ -469,20 +490,29 @@ def run_tests():
     engine.execute_single_command("DimensionLockToggle", {"dimension_id": dim_locked_h2["id"], "is_locked": True})
     check("constraints[cid]['is_locked'] restored to True", mgr.constraints[cid_h2].get("is_locked") is True)
 
-    # 19h. H3: Dimension from wall to level_plane drives level elevation and round-trips
-    w_h3 = mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0])
-    lvl_h3 = mgr.add_level("Level H3", elevation=0.0)
+    # 19h. H3: Dimension from wall to level_plane drives level elevation relatively and round-trips
+    lvl_base = mgr.add_level("Level Base", elevation=20.0)
+    w_h3 = mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], level_id=lvl_base)
+    # Check creation value to hosting level is 0.0
+    dim_lvl_same = mgr.create_dimension(
+        ref_a={"kind": "wall_start", "sources": [{"element_guid": w_h3["guid"], "ordinal": 0}]},
+        ref_b={"kind": "level_plane", "sources": [{"element_guid": lvl_base, "ordinal": 0}]},
+        axis="z",
+    )
+    check("wall to its hosting level measures 0.0 ft", abs(mgr.resolve_dimension(dim_lvl_same["id"]) - 0.0) < 1e-4)
+
+    lvl_h3 = mgr.add_level("Level H3", elevation=30.0)
     dim_lvl = mgr.create_dimension(
         ref_a={"kind": "wall_start", "sources": [{"element_guid": w_h3["guid"], "ordinal": 0}]},
         ref_b={"kind": "level_plane", "sources": [{"element_guid": lvl_h3, "ordinal": 0}]},
         axis="z",
     )
-    check("initial level dimension value is 0.0", abs(mgr.resolve_dimension(dim_lvl["id"]) - 0.0) < 1e-4)
-    res_lvl = mgr.set_dimension_value(dim_lvl["id"], 25.0)
-    check("level dimension set to 25.0 updated", res_lvl.get("status") == "updated")
-    check("level elevation is 25.0 ft", abs(float(mgr.levels[lvl_h3]["elevation"]) - 25.0) < 1e-4)
-    check("resolve_dimension to level returns 25.0 ft", abs(mgr.resolve_dimension(dim_lvl["id"]) - 25.0) < 1e-4)
-    check("dim['value'] recorded as 25.0 ft", abs(mgr.dimensions[dim_lvl["id"]]["value"] - 25.0) < 1e-4)
+    check("initial level dimension value is 10.0 ft", abs(mgr.resolve_dimension(dim_lvl["id"]) - 10.0) < 1e-4)
+    res_lvl = mgr.set_dimension_value(dim_lvl["id"], 15.0)
+    check("level dimension set to 15.0 updated", res_lvl.get("status") == "updated")
+    check("level elevation is 35.0 ft (20 + 15 relative)", abs(float(mgr.levels[lvl_h3]["elevation"]) - 35.0) < 1e-4)
+    check("resolve_dimension to level returns 15.0 ft", abs(mgr.resolve_dimension(dim_lvl["id"]) - 15.0) < 1e-4)
+    check("dim['value'] recorded as 15.0 ft", abs(mgr.dimensions[dim_lvl["id"]]["value"] - 15.0) < 1e-4)
 
     # 19i. H4: Failed solve refusal does not mutate dim['value']
     dim_fail = copy.deepcopy(dim_g3_len)
@@ -492,6 +522,15 @@ def run_tests():
     res_fail = mgr.set_dimension_value("dim_test_fail", 99.0)
     check("failed solve returns error or failed status", res_fail.get("status") in ("error", "failed", "conflict"))
     check("failed solve does not mutate dimension value to 99.0", mgr.dimensions["dim_test_fail"].get("value") != 99.0)
+
+    # Test forced failure in solver
+    from constraint_solver import ConstraintSolver, ConstraintSolve
+    orig_solve_dims = ConstraintSolver.solve_dimensions
+    ConstraintSolver.solve_dimensions = lambda self, axis, d, pins=None: ConstraintSolve(axis=axis, status="failed", conflicting=["forced_error"])
+    res_solver_fail = mgr.set_dimension_value(dim_g3_len["id"], 99.0)
+    ConstraintSolver.solve_dimensions = orig_solve_dims
+    check("forced solver failure returns failed status", res_solver_fail.get("status") == "failed")
+    check("forced solver failure preserves original dim value", mgr.dimensions[dim_g3_len["id"]].get("value") != 99.0)
 
     # 19j. M1: Valid set_dimension_value clears last_constraint_conflict
     mgr.set_dimension_value(dim_oc2["id"], 30.0)
@@ -515,10 +554,84 @@ def run_tests():
     check("wall length shrinks to 8.0 ft", abs(mgr.element_meta[w_g3["guid"]]["length"] - 8.0) < 1e-4)
     check("resolve_dimension returns 8.0 ft on shrink", abs(mgr.resolve_dimension(dim_g3_len["id"]) - 8.0) < 1e-4)
 
+    # 19l. Lock semantics: locked dimension holds value across witness drag
+    w_la = mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0])  # center x=5.0
+    w_lb = mgr.add_wall([20.0, 0.0, 0.0], [20.0, 10.0, 0.0])  # center x=20.0, wall_end x=20.0
+    dim_lock_drag = mgr.create_dimension(
+        ref_a={"kind": "wall_start", "sources": [{"element_guid": w_la["guid"], "ordinal": 0}]},
+        ref_b={"kind": "wall_end", "sources": [{"element_guid": w_lb["guid"], "ordinal": 0}]},
+        axis="x",
+        is_locked=True,
+    )
+    check("locked dimension initial value is 20.0 ft", abs(mgr.resolve_dimension(dim_lock_drag["id"]) - 20.0) < 1e-4)
+    mgr.translate_element(w_la["guid"], 5.0, 0.0, 0.0)
+    meas_after_drag = mgr.resolve_dimension(dim_lock_drag["id"])
+    check("locked dimension held its value after drag (+5 ft)", abs(meas_after_drag - 20.0) < 1e-4)
+
+    # 19m. H1: Kind-Pair matrix sweep across wall orientations
+    # (1) x-aligned wall: face_pos <-> face_neg
+    w_xmat = mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], thickness=0.5)
+    dim_th = mgr.create_dimension(
+        ref_a={"kind": "wall_face_pos", "sources": [{"element_guid": w_xmat["guid"], "ordinal": 0}]},
+        ref_b={"kind": "wall_face_neg", "sources": [{"element_guid": w_xmat["guid"], "ordinal": 0}]},
+        axis="aligned",
+    )
+    check("aligned thickness initial is 0.5", abs(mgr.resolve_dimension(dim_th["id"]) - 0.5) < 1e-4)
+    res_th = mgr.set_dimension_value(dim_th["id"], 0.3)
+    check("aligned thickness set 0.3 succeeds", res_th.get("status") == "updated")
+    check("aligned thickness resolve is 0.3", abs(mgr.resolve_dimension(dim_th["id"]) - 0.3) < 1e-4)
+    check("aligned thickness update leaves wall length intact at 10.0", abs(mgr.element_meta[w_xmat["guid"]]["length"] - 10.0) < 1e-4)
+
+    # face_pos <-> face_neg on axis="x" for x-aligned wall must refuse safely
+    dim_th_x = mgr.create_dimension(
+        ref_a={"kind": "wall_face_pos", "sources": [{"element_guid": w_xmat["guid"], "ordinal": 0}]},
+        ref_b={"kind": "wall_face_neg", "sources": [{"element_guid": w_xmat["guid"], "ordinal": 0}]},
+        axis="x",
+    )
+    res_th_x = mgr.set_dimension_value(dim_th_x["id"], 0.3)
+    check("thickness along x for x-aligned wall safely refused", res_th_x.get("status") == "failed")
+    check("refused thickness does not corrupt wall length", abs(mgr.element_meta[w_xmat["guid"]]["length"] - 10.0) < 1e-4)
+
+    # (2) diagonal wall: start <-> center on axis="x"
+    w_diag = mgr.add_wall([0.0, 0.0, 0.0], [6.0, 8.0, 0.0], thickness=0.5)  # len=10, ux=0.6, uy=0.8
+    dim_diag_sc = mgr.create_dimension(
+        ref_a={"kind": "wall_start", "sources": [{"element_guid": w_diag["guid"], "ordinal": 0}]},
+        ref_b={"kind": "wall_center", "sources": [{"element_guid": w_diag["guid"], "ordinal": 0}]},
+        axis="x",
+    )
+    check("diagonal start<->center on x initial is 3.0", abs(mgr.resolve_dimension(dim_diag_sc["id"]) - 3.0) < 1e-4)
+    res_dsc = mgr.set_dimension_value(dim_diag_sc["id"], 1.8)
+    check("diagonal start<->center on x set 1.8 succeeds", res_dsc.get("status") == "updated")
+    check("diagonal start<->center on x resolve is 1.8", abs(mgr.resolve_dimension(dim_diag_sc["id"]) - 1.8) < 1e-4)
+    check("diagonal start<->center resizes wall to 6.0", abs(mgr.element_meta[w_diag["guid"]]["length"] - 6.0) < 1e-4)
+
+    # (3) diagonal wall: center <-> face_pos on axis="y"
+    dim_diag_cf = mgr.create_dimension(
+        ref_a={"kind": "wall_center", "sources": [{"element_guid": w_diag["guid"], "ordinal": 0}]},
+        ref_b={"kind": "wall_face_pos", "sources": [{"element_guid": w_diag["guid"], "ordinal": 0}]},
+        axis="y",
+    )
+    check("diagonal center<->face_pos on y initial is 0.15", abs(mgr.resolve_dimension(dim_diag_cf["id"]) - 0.15) < 1e-4)
+    res_dcf = mgr.set_dimension_value(dim_diag_cf["id"], 0.09)
+    check("diagonal center<->face_pos on y set 0.09 succeeds", res_dcf.get("status") == "updated")
+    check("diagonal center<->face_pos on y resolve is 0.09", abs(mgr.resolve_dimension(dim_diag_cf["id"]) - 0.09) < 1e-4)
+    check("diagonal center<->face_pos leaves wall length at 6.0", abs(mgr.element_meta[w_diag["guid"]]["length"] - 6.0) < 1e-4)
+
+    # (4) start <-> face_pos on axis="aligned"
+    dim_s_fp = mgr.create_dimension(
+        ref_a={"kind": "wall_start", "sources": [{"element_guid": w_xmat["guid"], "ordinal": 0}]},
+        ref_b={"kind": "wall_face_pos", "sources": [{"element_guid": w_xmat["guid"], "ordinal": 0}]},
+        axis="aligned",
+    )
+    res_s_fp = mgr.set_dimension_value(dim_s_fp["id"], 4.0)
+    check("start<->face_pos aligned set 4.0 succeeds", res_s_fp.get("status") == "updated")
+    check("start<->face_pos aligned resolve returns 4.0", abs(mgr.resolve_dimension(dim_s_fp["id"]) - 4.0) < 1e-4)
+
     print(f"\nRESULTS: {passed} passed, {failed} failed")
     if failed > 0:
         sys.exit(1)
 
 if __name__ == "__main__":
     run_tests()
+
 
