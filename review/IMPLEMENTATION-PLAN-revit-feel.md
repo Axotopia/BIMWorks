@@ -244,7 +244,7 @@ duplicated here. The two plans' boundary is set out in §2b.
 ### 0c. Verification pass — 2026-10-16 at `7251a44` — *supersedes §0b for counts*
 
 Triggered by the audit of the gesture layer that §2b assigns to the direct-manipulation plan
-(`review/REVIEW-gemini-direct-manipulation-phases-7-8-2026-10-16.md`). Every STATUS claim below was
+(`review/archive/REVIEW-gemini-direct-manipulation-phases-7-8-2026-10-16.md`). Every STATUS claim below was
 re-checked against the tree. Four statuses here were stale — three of them **understating** work that has
 landed — and one count has moved.
 
@@ -277,11 +277,11 @@ leaves the historical rows intact.
 
 **Cross-plan note.** The gesture layer §2b delegates now runs through Phase 6 complete, with Phase 1, 7 and 8
 partial. The outstanding work is enumerated as W1–W13 in
-`review/REWORK-ORDER-direct-manipulation-2026-10-16.md`; W8 is the 3.5.1 item above and W12 is this table.
+`review/archive/REWORK-ORDER-direct-manipulation-2026-10-16.md`; W8 is the 3.5.1 item above and W12 is this table.
 
 ### 0d. Verification pass — 2026-10-16 (Post-Rework Order W1–W13)
 
-Triggered by completion of `review/REWORK-ORDER-direct-manipulation-2026-10-16.md` (W1–W13):
+Triggered by completion of `review/archive/REWORK-ORDER-direct-manipulation-2026-10-16.md` (W1–W13):
 1. **3.5.1 is ✅ DONE**: W8 implemented `CommandMemento` for all 10 remaining commands (`SetWallJoin`, `ConstraintAlign`, `ConstraintLockDim`, `ConstraintEqualize`, `SketchCurveAdd`, `SketchCurveMoveVertex`, `SketchCurveMoveEdge`, `SketchCurveSetSlope`, `ConstraintLockToggle`, `ConstraintDelete`). Probe check G passes with **50 of 50 commands declaring a memento (0 fall back to snapshot)**. The probe (`scratch/_probe_engine_smoke.py`) is wired into `scripts/check-python-suites.mjs` and verified by `npm run check`.
 2. **0.2 remains 🟨 PARTIAL**: Trim/split fixtures in `scratch/test_trim_split_gate.py` vary thickness but not angle or join mode (§20.1 variation requirement remains open).
 3. **Phase 0 Exit remains ⬜ open**: N=484 verified; N=5,000 unmeasured.

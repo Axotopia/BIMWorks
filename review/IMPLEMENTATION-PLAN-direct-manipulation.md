@@ -2,7 +2,7 @@
 
 **Verified against:** `Axotopia/BIMWorks@7a36697` (2026-10-16), and originally against `8ffec22` (after the Revit-parity UI refactor: `7026842`, `4ed1f90`).
 **Read for comparison:** IngeTrazo `d8ee8c0` (`/tmp/ingetrazo-src`) — `tools/base.py`, `core/snap.py`, `core/inference.py`, `core/history.py`, `tools/move.py`, `tools/scale.py`, `tools/pushpull.py`.
-**Relationship to existing plans:** this is the *interaction* layer. `review/IMPLEMENTATION-PLAN-dimension-as-control.md` is the *semantics* layer (reference primitive, solver, dimension as a driving object). They meet at the grip (§3.6), and §5 sequences them so the grip layer is not rewritten when that plan reaches Phase 3. The **one-owner-per-item division across all four live plans** — this one, `revit-feel`, `dimension-as-control`, `geometric-references` — is tabulated in `review/IMPLEMENTATION-PLAN-revit-feel.md` §2b; read it before adding work here, because Phase 4 of that plan (draw-and-place) and Phase 2 of it (dimension editing) both have halves that belong to Track A or Track B of this one.
+**Relationship to existing plans:** this is the *interaction* layer. `review/archive/IMPLEMENTATION-PLAN-dimension-as-control.md` is the *semantics* layer (reference primitive, solver, dimension as a driving object). They meet at the grip (§3.6), and §5 sequences them so the grip layer is not rewritten when that plan reaches Phase 3. The **one-owner-per-item division across all four live plans** — this one, `revit-feel`, `dimension-as-control`, `geometric-references` — is tabulated in `review/IMPLEMENTATION-PLAN-revit-feel.md` §2b; read it before adding work here, because Phase 4 of that plan (draw-and-place) and Phase 2 of it (dimension editing) both have halves that belong to Track A or Track B of this one.
 **Revised 2026-10-16** after an engine probe (`scratch/_probe_engine_smoke.py`) and a browser verification pass. The revision adds **Track A** (§4): the defects and UI declarations that make the app untestable *before* any "feel" claim can be evaluated. Track B (§5) is the original manipulation plan, now with per-phase status.
 
 **Line numbers are pinned to `7a36697`** unless a citation says otherwise. They will drift; cite the symbol when the two disagree.
@@ -12,8 +12,8 @@
 ## 0a. Reconciliation — 2026-10-16 at `7251a44`
 
 Every status below was re-derived from the tree rather than carried forward, during the audit of Phases 7
-and 8 (`review/REVIEW-gemini-direct-manipulation-phases-7-8-2026-10-16.md`) and the rework order it
-produced (`review/REWORK-ORDER-direct-manipulation-2026-10-16.md`). **§1.1 remains the historical snapshot
+and 8 (`review/archive/REVIEW-gemini-direct-manipulation-phases-7-8-2026-10-16.md`) and the rework order it
+produced (`review/archive/REWORK-ORDER-direct-manipulation-2026-10-16.md`). **§1.1 remains the historical snapshot
 at `7a36697`** and should not be rewritten; this section supersedes it for status, as does the status line
 at the head of §5. The per-phase prose in §5 still describes the pre-execution state where it says "not
 started"; read it as the task definition, not as status.
@@ -60,7 +60,7 @@ able to fail" exists to prevent; W7 and W8 of the rework order close it.
 
 ### 0b. Post-Rework Audit — 2026-10-16 (Rework Order W1–W13 Complete)
 
-Following execution of `review/REWORK-ORDER-direct-manipulation-2026-10-16.md`:
+Following execution of `review/archive/REWORK-ORDER-direct-manipulation-2026-10-16.md`:
 - **A5 is ✅ gated (W5) — after a correction (§0c).** The original W5 gate (section A5b of `scripts/check-ui-p0.mjs`) declared its own `computeFitTransform`, fed it hardcoded fixtures and asserted on that local function, so it passed with the viewport's real `fit2DToExtents` replaced by `return`. The fit maths now lives in `src/interaction/fitExtents.ts`, the viewport calls it, the vacuous block was removed, and `scripts/check-fit-extents.mjs` (wired as `check:fit`) asserts the 60–90% occupancy and centring **on the shipped function** — verified to fail when that function is stubbed to identity.
 - **A7 is ✅ DONE (W4)**: Added elevation tool (`EL`) to `ActiveTool` in `src/types/bim.ts`, `toolCaptions.ts:46` (`implemented: true`), Ribbon, and pick gesture in `PlanViewport2D.tsx`.
 - **P1 is ✅ DONE (W6)**: Retired local `useState` for tool-points in `Viewport3D.tsx` and `PlanViewport2D.tsx`; single source of truth is `interactionSession`. Asserted in `scripts/check-interaction-session.mjs` Section 5 with negative control.
@@ -102,7 +102,7 @@ below:
   `execute_transaction([CommandRequest(...)], origin, description)` — there is no `execute`. Envelopes carry
   `"status": "updated"` (or `"committed"`), never `"success"`. Two "Reproducible Command" blocks in the
   completion report used the non-existent API and therefore raised `AttributeError` on copy-paste.
-  Corrected, runnable equivalents are in `review/REWORK-ORDER-direct-manipulation-2026-10-16.md` §7.
+  Corrected, runnable equivalents are in `review/archive/REWORK-ORDER-direct-manipulation-2026-10-16.md` §7.
 
 **Still open after the rework** (carried deliberately, not silently): A7's elevation tool is now done, so the
 remaining items are `0.2` (§20.1 variation), Phase 0 Exit (N=5,000), `1.5` (slice delta transport), `2.7`

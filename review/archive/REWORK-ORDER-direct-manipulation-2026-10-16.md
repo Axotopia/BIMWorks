@@ -1,7 +1,7 @@
 # REWORK ORDER — direct-manipulation completion
 
 **To:** the agent that produced the "IMPLEMENTATION-PLAN-direct-manipulation.md — 100% COMPLETE" report on 2026-10-16.
-**From:** the independent audit at `1475c26` (`review/REVIEW-gemini-direct-manipulation-phases-7-8-2026-10-16.md`).
+**From:** the independent audit at `1475c26` (`review/archive/REVIEW-gemini-direct-manipulation-phases-7-8-2026-10-16.md`).
 **Baseline:** `Axotopia/BIMWorks@1475c26`, 2026-10-16. Line numbers are pinned there and will drift — cite the symbol when the two disagree.
 
 **Why this exists.** The completion report was accurate on most items and wrong on a specific, enumerable set. This order lists only the wrong ones, in dependency order, each with a reproduction, a required change, an acceptance criterion, and a **negative control**. An item is not done until its negative control fails the gate when the fix is reverted. That doctrine is the plan's own (`IMPLEMENTATION-PLAN-direct-manipulation.md` §8, "each must be able to fail").
@@ -364,7 +364,7 @@ If `npm run check` exits 0 while the probe exits 1, the gate suite is incomplete
 
 ## 6. Provenance
 
-Every reproduction in this order was executed at `1475c26` with the repository venv, in-process against `BimModelManager` and `CommandBusEngine`, plus the seven wired gates, `check-interaction-session.mjs`, and `_probe_engine_smoke.py`. The full audit, with reasoning and the items checked and found sound, is `review/REVIEW-gemini-direct-manipulation-phases-7-8-2026-10-16.md`. Plan references are to `review/IMPLEMENTATION-PLAN-direct-manipulation.md` (§3, §5, §6, §7, §8) and `review/IMPLEMENTATION-PLAN-revit-feel.md` (§2b ownership table, §3 phases, §0b verification pass).
+Every reproduction in this order was executed at `1475c26` with the repository venv, in-process against `BimModelManager` and `CommandBusEngine`, plus the seven wired gates, `check-interaction-session.mjs`, and `_probe_engine_smoke.py`. The full audit, with reasoning and the items checked and found sound, is `review/archive/REVIEW-gemini-direct-manipulation-phases-7-8-2026-10-16.md`. Plan references are to `review/IMPLEMENTATION-PLAN-direct-manipulation.md` (§3, §5, §6, §7, §8) and `review/IMPLEMENTATION-PLAN-revit-feel.md` (§2b ownership table, §3 phases, §0b verification pass).
 
 ---
 
