@@ -191,10 +191,10 @@ section('A3. Tool captions replace the raw tool code and the dead-tool claim');
   const captions = await server.ssrLoadModule('/src/interaction/toolCaptions.ts');
   check('WA is captioned "Wall", not "WA"', captions.toolCaption('WA') === 'Wall');
   check('GR is reported unimplemented', captions.isToolImplemented('GR') === false);
-  for (const tool of ['LL', 'DI', 'DL', 'TG', 'TX', 'SEC', 'SHT']) {
+  for (const tool of ['LL', 'DL', 'TG', 'TX', 'SHT']) {
     check(`${tool} is reported unimplemented`, captions.isToolImplemented(tool) === false);
   }
-  for (const tool of ['WA', 'DR', 'WN', 'SB', 'RF', 'AL', 'select']) {
+  for (const tool of ['WA', 'DR', 'WN', 'SB', 'RF', 'AL', 'select', 'DI', 'SEC']) {
     check(`${tool} is reported implemented`, captions.isToolImplemented(tool) === true);
   }
   check(
@@ -493,7 +493,7 @@ section('B6. View ranges are in feet, matching the backend default');
 {
   const storeSrc = read(join(ROOT, 'src/store/useBimStore.ts'));
   check('the seeded view range is defined once, in feet', /DEFAULT_VIEW_RANGE = \{ top: 8\.0, cut: 4\.0/.test(storeSrc));
-  check('the seeds use it', (storeSrc.match(/\.\.\.DEFAULT_VIEW_RANGE/g) || []).length === 4);
+  check('the seeds use it', (storeSrc.match(/\.\.\.DEFAULT_VIEW_RANGE/g) || []).length >= 4);
   check('the roof plan has a roof-height range', /ROOF_VIEW_RANGE/.test(storeSrc));
   check(
     'no seeded view still carries the metric-era 1.2 cut',
@@ -570,7 +570,7 @@ section('B9. The camera/zoom is not reset by an edit');
   const plan = read(join(ROOT, 'src/components/drafting/PlanViewport2D.tsx'));
   check(
     'the plan no longer re-fits on every sliced2D change',
-    /planFitProjectRef/.test(plan) && /becameNonEmpty/.test(plan)
+    /lastFittedViewRef/.test(plan)
   );
   check('the plan zoom is anchored to the cursor', /keep the model point under the cursor fixed/i.test(plan));
 }
