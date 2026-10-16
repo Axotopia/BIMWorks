@@ -1,130 +1,179 @@
-# Verification report — round 3: `revitUI` fixes re-verified
+# Verification report — round 4: `revitUI` fixes re-verified
 
-**Audited revision:** `revitUI` @ **`5f126c2`** ("refactor fix").
-**Prior rounds:** round 1 audited `f7e885c`; round 2 audited `c19f4ac`. Regression baseline: `main` @ `d872a14`.
+**Audited revision:** `revitUI` @ **`4023571`** ("fix(review): round-3 remaining work — scale gate
+budget, stale note & extension snap candidate").
+**Prior rounds:** r1 `f7e885c` · r2 `c19f4ac` · r3 `5f126c2`. Regression baseline: `main` @ `d872a14`.
 **Auditor's environment:** Linux, `.venv/bin/python` (ifcopenshell 0.9.0, numpy 2.5.4, shapely 2.2.0,
-**planegcs installed**). Bare `python` does not exist; system python is `python3`.
+planegcs installed). Node v22.23.3. Bare `python` does not exist; system python is `python3`.
 
 ---
 
 ## Verdict
 
-**Every claim in round 3 reproduced.** Four previously-open defects are genuinely fixed, the plan rows
-that were still asserting unbuilt behaviour have been honestly downgraded, and no test was weakened —
-`git diff 4ee3494..5f126c2 -- scratch/` contains only the *new* gate file.
+**All three items from round-3 §6 were addressed, and each was verified by execution rather than by
+reading.** Rounds 1–2 overclaimed; rounds 3 and 4 do not.
 
-This round does not repeat the overclaiming of rounds 1–2. What remains open is now *declared* open
-rather than asserted as done.
+Three new items are recorded in §3 — none is a regression, one is a real coverage gap, and one is a
+caveat about what "budget reconciled" means.
 
-| | main | r1 `f7e885c` | r2 `c19f4ac` | r3 `5f126c2` |
-|---|---|---|---|---|
-| backend suites passed | 20 / 22 | 9 / 27 | 26 / 27 | **26 / 28** |
-| `npm run check` | exit 1 (delta 10/11) | exit 1 | exit 0 | **exit 0** |
-| `tsc --noEmit` | clean | clean | clean | **clean** |
+| | main | r1 `f7e885c` | r2 `c19f4ac` | r3 `5f126c2` | r4 `4023571` |
+|---|---|---|---|---|---|
+| backend suites passed | 20 / 22 | 9 / 27 | 26 / 27 | 26 / 28 | **27 / 28** |
+| `npm run check` | exit 1 | exit 1 | exit 0 | exit 0 | **exit 0** |
+| `tsc --noEmit` | clean | clean | clean | clean | **clean** |
+| `test_scale_gate` | 5/6 | 5/6 | 6/6 (flaky) | 5/6 | **6/6** |
 
-The two failures on this machine are `test_update_roof.py` (needs the external Windows path
-`Z:/PROJECTS/463-Glory/BIM/REVIT.2027/463-ADU_V9_4arch.ifc`, also fails on `main`) and
-`test_scale_gate.py` (see §4). Both are disclosed in the plan header.
+The single failure is `test_update_roof.py`, which needs the external Windows path
+`Z:/PROJECTS/463-Glory/BIM/REVIT.2027/463-ADU_V9_4arch.ifc`. It also fails on `main`, so it is
+environmental. The plan header states this correctly.
 
 ---
 
-## 1. Fixed and verified this round
+## 1. Verified this round
 
-| Item | Fix | How it was verified |
-|---|---|---|
-| **§2.1 EQ collapse** (plan row 2.6) | `equalize_span` (`backend/ifc_service.py:3338`) detects a same-host span — `is_same_host = (span_start_guid == span_end_guid)` — and when the host is a wall uses `pos_start = 0.0`, `total_span = host_meta["length"]` (`:3354-3361`), then distributes along the host baseline using its angle (`:3370-3377`). `_solve_constraints_after_move` re-equalizes held EQ spans on move/resize (`:2975-2984`). | My round-2 reproduction script, unchanged: `before [5.0, 15.0, 25.0]` → `after [6.0, 13.5, 21.0]`, centres `[7.5, 15.0, 22.5]`, spacing `7.5 / 7.5`. Round 2 collapsed all three to `-1.5`. |
-| **§2.10 `constraints_rev`** (plan row 2.2) | Bump sites went from 2 to 7: `create_dimension` (`:3531`), `delete_dimension` (`:3544`), and **all three** success returns of `set_dimension_value` (`:3581`, `:3607`, `:3669`). | Read the whole function (`:3548-3672`): the only non-bumping exits are `raise ValueError` (non-positive value) and `raise KeyError` (unknown id) — error paths where nothing changed. The "all exit paths" claim holds. |
-| **§2.7 batch PDF** (Phase 6) | `SheetCanvas.tsx:83` adds `renderSheetSvgString(targetSheet)`; `:176` is now `(s.id === sheet.id && currentSvgStr) ? currentSvgStr : renderSheetSvgString(s)`. | The duplicated-arm expression (`… ? currentSvgStr : currentSvgStr`) is gone; each sheet now renders its own SVG. `tsc` and `npm run check` clean. |
-| **Solver fallback untested** (round-2 §5 item 4) | New `scratch/test_pure_python_solver.py` forces `constraint_solver.Sketch = None` (`:53`) and exercises align, dimension-lock, multi-wall EQ, single-wall EQ and conflict detection. | Gate passes **13/13**; its single-wall EQ checks assert the same `6.0 / 13.5 / 21.0` offsets recovered above. This path is now covered *even on machines where planegcs is installed*, which was the gap. |
+### 1.1 Stale note deleted
 
-The full backend sweep is **26 passed / 2 failed** (both failures environmental — §4). Milestone gates:
-`test_type_layer_gate.py` 34/34, `test_session_undo_memento.py` 12/12, `test_trim_split_gate.py` 30/30,
-`test_mesh_hlr_incremental.py` 11/11, `test_pure_python_solver.py` 13/13. Frontend: UI-P0 130,
-State-Bundle 45, Delta Equivalence 21, `tsc` clean, `npm run check` exits 0.
+`grep -c "next Phase 1.3 step" scratch/test_scale_gate.py` → **0**. The line that told a cold reader
+1.3c was still pending is gone.
 
-## 2. Deferred scope — now honestly recorded in the plan
+### 1.2 Scale gate reconciled, with rationale
 
-These are **not** false claims any more; they are explicit `⬜ PARTIAL` / `🟨 PARTIAL` deferrals. They
-remain genuine open work, but the plan now says so.
+`scratch/test_scale_gate.py:191-200` now applies a size-dependent threshold:
 
-| Plan row | Status recorded | What is actually deferred |
-|---|---|---|
-| 2.4 | ⬜ PARTIAL | Interactive creation of **persistent** overlay dimensions — `createDimension` has no UI caller and `DI` is `implemented: false`. The in-canvas editor works only on selection temporary dimensions. |
-| 2.6 (UI half) | ✅ DONE (Backend/Bus) / ⬜ PARTIAL (UI) | Backend `ConstraintEqualize` / `equalize_span` now correct (verified above). Interactive multi-segment chain dragging is deferred. |
-| 2.7 | ⬜ PARTIAL | Grid spacing editable by dimension (grid click selects only). Levels, datum lines, bubbles and `move_level` are done. |
-| 3.4 | ⬜ PARTIAL | `DI` tool disabled; `TR` / `SL` / `SO` work. |
-| 4.1 | ⬜ PARTIAL | `extension` snap candidate absent from `SnapKind`. |
-| 4.6 | ⬜ PARTIAL | Non-wall temporary dimensions still use bounding-box centres. |
-| Phase 7 | 🟨 PARTIAL | Endpoint grips are indicator circles (not draggable); contextual ribbon tab switches to the general Modify panel without element-specific tools. |
-| Phase 2 (phase header) | 🟨 PARTIAL | "Backend CRUD, parametric overlay, level editing and bus commands ✅; interactive DI tool & grid spacing dimension edits deferred." |
+```python
+threshold = BUDGET_P95_MS if row["walls"] <= 100 else 30.0
+```
 
-Row **3.1** was reworded rather than fixed: it now scopes the claim to corner trim moving both walls to
-the baseline intersection plus single-trim clamping to the body — which matches the code, and drops the
-incorrect "clamps within both wall extents" assertion for corner mode.
+with an in-code rationale ("N=200 sits on the boundary (measured 12.2–26.9 ms depending on machine
+load) … while guarding against regressions (the global join baseline at 200 walls was 80+ ms)"). The
+check label was renamed to "…budget threshold", and the `NOTE beyond budget` line still uses the real
+`BUDGET_P95_MS` (`:46`), so §19 overruns are still reported. Gate result: **6 passed, 0 failed**.
 
-The plan header was narrowed from a blanket "all documented defects resolved" to an explicit
-verified-fixed list plus the deferred items, with the remaining failures disclosed.
+This is the one option round-3 §6 explicitly permitted ("raise the threshold and say why"), and it is
+disclosed in both the code and the plan. See §2 for what it does **not** mean.
 
-## 3. Test integrity
+### 1.3 `extension` snap candidate — implemented and functionally verified
 
-- `git diff f7e885c..5f126c2 -- scratch/` adds **one new file** (`test_pure_python_solver.py`) and
-  modifies **no existing test**. Confirmed separately for both fix commits.
-- All 16 suites that regressed in round 1 are still green.
-- `git diff 4ee3494..5f126c2` touches only `backend/ifc_service.py`,
-  `review/IMPLEMENTATION-PLAN-revit-feel.md`, `scratch/test_pure_python_solver.py` and
-  `src/components/sheets/SheetCanvas.tsx` — no opportunistic edits.
+`SnapKind` now includes `extension` (`src/interaction/snapEngine.ts:14`) and the candidate is computed
+at `:254-286` by projecting the cursor onto each segment and accepting `t` outside `[0,1]` but within
+`[-2, 3]` and within tolerance.
 
-## 4. Accuracy notes
+I exercised the function directly (Node `--experimental-strip-types`) against a 10 ft segment with
+`scale: 10` → tol 1.4 ft:
 
-1. **Suite counts are platform-specific.** "27 of 28 PASS, `test_update_roof` passes on Windows" is
-   right for a machine with `Z:` mounted. Here it fails, so the sweep is 26/28. The plan header states
-   both the count and the reason, which is accurate.
-2. **`test_scale_gate.py` is borderline and is now reported honestly.** This run: **16.0 ms** at 196
-   walls against a 16 ms budget (fail). Round 2 measured 15.8 / 16.4 / 16.1 ms. The plan now reports a
-   `12.2–24.9 ms` load-dependent range instead of asserting the budget is met. That is the correct
-   framing; the budget itself is not durably met.
-3. **Stale note (cosmetic).** `scratch/test_scale_gate.py:233` still prints *"…which is the next
-   Phase 1.3 step"* although 1.3c is complete. Harmless, but misleading to a cold reader.
-4. **No remaining overclaims detected.** Every status marker I spot-checked (`2.2`, `2.4`, `2.6`, `2.7`,
-   `3.1`, `3.4`, `4.1`, `4.6`, Phase 2, Phase 7) now matches the code.
+```
+beyond end   (13,0)  -> extension @ [13,0]  "Extension"
+before start (-2,0)  -> extension @ [-2,0]  "Extension"
+off-axis     (13,3)  -> grid      (not collinear — correctly falls through)
+at endpoint  (10,0)  -> endpoint  (higher priority — correct)
+far beyond   (60,0)  -> grid      (t=6 exceeds the 3.0 reach)
+```
+
+The priority chain in code — `intersection` (`:109-138`) → `endpoint` (`:140-164`) → `midpoint`
+(`:166-181`) → `perpendicular` (`:183`) → `extension` (`:254-286`) → `grid` (`:288`) — matches the
+hierarchy the plan now records. The description `<text>` at `PlanViewport2D.tsx:1901-1919` renders
+`activeSnapCandidate.description` unconditionally, so an extension snap **does** display
+"Extension" on screen; only the glyph shape is missing, which the plan row discloses
+("Visual SVG snap glyph overlays in `PlanViewport2D.tsx` remain deferred").
+
+---
+
+## 2. Caveat: §19's 16 ms budget is still not met at N≈200
+
+The gate was widened; the latency was not fixed. Measured this round:
+
+```
+ 100 walls    8.92 ms   0.56x
+ 196 walls   16.34 ms   1.02x   <- over the 16 ms §19 budget
+ 484 walls   38.27 ms   2.39x
+```
+
+At 196 walls the check passes only because the threshold there is 30 ms. The plan header's
+"reconciled to 30.0 ms threshold" is honest, but "reconciled" should not be read as "§19 satisfied":
+the spec requirement (p95 < 16 ms) remains unmet at N≈200. Keeping the `NOTE beyond budget` line was
+the right call, because it preserves that fact in the gate output.
+
+---
+
+## 3. New items
+
+### 3.1 Two plan rows are now stale and contradict the new gate
+
+- `review/IMPLEMENTATION-PLAN-revit-feel.md:331` (Phase 0.1) still says the gate
+  *"Enforces the 16 ms budget at N≤200 by default"*. It now enforces 16 ms only at N≤100.
+- `:65` still frames the measurement table *"against the §19 budget of **p95 < 16 ms**"*, and `:355`
+  calls 196 walls *"inside the 16 ms budget"*. Those are historical statements about `e3216fe`, but
+  they sit next to a header that now says 30 ms, which will confuse a cold reader.
+
+Neither is a code defect; both are documentation drift introduced by this commit.
+
+### 3.2 `snapEngine.ts` has no automated coverage
+
+`grep -rn "findSnapCandidate\|snapEngine" scripts/ scratch/` returns **nothing**. The plan marks 4.1
+"🟨 PARTIAL / ✅ DONE (Engine)" and describes the module as pure and testable — "Zero React/DOM
+dependencies so it runs in tests and worker threads identically" — yet no test imports it. The manual
+execution in §1.3 is currently the only evidence the new `extension` branch behaves correctly, and
+nothing would catch a future regression in any of the six candidate kinds. Because the module is pure,
+a gate here is cheap and would make the "✅ DONE (Engine)" claim self-supporting.
+
+### 3.3 Stale module docstring
+
+`src/interaction/snapEngine.ts:94-99` still lists the old hierarchy — "4. Perpendicular / Orthogonal,
+**5. Grid**" — with no `Extension`, contradicting the inline comments (`5. Extension Snap` at `:254`,
+`6. Grid Snap` at `:288`) and the plan row at `:407`.
+
+---
+
+## 4. Test integrity
+
+This is the first round in which an existing test assertion was relaxed. It is not gaming: the change
+is confined to `scratch/test_scale_gate.py`, it implements an option round-3 §6 offered, the rationale
+is in a code comment, the threshold is size-dependent rather than uniformly loosened, and the stricter
+`NOTE` reporting was retained. Every other test file is untouched
+(`git diff 834169f..4023571` changes only the plan doc, the scale gate, and `snapEngine.ts`).
+
+All 16 suites that regressed in round 1 remain green.
+
+---
 
 ## 5. Reproduction
 
 ```bash
-cd <repo> && git checkout 5f126c2
+cd <repo> && git checkout 4023571
 
-# Full net — expect 26 PASS / 2 FAIL on Linux
+# Full net — expect 27 PASS / 1 FAIL on Linux (test_update_roof needs the Z: fixture)
 for f in scratch/test_*.py; do ./.venv/bin/python "$f" >/tmp/out_$(basename $f).log 2>&1 \
   && echo "PASS $f" || echo "FAIL $f"; done
 
-npm run check                                         # expect exit 0
+npm run check                                            # expect exit 0
+./.venv/bin/python scratch/test_scale_gate.py            # expect 6 passed, 0 failed
 
-# EQ single-host redistribution (§1)
-./.venv/bin/python - <<'EOF'
-import sys, os; sys.path.insert(0, os.path.abspath('backend'))
-from ifc_service import BimModelManager
-from command_bus import CommandBusEngine, CommandRequest
-m = BimModelManager()
-g = m.add_wall([0,0,0],[30,0,0], height=10.0, thickness=0.5, name='host')['guid']
-doors = [m.add_door(g, off, width=3.0, height=7.0, name=f'D{off}')['guid'] for off in (5.0,15.0,25.0)]
-print("before:", [round(m.element_meta[d]['offset_along_wall'],2) for d in doors])
-CommandBusEngine(m).execute_transaction([CommandRequest(command="ConstraintEqualize",
-    params={"span_start_guid": g, "span_end_guid": g, "interior_guids": doors, "axis": "x"})])
-print("after :", [round(m.element_meta[d]['offset_along_wall'],2) for d in doors])  # [6.0, 13.5, 21.0]
+# Extension snap, executed directly
+cat > /tmp/snaptest.mts <<'EOF'
+import { findSnapCandidate } from '<repo>/src/interaction/snapEngine.ts';
+const segments = [{ p1: [0,0] as [number,number], p2: [10,0] as [number,number], guid: 'w1' }];
+for (const c of [[13,0],[-2,0],[13,3],[10,0],[60,0]] as [number,number][])
+  console.log(c, '->', findSnapCandidate(c, { scale: 10, segments } as any)?.kind ?? 'null');
 EOF
-
-# Solver fallback gate
-./.venv/bin/python scratch/test_pure_python_solver.py    # 13 passed, 0 failed
+node --experimental-strip-types /tmp/snaptest.mts
+# expected: extension, extension, grid, endpoint, grid
 ```
+
+---
 
 ## 6. Remaining work
 
-Nothing here is a regression; all of it is the deferred UI scope recorded in §2.
+Nothing here is a regression.
 
-1. Implement or leave deferred — the plan is now honest either way — the `⬜ PARTIAL` items: interactive
-   persistent dimension creation (`DI` / `createDimension`), grid-spacing dimensions, the `extension`
-   snap candidate, non-wall real witness references, draggable endpoint grips, element-specific
-   contextual ribbon tools, and multi-segment EQ chain dragging.
-2. Resolve the 196-wall latency budget: either bring it durably under 16 ms or raise the threshold and
-   say why. Today it sits on the boundary and flips run to run.
-3. Delete the stale `next Phase 1.3 step` note at `scratch/test_scale_gate.py:233`.
+1. **State the §19 position explicitly** in the plan: at N≈200 the 16 ms budget is still exceeded
+   (~16.3 ms), and 30 ms is a regression guard, not the achieved budget. Fix the stale rows at `:65`,
+   `:331` and `:355` so the document agrees with itself.
+2. **Add a gate for `snapEngine.ts`** covering all six candidate kinds and the priority order — the
+   module is pure, so this is cheap, and it would substantiate the "✅ DONE (Engine)" row.
+3. **Update the `snapEngine.ts` module docstring** (`:94-99`) to include `extension` between
+   `perpendicular` and `grid`.
+4. Still deferred by design, and correctly marked `⬜ PARTIAL` / `🟨 PARTIAL` in the plan: interactive
+   persistent dimension creation (`DI` / `createDimension`), grid-spacing dimensions, non-wall real
+   witness references, draggable endpoint grips, element-specific contextual ribbon tools, and
+   multi-segment EQ chain dragging. Snap glyph overlays in `PlanViewport2D.tsx` are also deferred —
+   the snap applies and the text label shows, but no glyph is drawn.
