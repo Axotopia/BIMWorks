@@ -2,7 +2,7 @@
 
 **Verified against:** `Axotopia/BIMWorks@7a36697` (2026-10-16), and originally against `8ffec22` (after the Revit-parity UI refactor: `7026842`, `4ed1f90`).
 **Read for comparison:** IngeTrazo `d8ee8c0` (`/tmp/ingetrazo-src`) — `tools/base.py`, `core/snap.py`, `core/inference.py`, `core/history.py`, `tools/move.py`, `tools/scale.py`, `tools/pushpull.py`.
-**Relationship to existing plans:** this is the *interaction* layer. `review/IMPLEMENTATION-PLAN-dimension-as-control.md` is the *semantics* layer (reference primitive, solver, dimension as a driving object). They meet at the grip (§3.6), and §5 sequences them so the grip layer is not rewritten when that plan reaches Phase 3.
+**Relationship to existing plans:** this is the *interaction* layer. `review/IMPLEMENTATION-PLAN-dimension-as-control.md` is the *semantics* layer (reference primitive, solver, dimension as a driving object). They meet at the grip (§3.6), and §5 sequences them so the grip layer is not rewritten when that plan reaches Phase 3. The **one-owner-per-item division across all four live plans** — this one, `revit-feel`, `dimension-as-control`, `geometric-references` — is tabulated in `review/IMPLEMENTATION-PLAN-revit-feel.md` §2b; read it before adding work here, because Phase 4 of that plan (draw-and-place) and Phase 2 of it (dimension editing) both have halves that belong to Track A or Track B of this one.
 **Revised 2026-10-16** after an engine probe (`scratch/_probe_engine_smoke.py`) and a browser verification pass. The revision adds **Track A** (§4): the defects and UI declarations that make the app untestable *before* any "feel" claim can be evaluated. Track B (§5) is the original manipulation plan, now with per-phase status.
 
 **Line numbers are pinned to `7a36697`** unless a citation says otherwise. They will drift; cite the symbol when the two disagree.
@@ -15,7 +15,7 @@ The Revit-parity refactor changed the chrome — ribbon tabs, 858 lines of bespo
 
 So the app *looks* like Revit and still *feels* like a form. §1 says why: there was no direct-manipulation layer at all. IngeTrazo is the reference for that missing layer, because it is the one open-source modeller in this space whose *feel* is its main asset: a 12-kind snap engine with a documented priority order, per-tool grips, inference with axis and reference locks, preview that applies the real mutation, and numeric entry that can be re-typed after the fact. This plan ports that layer onto BIMWorks' parametric model — not its mesh model (§6).
 
-**What the 2026-10-16 probe changed.** Enough of Track B has landed that the app can no longer be assessed by reading it — and when it was run, three things turned out to be true at once: the engine passes **355 assertions across every gate**, direct manipulation and dimension-driven editing (unlocked) work end to end, and the app nevertheless presents as unusable. The cause is not the manipulation layer at all. It is that the **default model the app loads at startup is the wrong sample** (§4.1), the **UI tools that would exercise the refactors are declared unimplemented** (§4.7), and two real defects make failure invisible (§4.2, §4.3). Track A exists so that Track B's work can be *seen* when it lands.
+**What the 2026-10-16 probe changed.** Enough of Track B has landed that the app can no longer be assessed by reading it — and when it was run, three things turned out to be true at once: the engine passes **618 assertions across the six gates** (counted 2026-10-16 at `ec2c99c`; the figure moves with every suite added, so re-count rather than quote this one), direct manipulation and dimension-driven editing (unlocked) work end to end, and the app nevertheless presents as unusable. The cause is not the manipulation layer at all. It is that the **default model the app loads at startup is the wrong sample** (§4.1), the **UI tools that would exercise the refactors are declared unimplemented** (§4.7), and two real defects made failure invisible (§4.2, since fixed by the dimension track; §4.3). Track A exists so that Track B's work can be *seen* when it lands.
 
 ---
 
@@ -90,7 +90,7 @@ The sequencing risk recorded in §3.6 is **retired in the favourable direction**
 
 ## 4. Track A — make it testable and verifiable · **before any "feel" claim**
 
-The premise of Track A: at `7a36697` the engine is **verified** (355 assertions across bus parity, UI-P0 130, state-bundle 45, delta 21, snap 21, solver 17, container fidelity 68, dimensions 123, references 32, transactions 42, reference-move 11, dependency graph 41) and the app is **not demonstrable**. These phases close that gap. Each is small; together they are what makes Track B judgeable.
+The premise of Track A: at `7a36697` the engine was **verified** — 355 assertions across bus parity, UI-P0 130, state-bundle 45, delta 21, snap 21, solver 17, container fidelity 68, dimensions 123, references 32, transactions 42, reference-move 11, dependency graph 41 — and the app was **not demonstrable**. Re-counted at `ec2c99c`: **618** (dimensions CRUD grew 123 → 190). These phases close that gap — each is small, and together they are what makes Track B judgeable.
 
 ### A1 — Load the real sample at startup · **S** · highest perceived impact
 The app auto-loads the wrong model. `backend/main.py:402` calls `load_sample_building()` at import, and `/api/sample` (`:357-398`) builds a **legacy shed**: five walls on a 12 × 9 ft footprint with `height=3.0`, `thickness=0.25/0.15`, two doors at `height=2.13`, four windows at `1.4 × 1.5` with `sill_height=0.9`, a slab at `0.25` and a roof at `3.0` — nineteen elements. Those are **metric magnitudes read as feet**: a 3 m storey became a 3 ft wall, a 2.13 m door a 2.13 ft door, a 250 mm CMU wall a 3-inch wall (the name still says `Exterior - 10" CMU`).
@@ -109,21 +109,37 @@ A 4 ft default cut plane passes **above every 3 ft wall**, so the default floor 
 **Do:** delete `load_sample_building()`'s hand-built model and have `/api/sample` call `load_ifc_file(<repo>/sample_building.ifc)` (the startup call then loads the same thing); or keep the route and point both at the IFC. Update the store's status string (`useBimStore.ts:1905` currently reports "Sample BIM Project Loaded (13 Elements, 3 Levels)" while loading nineteen elements and one storey — that string describes the IFC) to derive its counts from the response.
 **Gate:** `scratch/_probe_engine_smoke.py` check A passes (wall heights in the 7-14 ft band) **and** a fresh app boot shows a non-empty plan (cut paths > 0).
 
-### A2 — The locked dimension must satisfy itself · **M**
-Deterministic on a fresh model — asked **14.0 ft**, the geometry ends **12.0 ft** apart, five runs out of five, with or without a second `BimModelManager` in the process (so this is not cross-instance state leakage). All four anchor/lock combinations fail the same way:
+### A2 — The locked dimension must satisfy itself · ✅ **RESOLVED** (was **M**)
+
+**Fixed and verified 2026-10-16 at `3762c0c`.** The dimension track closed it — `eca4d77` (round-4
+verification) and `3762c0c` *"fix(dimensions): enforce `length_lock` so a single-element dimension lock
+holds"*. All four rows of the matrix now read `OK`, re-measured in-process on a fresh model:
 
 ```
-fresh model:  locked,   anchor=start   gap  10.0 -> 12.0  (asked 14.0)   MISMATCH
-              locked,   anchor=end     gap  10.0 ->  2.0  (asked 14.0)   MISMATCH
-              locked,   anchor=center  gap  10.0 ->  2.0  (asked 14.0)   MISMATCH
-              unlocked, anchor=start   gap  10.0 -> 14.0  (asked 14.0)   OK
+locked,   anchor=start   gap 10.0 -> 14.0  (asked 14.0)  OK
+locked,   anchor=end     gap 10.0 -> 14.0  (asked 14.0)  OK
+locked,   anchor=center  gap 10.0 -> 14.0  (asked 14.0)  OK
+unlocked, anchor=start   gap 10.0 -> 14.0  (asked 14.0)  OK
 ```
 
-(with the sample's levels loaded the error is larger — `2.0` rather than `12.0` — so the locked path consults model state it should not.)
+Probe check **D is the regression gate** and now passes. `scratch/test_dimensions_crud.py` also grew 123 →
+190 checks in the same work. **Do not re-fix it** — if a locked dimension ever fails to round-trip again,
+that is a new defect, not this one returning.
 
-The mechanism is consistent across cases: **the witness the anchor says to hold fixed is the one that moves.** Wall B's start correctly lands at `10 + 14 = 24`, but wall A also translates (+2 on a fresh model, +12 with levels present) instead of being held, so the measured gap is wrong while the dimension records 14. The anchor is effectively ignored whenever `is_locked=True`; the unlocked path is exactly right. This is the *driving* case — the feature the dimension-as-control refactor exists for.
-**Do:** trace `set_dimension_value` (`ifc_service.py:4278`) into the locked/constraint branch and make the solve hold the anchor witness fixed; establish why the spurious move scales with the loaded level set.
-**Gate:** all four rows above read `OK`; `scratch/test_dimensions_crud.py` gains the locked variants (it "covers only an UNLOCKED dimension", per `scratch/_probe_locked_dimension_undo.py`'s own note — which is why its 123 assertions miss this).
+**Original finding, superseded — retained as the diagnostic record:**
+> Deterministic on a fresh model — asked **14.0 ft**, the geometry ended **12.0 ft** apart, five runs out
+> of five, with or without a second `BimModelManager` in the process. All four anchor/lock combinations
+> failed the same way; with the sample's levels loaded the error was larger (`2.0` rather than `12.0`), so
+> the locked path consulted model state it should not.
+>
+> The mechanism was consistent: **the witness the anchor said to hold fixed was the one that moved.** Wall
+> B's start correctly landed at `10 + 14 = 24`, but wall A also translated (+2 on a fresh model, +12 with
+> levels present) instead of being held, so the measured gap was wrong while the dimension recorded 14.
+> The anchor was effectively ignored whenever `is_locked=True`.
+>
+> **Why the 123 existing assertions missed it:** the suite "covers only an UNLOCKED dimension", per
+> `scratch/_probe_locked_dimension_undo.py`'s own note — the same corpus-blindness pattern the README's
+> "two join suites" section describes.
 
 ### A3 — A failure must not report success · **S** · closes a whole defect class
 Driving a dimension whose witness cannot be resolved returns an envelope that says it worked:
@@ -239,7 +255,7 @@ One module, `backend/validity.py`, used by **both** the create and edit paths: t
 5. **Undo semantics.** A gesture must be exactly one entry, and its journal `origin` should stay `ui` with a description like "Drag wall end" so the audit trail reads correctly.
 6. **The 1.85 ms figure was measured on an *unviewed* level.** With `slice2d` suppressed the viewed-level case should be comparable, but this must be measured, not assumed (§10.1).
 7. **Two samples in the tree is a trap that already fired.** Anything asserting on "the sample" must name *which* sample. The probe did not, and its first version tested the legacy generator (§9.3).
-8. **Green gates are not coverage.** 355 assertions passed while the first-run plan rendered empty, dimensions could not be created from the UI, and a locked dimension silently produced wrong geometry. Every gate in Track A is written against an observable user-facing outcome for that reason.
+8. **Green gates are not coverage.** 355 assertions passed (618 at `ec2c99c`) while the first-run plan rendered empty, dimensions could not be created from the UI, and a locked dimension silently produced wrong geometry (that one is since fixed — §4.2). Every gate in Track A is written against an observable user-facing outcome for that reason.
 
 ---
 
@@ -248,7 +264,7 @@ One module, `backend/validity.py`, used by **both** the create and edit paths: t
 | Phase | Assertion | Negative control that must fail the gate |
 |---|---|---|
 | A1 | Startup sample is the IFC: wall heights in 7-14 ft, and a fresh boot's plan has cut paths > 0 | Load the legacy generator → gate fails |
-| A2 | Locked dimension: all three anchors land the geometry on the asked value | Keep the current locked path → gate fails |
+| A2 | **✅ satisfied** — locked dimension: all three anchors land the geometry on the asked value (probe check D, verified `3762c0c`) | Revert the `length_lock` fix → the gate must fail |
 | A3 | A failed solve does not present `status: "updated"` | Force a solve failure → envelope must be non-success |
 | A4 | A created dimension is readable via `GET /api/dimensions` with resolved witnesses | Remove the route → 404 |
 | A5 | Content occupies 60-90% of the viewport and is centred after a view switch | Leave the transform at identity → gate fails |
@@ -287,7 +303,7 @@ Performance gate (Phase 2 onward): during a drag, `globalThis.__bimworksRefresh.
 3. **How much of the store's tool state can move into the session without disturbing the UI-P0 interaction-reset contract** — `interactionResetToken`/`resetInteraction` are the right hooks, but their callers assume the current per-tool state shape.
 4. **Whether a gesture-scoped snapshot is affordable on the largest model the project intends to support.** One O(model) snapshot per gesture is a different budget from one per command, but it is not free; `scratch/_probe_snapshot_cost.py` exists and should be pointed at it.
 5. **Whether Revit-parity expectations conflict with IngeTrazo-style directness.** Revit has grips and drag-editing too, so probably not — but the Modify tab still renders dummy buttons (`Ribbon.tsx:1009`), which means parity there is decorative until Track B lands.
-6. **What `is_locked` is *for*.** The locked path is the one that fails (§4.2) and it is also the one with a known dangling-constraint hazard after undo (`scratch/_probe_locked_dimension_undo.py`). Whether the lock should drive on value-set or only on regeneration is a design question the locked-path fix must answer, not just a bug to patch.
+6. **What `is_locked` is *for*.** The locked path no longer fails (§4.2, resolved), but it is the path with a known dangling-constraint hazard after undo (`scratch/_probe_locked_dimension_undo.py`). Whether the lock should drive on value-set or only on regeneration is still a design question, not just a bug that was patched.
 7. **Whether the remaining twelve→six snap kinds are needed**, or whether six cover the modelling the project actually supports.
 
 ---
@@ -298,4 +314,4 @@ Track B's line references were read at `8ffec22` on 2026-10-15 and are pinned th
 
 Track A and §1.1 were read at `7a36697` on 2026-10-16: `backend/main.py:357-402` (`/api/sample` and the startup call), `backend/command_bus.py:39, 456-457, 559` (`ReferenceMove`, `DimensionCreate`, `DimensionValueSet`), `backend/ifc_service.py:4278` (`set_dimension_value`), `backend/references.py`, `src/interaction/snapEngine.ts`, `src/interaction/toolCaptions.ts:41-48`, `src/types/bim.ts:58, 140-149, 210-228`, `src/store/useBimStore.ts:1898-1913`, `src/components/drafting/PlanViewport2D.tsx:2010-2041`, `sample_building.ifc`.
 
-Measurements were taken on 2026-10-16 against a live sidecar (`uvicorn backend.main:app` on `:8008`): gate suite via `npm run check` (**355 assertions, 0 failures, exit 0**); 2D path counts via `/api/view/2d` and in-process `BimModelManager.render_2d_view`; dimension behaviour via `/api/transaction` and in-process bus calls; rendering, DOM state and screenshots via **headless Firefox 157 through geckodriver/WebDriver** (no Chromium on the host, so REA's CDP browser tools were unavailable). Screenshots are saved under the session workspace `rendering-check/` (`01`-`04` legacy sample, `05`-`08` `sample_building.ifc`). Probe: `scratch/_probe_engine_smoke.py`.
+Measurements were taken on 2026-10-16 against a live sidecar (`uvicorn backend.main:app` on `:8008`): gate suite via `npm run check` (**355 assertions, 0 failures, exit 0** at the time; re-counted at `ec2c99c`: **618**, exit 0); 2D path counts via `/api/view/2d` and in-process `BimModelManager.render_2d_view`; dimension behaviour via `/api/transaction` and in-process bus calls; rendering, DOM state and screenshots via **headless Firefox 157 through geckodriver/WebDriver** (no Chromium on the host, so REA's CDP browser tools were unavailable). Screenshots are saved under the session workspace `rendering-check/` (`01`-`04` legacy sample, `05`-`08` `sample_building.ifc`). Probe: `scratch/_probe_engine_smoke.py`.

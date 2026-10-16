@@ -5,7 +5,13 @@ plan that acts on it.
 **Branch:** `gemini` @ `318ce26`, executed on `main` through `e3216fe`. **Companion audits:** the four
 under `review/AUDIT-*-vs-revit.md`.
 
-> ## ✅ AUDITED & RECONCILED STATUS (ROUND 4)
+**Plan dated:** written **2026-10-14** (`318ce26`); executed on `main` through **2026-10-15**
+(`e3216fe`); last modified **2026-10-15** (`6fa4f73`).
+**Revised:** **2026-10-16** — a verification pass at `ec2c99c` (§0b) corrected five statuses, closed the
+solver gap recorded in the spec, re-counted the gate suite, and added the four-plan ownership boundary
+(§2b). Dates are commit dates from `git log`, not recollection.
+
+> ## ✅ AUDITED & RECONCILED STATUS (ROUND 4) — *2026-10-15, at `e3216fe`; historical, superseded by §0b for counts*
 >
 > **Audit Status:** The core backend regressions, blocking bugs, and code defects documented in [`review/archive/HANDOFF-revitUI-plan-verification.md`](archive/HANDOFF-revitUI-plan-verification.md)
 > (Bugs A, B, C1, C2, §2.1 intra-wall EQ redistribution, §2.7 multi-sheet batch-PDF serialization, §2.10 `constraints_rev` bump, pure-Python constraint solver fallback tested with `Sketch is None`, scale gate budget threshold & stale note, and snapEngine docstring & candidate coverage) have been verified across gates.
@@ -189,6 +195,49 @@ Worth keeping, because it is what caught nine of the ten traps above:
 
 ---
 
+### 0b. Verification pass — 2026-10-16 at `ec2c99c`
+
+Every STATUS claim in §3 was re-checked against the tree rather than carried forward. The gates this plan
+cites all pass at the counts it records — but three statuses were wrong, one item is now complete, and
+the suite has more than tripled since the figures below were written.
+
+**Gate totals now.** `npm run check` exits 0 with **618 assertions**: bus parity, UI-P0 130, state-bundle
+45, delta equivalence 21, snap-engine 21, and Python — solver 17, container fidelity 68, dimensions CRUD
+**190**, geometric references 32, transactions 42, reference-move 11, dependency graph 41 — plus `tsc`.
+The "196/196" figures in §3 count only the three JavaScript gates and predate `check:snap` and
+`check:py`.
+
+**Corrected statuses.**
+
+| # | This plan says | Verified | Evidence |
+|---|---|---|---|
+| 0.2 | ⬜ NOT DONE | 🟨 **PARTIAL** | The fixtures now exist: `scratch/test_trim_split_gate.py` (30/30) covers trim-to-corner, split refusing to strand an opening, split-with-gap, datum-driven trim and dimension propagation; `scratch/test_dimensions_crud.py` is now 190 checks. **But the §20.1 variation requirement is unmet** — the trim/split file varies thickness (0.5 / 0.75) and never angle or join mode, so it is blind on exactly the dimension the two join suites exist to protect. The plan's own meta-test rule, applied to itself. |
+| 0.5 | ✅ held — unbound | ✅ **closed, superseded** | Ctrl+Z / Ctrl+Y **are** bound now (`src/App.tsx:53`, `:62`) — correctly, because 3.5.1 landed. The row's instruction ("do not bind before 3.5.1") was satisfied and then followed. Record it as closed so the next reader does not unbind it. |
+| 1.4 | ⬜ untouched | ✅ **DONE** | The solve is scoped: `scope = solver.affected_guids([moved_guid])` (`backend/ifc_service.py:3026`), then `solver.solve(axis=axis, pins=pins, scope=scope)`; `affected_guids` expands transitively over `align`, `dimension_lock` and `length_lock` (`backend/constraint_solver.py:128-150`). §4's order block and "remainder" line still list 1.4 as outstanding. |
+| 2.7 | ⬜ PARTIAL — "`levels` … does not exist" | 🟨 **PARTIAL — grid spacing only** | The `levels` key **is** in the 2D view contract: `/api/view/2d` returns it beside `cut_paths` / `projection_paths` / `hidden_paths` / `dimensions`, and datum lines, bubbles and in-canvas elevation editing are in. Grid spacing editable by dimension remains ⬜. The task text is stale about the key. |
+| 3.5.1 | ✅ DONE — mementos "replacing full IFC STEP serialization snapshots" | 🟨 **PARTIAL** | `CommandMemento` covers **31 of 41** registered commands and `WallMove` is an O(1) inverse operation — but **10 commands still fall back to a full `snapshot_state()`**, STEP serialisation included: the five `Constraint*`, `SetWallJoin`, and the four `SketchCurve*` (`backend/command_bus.py:1519-1523`). The 12/12 gate passes because it exercises only memento-covered commands — the same §20.1 blindness, in the undo direction. Decision: `docs/DECISION-live-edit-transaction-unit.md`; work ordered in `docs/REFACTOR-PLAN.md` §9. |
+
+**The solver gap recorded in the spec is closed in this environment.** `SPECIFICATION-v0.3.md` §0.4 lists
+as **High** that `import planegcs` raises `ImportError` and "the constraint system is therefore **inert
+and reporting nothing**". At `ec2c99c` that no longer holds: `import planegcs` succeeds,
+`ConstraintSolver._solver_available()` returns `True` (`Sketch is not None`,
+`backend/constraint_solver.py:119-120`), `/health` reports `"solver_available": true`, and the solver
+capability gate passes 17/17 with `scratch/test_pure_python_solver.py` (13) alongside. §29.1's
+requirement — that availability be a **gate**, not an assumption — is what makes this checkable; the
+§0.4 row should be marked resolved with this evidence, not deleted.
+
+**What this plan does not contain, and where it lives.** The 2026-10-16 engine probe found seven
+first-run and UI-surfacing defects that are prerequisites for *demonstrating* anything in §3 (seven when
+found; six remain — the locked-dimension one was fixed by `3762c0c`) — the app
+loads a legacy sample at startup so the default plan renders empty; a failed solve reports success; there
+is no `GET /api/dimensions`;
+2D views do not fit on switch; elevations report a cut plane and the palette reports the wrong view type;
+and `DI`/`SEC` are declared unimplemented, so dimensions and sections cannot be created from the UI.
+Those are **Track A** of `review/IMPLEMENTATION-PLAN-direct-manipulation.md` §4, deliberately not
+duplicated here. The two plans' boundary is set out in §2b.
+
+---
+
 ## 0. Objective and binding constraints
 
 **Objective.** Make **model creation and editing in model views feel like Revit** — a simplified Revit
@@ -323,13 +372,39 @@ recomputes the dirty closure only; the transport ships deltas. No engine path ma
 
 ---
 
+## 2b. One owner per item — how the four plans divide
+
+Four plans are live at once, and they overlap where the same feature is both *semantics* and *gesture*.
+One owner per item, so a reader never has to reconcile two statuses:
+
+| Plan | Owns | Does not own |
+|---|---|---|
+| **`IMPLEMENTATION-PLAN-revit-feel.md`** (this) | Editing *semantics* and the performance that makes them usable: trim/split/extend, the type layer, sheets, chrome, and the dimension overlay's persistence and round-trip. Phases 0–7. | The gesture layer (no drag, grips or inference), and first-run testability |
+| **[`IMPLEMENTATION-PLAN-direct-manipulation.md`](IMPLEMENTATION-PLAN-direct-manipulation.md)** | **Track A** — first-run and UI-surfacing blockers (§4, A1–A7). **Track B** — the IngeTrazo-style gesture layer: interaction session, drag session on the bus, grips, value entry and hot retype, inference, validity predicates (§5) | Dimension *semantics* (it consumes them), and the trim/split semantics of §20 |
+| **[`IMPLEMENTATION-PLAN-dimension-as-control.md`](IMPLEMENTATION-PLAN-dimension-as-control.md)** | Dimensions as **driving** objects: conflict reporting, the locked path, EQ/chains, the solver's refusal channel | The dimension *overlay* (this plan, 2.2–2.3, done) and the `DI` tool (direct-manipulation A7) |
+| **[`IMPLEMENTATION-PLAN-geometric-references.md`](IMPLEMENTATION-PLAN-geometric-references.md)** | The shared **reference primitive** — witness points, re-resolution, `reference_key` stability — consumed by all three | Anything with a viewport |
+
+Three consequences worth stating, because they were live contradictions:
+
+1. **This plan's Phase 2 is finished except its UI half**, which is A7's. 2.2–2.6 and 2.8 are done in
+   backend and bus; 2.4, 2.6-interactive and 2.7-grid are blocked on the `DI` tool being `implemented:
+   false`. Do not re-open them here.
+2. **This plan's Phase 4 is finished in 2D and out of scope in 3D.** 4.2–4.5 are done in
+   `PlanViewport2D`; the 3D viewport still holds 16 inline `Math.round(x * 2) / 2` quantisations and does
+   not import the snap engine at all. That work is direct-manipulation Track B Phase 0/3.
+3. **This plan's 3.5 is decided and half-done.** 3.5.2 is done and correct; 3.5.1 is 31/41 with the
+   fallback to remove. Owner of the decision: `docs/DECISION-live-edit-transaction-unit.md`. Owner of the
+   work: `docs/REFACTOR-PLAN.md` §9.
+
+---
+
 ## 3. Phases, with gates
 
 Effort key: **S** ≤ 1 day · **M** ~1 week · **L** 2+ weeks.
 
 ### Phase 0 — Instruments and honesty (S) — *nothing else can be verified without this*
 
-**STATUS: 0.1 ✅ · 0.2 ⬜ NOT DONE · 0.3 ✅ · 0.4 ✅ · 0.5 ✅ (deliberately unbound)**
+**STATUS: 0.1 ✅ · 0.2 🟨 PARTIAL (gates exist; §20.1 variation unmet — §0b) · 0.3 ✅ · 0.4 ✅ · 0.5 ✅ closed (superseded by 3.5.2 — §0b)**
 
 | # | Task | Why | Status |
 |---|---|---|---|
@@ -337,21 +412,21 @@ Effort key: **S** ≤ 1 day · **M** ~1 week · **L** 2+ weeks.
 | 0.2 | **Dimension/trim gate**: fixtures that assert trim-to-corner geometry, split preserving hosted openings, and dimension-edit propagation. Must vary thickness, angle, and join mode (§20.1's meta-test rule). | The workflow's core operations have no falsifiable tests today. | **⬜ NOT DONE.** Deliberately deferred: these fixtures assert the *intended* Phase 3 semantics, so writing them now would produce a red suite with no owner. Write them as the first step of Phase 3, and expect the split-opening case to fail until 3.2 lands. |
 | 0.3 | **Fix the units boundary — not just the label.** `ifc_service.py:3767` mislabels decimal feet as metres; underneath it, mesh geometry is metres while `params` are feet, which is why the one editable dimension shows `9'-2"` for a real 30 ft spacing and cannot round-trip. Fix the boundary (or the single conversion point), then audit every length-emitting site. | Every dimensional feature sits on this; it is the cheapest high-value fix in the plan and it currently mislabels every number on every drawing. | **✅ `b6b3cdd`.** Three defects, not one: mesh unit, a self-amplifying cache, and `mesh_hlr` fed the wrong unit. Also `format_feet_inches` rounded to a 3/4" grid. Gate: `scratch/test_units_boundary.py` (27 checks). |
 | 0.4 | Stop the **Project Browser and Ribbon showing seed literals** on load — `/api/state` already returns `views` and `sheets`. | Makes the app's own state trustworthy while the rest is rebuilt. | **✅ `73b7dbb`.** `App.tsx` now calls `fetchStateBundle()` on mount instead of `fetch2DSlice()`. |
-| 0.5 | **Do NOT bind Ctrl+Z/Ctrl+Y yet.** Undo currently serializes the whole IFC to STEP twice per transaction (`ifc_service.py:397-445` via `command_bus.py:642`, `:677`). | At 5,000 elements the undo stack is projected at **GBs**; shipping the keybinding would hand users a button that hangs and then crashes the engine. Bind it in Phase 3.5. | **✅ held** — still unbound. Do not bind it before 3.5.1. |
+| 0.5 | **Do NOT bind Ctrl+Z/Ctrl+Y yet.** Undo serialized the whole IFC to STEP twice per transaction. | At 5,000 elements the undo stack was projected at **GBs**; shipping the keybinding first would have handed users a button that hangs and then crashes the engine. Bind it in Phase 3.5. | **✅ CLOSED 2026-10-16 — superseded by 3.5.2.** The keybinding *is* bound now (`src/App.tsx:53`, `:62`), which is correct because 3.5.1 landed (31 of 41 commands use mementos). Do **not** unbind it. The old two-snapshots-per-transaction description is the pre-memento design; see §0b and `docs/DECISION-live-edit-transaction-unit.md`. |
 
 **Exit:** gates run and fail meaningfully on injected regressions ✅; a 5,000-element curve exists ⬜
 (measured to 484; 961 measured in an earlier pass, 5,000 never run — see §0a.2).
 
 ### Phase 1 — Make trim and dimension edits fast (L) — *the felt bottleneck*
 
-**STATUS: 1.1 ✅ · 1.2 ✅ · 1.3a ✅ · 1.3b ✅ · 1.3c ✅ · 1.4 ⬜ · 1.5 ⬜**
+**STATUS: 1.1 ✅ · 1.2 ✅ · 1.3a ✅ · 1.3b ✅ · 1.3c ✅ · 1.4 ✅ (verified §0b) · 1.5 ⬜**
 
 | # | Task | Expected effect | Files | Status |
 |---|---|---|---|---|
 | 1.1 | **Route every mutation through the dependency graph.** `translate_element`, `update_element`, trim, split and level move must call `DependencyGraph.recompute([guid])`, not the global `recompute_wall_joins()`. | Removes the dominant term: 992 ms → ~190 ms/tx at N=1000 | `ifc_service.py:2022`, `:2359`, `:2796-2821` | **✅ `cc213fc`.** Done differently from the plan: `DependencyGraph` was *not* used (its `join` edge keys on exact shared endpoints with 1e-6 tolerance, which misses tee joins). The radius is derived from the wall's OLD and NEW endpoint positions via the join index. 82.8 → 3.3 ms at 196 walls. |
 | 1.2 | **O(1) join-partner lookup** via a coordinate-keyed endpoint index (the graph already has the shape at `dependency_graph.py:93-98`). | Kills the 2,004,002-visit scan; removes the N² term entirely | `ifc_service.py:2767` | **✅ `48ad6be`.** Two grid buckets (`endpoints`, `baselines`), superset candidates in `walls` order. Per-element cost went flat: 0.33→0.37 ms/wall from 100 to 961 walls. |
 | 1.3 | **Incremental 2D view.** Revision-keyed cache of the composited contract per (view, revision); re-project only dirty GUIDs; replace the O(N²) view-depth closure with a spatial index; **bound the occluder set geographically** — the profile shows 76 % of slice time is GEOS `union_all` called ~4× per element against a growing occluder union. | 17,509 ms → target low hundreds of ms at N=1000; makes 5,000 conceivable | `mesh_hlr.py:116-164`, `:231-266`, `:390-476`, `main.py:1062` | **✅ a `73b7dbb`** (revision-keyed contract cache: 542 → 6 ms). **✅ b `e3216fe`** (per-mesh union cached once; occluder bounded per mesh: cold slice 945 → ~250 ms; `union_all` 783 calls/525 ms → 392/20 ms). **✅ c** — incremental `_prepare` & `cut_at` per-mesh caches. Plan cache miss at 484 walls drops from 679 ms to 60 ms. Gate: `scratch/test_mesh_hlr_incremental.py` (11 checks). |
-| 1.4 | **Scope the constraint solve** to the affected component. | 31 participants → 3 in a 32-element probe | `constraint_solver.py:110-137`, `:224-250` | **⬜** untouched. |
+| 1.4 | **Scope the constraint solve** to the affected component. | 31 participants → 3 in a 32-element probe | `constraint_solver.py:128-150`, `:224-250` | **✅ DONE (verified 2026-10-16, §0b).** `scope = solver.affected_guids([moved_guid])` (`ifc_service.py:3026`) then `solver.solve(..., scope=scope)`; transitive over `align`, `dimension_lock`, `length_lock`. |
 | 1.5 | **Delta transport for the slice.** Stop shipping the full storey's linework per edit (99.6 % of a 444 KB delta at N=200). Ship only changed paths. | delta 444 KB → ~2 KB | `main.py:1030-1109` | **⬜** untouched. Note the slice is now small in *time* but the payload question is separate and unmeasured since these changes. |
 
 **Exit:** one wall edit at **2,000 elements** completes in < 50 ms end-to-end, asserted by 0.1. Trim and
@@ -363,7 +438,7 @@ N=2,000 not measured. The §19 16 ms budget is therefore **met at N≤100, while
 ### Phase 2 — Dimension-driven editing (M, reduced from L) — *the user's primary control*
 
 **STATUS: 🟨 PARTIAL (Backend CRUD, parametric overlay, level editing, and bus commands ✅ DONE; interactive DI tool & grid spacing dimension edits deferred).**
-Persisted dimension overlay, `Dimension*` bus commands, in-canvas inline dimension editor with `tryParseLength`, baseline resizing preserving unanchored endpoints, level datum lines in elevations/sections with interactive `move_level` editing, rotated dimension text on angled walls, real witness lines on selection, and dimension chains with EQ. Gates: `scratch/test_dimensions_crud.py` (53/53 checks) and `scratch/test_pure_python_solver.py` (13/13 checks).
+Persisted dimension overlay, `Dimension*` bus commands, in-canvas inline dimension editor with `tryParseLength`, baseline resizing preserving unanchored endpoints, level datum lines in elevations/sections with interactive `move_level` editing, rotated dimension text on angled walls, real witness lines on selection, and dimension chains with EQ. Gates: `scratch/test_dimensions_crud.py` — **190 checks at `ec2c99c`**, up from 53 — and `scratch/test_pure_python_solver.py` (13/13).
 
 | # | Task | Notes |
 |---|---|---|
@@ -394,18 +469,18 @@ Asserted by gate 0.2.
 
 ### Phase 3.5 — Survive a working session (M)
 
-**✅ DONE.** Gate: `scratch/test_session_undo_memento.py` (12/12 checks passed). 500 sequential edits completed in 4.73 s (9.46 ms/tx), peak memory 1.06 MB (< 25 MB ceiling).
+**🟨 PARTIAL — see §0b.** 3.5.2 is done and correct; 3.5.1 covers **31 of 41** commands and 10 still fall back to a full `snapshot_state()`. Gate: `scratch/test_session_undo_memento.py` (12/12 passed, but it exercises only memento-covered commands). 500 sequential edits completed in 4.73 s (9.46 ms/tx), peak memory 1.06 MB (< 25 MB ceiling).
 
 | # | Task | Notes |
 |---|---|---|
-| 3.5.1 | **Command-scoped mementos** replacing the two full `snapshot_state` copies per transaction. | **✅ DONE.** `CommandMemento` pattern in `command_bus.py` executing localized reversible closures for element creation, movement, rotation, offset, and trim/extend, replacing full IFC STEP serialization snapshots. Stack depth bounded by `max_undo_depth` (200). Gate: `scratch/test_session_undo_memento.py`. |
+| 3.5.1 | **Command-scoped mementos** replacing the two full `snapshot_state` copies per transaction. | **✅ DONE.** `CommandMemento` pattern in `command_bus.py` executing localized reversible closures for element creation, movement, rotation, offset, and trim/extend, **🟨 PARTIAL (verified 2026-10-16, §0b)** — 31 of 41 commands; the other 10 still snapshot, and `ReferenceMove` is memento-shaped but O(model). Stack capped by count (200), not bytes. Decision: `docs/DECISION-live-edit-transaction-unit.md`; gate V1 is probe check G. The 12/12 gate passes because it exercises only memento-covered commands. |
 | 3.5.2 | **Then** bind Ctrl+Z / Ctrl+Y, and add journal persistence. | **✅ DONE.** Bound `Ctrl+Z` (Undo), `Ctrl+Y` / `Ctrl+Shift+Z` (Redo) in `App.tsx` calling `/api/transaction/undo` and `/api/transaction/redo` with full state bundle refresh. |
 
 **Exit:** 500 sequential edits at 2,000 elements without unbounded memory growth.
 
 ### Phase 4 — Draw-and-place feel (M)
 
-**🟨 PARTIAL.** Verification: `npm run check` (196/196 checks passed) and full TypeScript compilation (`npx tsc --noEmit`).
+**🟨 PARTIAL.** Verification: `npm run check` (618 assertions, exit 0) and full TypeScript compilation (`npx tsc --noEmit`).
 
 | # | Feature | Notes |
 |---|---|---|
@@ -425,13 +500,13 @@ Asserted by gate 0.2.
 
 ### Phase 6 — Sheet management (M)
 
-**✅ DONE.** Verification: `npm run check` (196/196 checks passed) + `scratch/test_sheets_pdf.py` (95/95 checks).
+**✅ DONE.** Verification: `npm run check` (618 assertions, exit 0) + `scratch/test_sheets_pdf.py` (95/95 checks).
 
 Sheet list in Project Browser with `+ New Sheet` auto-numbering (`A101`, `A102`...) and sheet deletion; in-place title block editing (Sheet Number, Sheet Title, Drawn By) via inline SVG inputs committing to `SheetUpdate` bus command; interactive viewport dragging and hover deletion; batch vector PDF export set (`exportBatchPdf` serializes each sheet with its own title block, metadata, and viewports); real Schedule viewer modal with Wall, Door, and Window schedules, computed quantities (length, area, volume, fire rating), and CSV export.
 
 ### Phase 7 — Chrome (M)
 
-**🟨 PARTIAL.** Verification: `npm run check` (196/196 checks passed) + all Python gate suites.
+**🟨 PARTIAL.** Verification: `npm run check` (618 assertions, exit 0) + all Python gate suites.
 
 Interactive Revit Options Bar (`OptionsBar.tsx`) positioned below ribbon with context-sensitive parameters based on `activeTool` (Wall height/level/location-line/chain/offset, Door/Window sill height and tag toggle, Align multi/lock, Trim modes, and selection modify options); right-click context menu (`ContextMenu.tsx`) in both 2D and 3D viewports with "Create Similar" (`CS`), "Select All Instances" (visible in view / entire project), "Flip Orientation / Swing", "Delete", and "Zoom Extents" (`ZE`/`ZA`); contextual teal/green ribbon tab label (`Modify | Walls`, `Modify | Doors`, etc.) switching to general Modify panel (element-specific tool panels deferred); remaining Revit hotkeys (`CS`, `WT`, `ZA`, `ZE`, `MD`); Selection outline, visual endpoint grip circles, and interactive baseline flip arrows in 2D plan (interactive endpoint dragging deferred).
 
@@ -440,17 +515,17 @@ Interactive Revit Options Bar (`OptionsBar.tsx`) positioned below ribbon with co
 ## 4. Order, and the reasoning
 
 ```
-Phase 0 (days)      instruments + the units bug        ✅ done (0.2 deferred to Phase 3)
+Phase 0 (days)      instruments + the units bug        ✅ 0.2 🟨 (gates exist, §20.1 variation unmet)
    ↓
 Phase 1 (weeks)     kill the two O(N²) paths            ✅ 1.1, 1.2, 1.3a/b/c done
    ↓
-Phase 1 remainder   1.4, 1.5 ⬜
+Phase 1 remainder   1.5 ⬜  (1.4 ✅ verified 2026-10-16)
    ↓
 Phase 2 (weeks)     editable dimensions                 🟨 PARTIAL (Backend & Bus ✅; UI DI & grid ⬜)
    ↓
 Phase 3 (week)      trim/split semantics                ✅ DONE (3.1–3.3, 3.5; 3.4 DI ⬜)
    ↓
-Phase 3.5 (week)    undo that survives 5,000 elements   ✅ DONE (3.5.1–3.5.2)
+Phase 3.5 (week)    undo that survives 5,000 elements   🟨 3.5.2 ✅; 3.5.1 31/41 (§0b)
    ↓
 Phase 4 (week)      draw-and-place feel                 🟨 PARTIAL (4.2–4.5 ✅; 4.1 ext & 4.6 non-wall ⬜)
    ↓
@@ -486,9 +561,12 @@ that is where they go.
    units boundary, which was one line of Phase 2's original scope and turned out to be the whole
    prerequisite. The plan's original ordering would have run all of Phase 1 first.
 
-**Recommended next session:** **1.3c** (it is the measured blocker for the stated 5,000-element target
-and needs a design decision, §0a.4), then **Phase 2** in parallel if there are two hands. Phase 3.2
-(split stranding hosted openings) is a genuine correctness defect and is safe to fix at any time.
+**Recommended next session (superseded 2026-10-16 — see §0b).** All three items named here have landed:
+1.3c is done (per-mesh `_prepare`/`cut_at` caches), Phase 2's backend and bus are done, and 3.2 (split
+stranding a hosted opening) is fixed and gated. What is actually left in this plan is **1.5** (slice
+delta transport — untouched, and the only Phase 1 item still open), plus the UI halves of Phase 2 and
+Phase 4, which now belong to `IMPLEMENTATION-PLAN-direct-manipulation.md` (§2b) — chiefly the `DI` tool,
+without which the dimension work cannot be exercised by hand at all.
 
 ---
 
@@ -500,7 +578,7 @@ and needs a design decision, §0a.4), then **Phase 2** in parallel if there are 
 | Dimension chains need solver behaviour the current planegcs wrapper cannot express | Phase 1.4 scopes the solve first; if a chain is not expressible, ship edit-one-dimension (2.2–2.5) and defer chains (2.6) rather than blocking. | **De-risked.** Lock propagation is probe-confirmed working, and the single-dimension case (2.2–2.5) does not need the solver work at all. |
 | Three 2D pipelines drift further apart | A1 freezes them at Phase 1.3; the scale gate covers whichever path is default. | **Partially done.** `_meshes_for_projection()` was added as the single metric accessor for the projector; the three renderers still coexist. |
 | The Rust port is derailed by Python-only abstractions | A2/A3 are enforced by review, and the Phase 1 work is deliberately written as numeric-array in / plain-dict out. | **Held.** The new code passes plain lists and dicts; the join index and plan cache are data, not control flow. |
-| Undo memory crashes a long session before 3.5 lands | 0.5 keeps the keybinding unbound; 3.5.1 is the first task after Phase 3. | **Held** — still unbound, deliberately. |
+| Undo memory crashes a long session before 3.5 lands | 0.5 kept the keybinding unbound until 3.5.1; both are now **closed** — Ctrl+Z/Ctrl+Y are bound (`App.tsx:53`, `:62`) and mementos cover 31/41 commands. What remains is the 10-command fallback and the byte cap, owned by `docs/DECISION-live-edit-transaction-unit.md`. | **Resolved, with a remainder** — see §0b. |
 | **NEW: a conservative cache is mistaken for a correct one** | Both new caches (plan contract, prepared geometry) can be keyed wrongly in a way that produces *silently stale* drawings, which no existing suite would necessarily catch. | The plan cache folds sorted GUIDs into its key and is guarded by "repeat request served from cache". **1.3c will add a second such cache — it must carry an equivalence test like `test_join_incremental.py`, not just a speed assertion.** |
 | A dimension edit changes a value in a way the solver silently cannot honour | Reuse the **verified** `add_dimension_lock` propagation rather than writing a new solve; assert round-trip (typed value == re-read value) in gate 0.2, which the current temporary dimension fails by 3.28×. |
 

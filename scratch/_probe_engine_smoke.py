@@ -19,14 +19,16 @@ Six checks, each independently falsifiable:
   G. UNDO UNIT       no registered command silently falls back to a full-state
                      snapshot (V1 of docs/DECISION-live-edit-transaction-unit.md)
 
-Expected on the current tree (2026-10-16, db10611):
+Expected on the current tree (2026-10-16, 3762c0c):
   A FAIL  the startup model is the legacy generator: 3.0 ft walls
   B FAIL  the default 4.0 ft cut therefore yields 0 cut paths
   C PASS
-  D FAIL  locked dimension: asked 14.0 ft, geometry ends 12.0 ft apart
+  D PASS  -- fixed 3762c0c; all three anchors land on the asked value
   E FAIL  failed solve returns an envelope status of "updated"
   F PASS
   G FAIL  10 of 41 commands fall back to snapshot_state()
+
+3 passed, 4 failed at 3762c0c.
 
 Run:  .venv/bin/python scratch/_probe_engine_smoke.py
 """
