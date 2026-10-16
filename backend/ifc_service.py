@@ -252,6 +252,10 @@ class BimModelManager:
         self.dimensions: Dict[str, Dict[str, Any]] = {}
         # Last over-constraint/conflict report from the solver (None when clean).
         self.last_constraint_conflict: Optional[Dict[str, Any]] = None
+        # Re-entrancy guard for `_enforce_length_locks`. Re-asserting a length lock
+        # drives the owning dimension, which edits the element and would otherwise
+        # call back into the lock pass. See `_enforce_length_locks`.
+        self._enforcing_length_locks = False
         # Counters from the most recent incremental recompute (P3), used by the
         # latency measurement and to show the recompute is local.
         self.last_join_stats: Dict[str, Any] = {}
@@ -3381,6 +3385,11 @@ class BimModelManager:
             # Any of these changes where the opening/product pair must sit.
             self._reseat_hosted_openings(meta.get("host_wall_guid"))
 
+        # A length-locked element is put back to its locked dimension value after any edit
+        # that changed the quantity the lock measures. This runs before the response is
+        # built so the caller sees the restored length/thickness, not the raw edit.
+        self._enforce_length_locks(guid)
+
         self.mark_mesh_dirty(guid, clear_cache=False)
         return {
             "guid": guid,
@@ -3487,6 +3496,99 @@ class BimModelManager:
                 s = 1.0 if (cb - ca) >= 0 else -1.0
                 origin_distance = abs(s * float(new_locked_dist) - (delta_b - delta_a))
         return float(origin_distance)
+
+    def _enforce_length_locks(self, guid: str) -> None:
+        """
+        Re-asserts a single-element dimension lock after an intra-element edit.
+
+        A `length_lock` is recorded when a dimension's two references live on the SAME
+        element (`wall_start <-> wall_end`, `wall_start <-> wall_center`,
+        `wall_face_pos <-> wall_face_neg`, and so on). The element-node solver models one
+        node per element, so it cannot express an intra-element distance and simply skips
+        these; they are enforced here instead, by re-driving the owning dimension through
+        the same path a typed value takes. That reuses the reference-kind algebra
+        (including the projection and thickness cases), so the lock holds for every kind
+        pair the dimension itself supports.
+
+        Called from `update_element` — the single funnel for a baseline or thickness
+        change — so a lock is restored whether the edit came from `ElementUpdate`, from
+        `move_reference`, or from another dimension's solve.
+
+        Over-constrained cases (two length locks demanding different values of the same
+        element) are reported: the pass applies locks in a stable order, re-checks them,
+        and records `last_constraint_conflict` for any whose stored target no longer
+        matches the model. Geometry is left as the first lock dictated rather than being
+        written back and forth.
+
+        `_enforcing_length_locks` breaks the recursion: re-asserting drives
+        `_resize_wall_length` -> `update_element` -> this method again.
+        """
+        if self._enforcing_length_locks or not self.dimensions:
+            return
+
+        locks = [
+            c for c in self.constraints.values()
+            if c.get("type") == "length_lock"
+            and c.get("guid") == guid
+            and c.get("is_locked", True)
+        ]
+        if not locks:
+            return
+
+        def matches(measured: Optional[float], target: float) -> bool:
+            return measured is not None and abs(measured - target) <= 1e-6
+
+        self._enforcing_length_locks = True
+        try:
+            candidates: List[tuple] = []
+            for constraint in sorted(locks, key=lambda c: str(c.get("id"))):
+                target = constraint.get("locked_length")
+                if target is None or float(target) <= 0.0:
+                    continue
+
+                dim_id = next(
+                    (
+                        d_id for d_id, d in self.dimensions.items()
+                        if d.get("constraint_id") == constraint.get("id")
+                        and d.get("is_locked")
+                    ),
+                    None,
+                )
+                if dim_id is None:
+                    continue
+                candidates.append((dim_id, float(target), constraint.get("id")))
+
+            for dim_id, target, _cid in candidates:
+                # Cheap no-op check: an edit that did not change the locked quantity
+                # must not rewrite geometry or bump the revision counters.
+                if matches(self.resolve_dimension(dim_id), target):
+                    continue
+                self.set_dimension_value(dim_id, target)
+
+            # Re-check every lock, not only the ones written: a later lock can put an
+            # earlier one out of spec. Two locks on independent degrees of freedom (say a
+            # length and a thickness) both hold and are not reported; two that disagree on
+            # the same degree of freedom cannot both hold, so report the ones the model
+            # cannot satisfy rather than leave a stored target contradicting the geometry.
+            disputed = [
+                dim_id for dim_id, target, _cid in candidates
+                if not matches(self.resolve_dimension(dim_id), target)
+            ]
+            if disputed:
+                constraint_for = {dim_id: cid for dim_id, _t, cid in candidates}
+                self.last_constraint_conflict = {
+                    "status": "conflict",
+                    "axis": "locked_length",
+                    "constraints": [constraint_for[d_id] for d_id in disputed],
+                    "dimensions": disputed,
+                    "triggered_by": guid,
+                    "resolutions": [
+                        {"kind": "unlock_dimension", "dimension_id": d_id, "segment_index": 0}
+                        for d_id in disputed
+                    ],
+                }
+        finally:
+            self._enforcing_length_locks = False
 
     def add_dimension_lock(
         self,

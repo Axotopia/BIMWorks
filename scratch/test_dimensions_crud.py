@@ -805,6 +805,118 @@ def run_tests():
     check("Matrix sweep: zero corruptions across all combinations", matrix_corruptions == 0)
     check("Matrix sweep: 78/78 non-degenerate combinations round-trip", matrix_successes == 78)
 
+    # 19n. length_lock enforcement: an intra-element lock restores the element after an edit.
+    # The element-node solver cannot express an intra-element distance, so these locks are
+    # enforced by BimModelManager._enforce_length_locks. The case that matters is an edit
+    # that does NOT go through the dimension: without enforcement the lock is inert.
+    lk_mgr = BimModelManager()
+    lk_guid = lk_mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], height=10.0, thickness=0.5)["guid"]
+    lk_dim = lk_mgr.add_dimension([
+        {"kind": "wall_start", "sources": [{"element_guid": lk_guid, "ordinal": 0}]},
+        {"kind": "wall_end", "sources": [{"element_guid": lk_guid, "ordinal": 0}]},
+    ], axis="x", is_locked=True)
+    lk_cid = lk_dim.get("constraint_id")
+    check("intra-element lock records a length_lock constraint",
+          lk_cid is not None and lk_mgr.constraints.get(lk_cid, {}).get("type") == "length_lock",
+          lk_mgr.constraints.get(lk_cid, {}).get("type"))
+    check("length lock starts at 10.0 ft", abs(lk_mgr.element_meta[lk_guid]["length"] - 10.0) < 1e-4)
+
+    # (a) an unrelated edit through update_element must be pulled back
+    lk_res = lk_mgr.update_element(lk_guid, {"end": [18.0, 0.0, 0.0]})
+    check("lock restores the length after update_element stretches the wall",
+          abs(lk_mgr.element_meta[lk_guid]["length"] - 10.0) < 1e-4,
+          f"length became {lk_mgr.element_meta[lk_guid]['length']}")
+    check("the restored length is what the edit reports back",
+          abs(float(lk_res.get("length", 0.0)) - 10.0) < 1e-4, f"reported {lk_res.get('length')}")
+
+    # (b) the same through move_reference, which is the driver the dimension path uses
+    lk_mgr.move_reference(
+        {"kind": "wall_end", "sources": [{"element_guid": lk_guid, "ordinal": 0}]}, "x", 25.0)
+    check("lock restores the length after move_reference moves a locked reference",
+          abs(lk_mgr.element_meta[lk_guid]["length"] - 10.0) < 1e-4,
+          f"length became {lk_mgr.element_meta[lk_guid]['length']}")
+
+    # (c) a thickness lock holds the thickness and leaves the length alone
+    th_mgr = BimModelManager()
+    th_guid = th_mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], height=10.0, thickness=0.5)["guid"]
+    th_mgr.add_dimension([
+        {"kind": "wall_face_pos", "sources": [{"element_guid": th_guid, "ordinal": 0}]},
+        {"kind": "wall_face_neg", "sources": [{"element_guid": th_guid, "ordinal": 0}]},
+    ], axis="aligned", is_locked=True)
+    th_mgr.update_element(th_guid, {"thickness": 1.2})
+    check("thickness lock restores the thickness",
+          abs(th_mgr.element_meta[th_guid]["thickness"] - 0.5) < 1e-4,
+          f"thickness became {th_mgr.element_meta[th_guid]['thickness']}")
+    check("thickness lock leaves the length alone",
+          abs(th_mgr.element_meta[th_guid]["length"] - 10.0) < 1e-4)
+
+    # (d) control: with no lock the edit must stand (the pass must not fight ordinary edits)
+    free_mgr = BimModelManager()
+    free_guid = free_mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], height=10.0, thickness=0.5)["guid"]
+    free_mgr.add_dimension([
+        {"kind": "wall_start", "sources": [{"element_guid": free_guid, "ordinal": 0}]},
+        {"kind": "wall_end", "sources": [{"element_guid": free_guid, "ordinal": 0}]},
+    ], axis="x")  # deliberately NOT locked
+    free_mgr.update_element(free_guid, {"end": [18.0, 0.0, 0.0]})
+    check("an unlocked dimension does not fight an edit",
+          abs(free_mgr.element_meta[free_guid]["length"] - 18.0) < 1e-4,
+          f"length became {free_mgr.element_meta[free_guid]['length']}")
+
+    # (e) an edit that does not touch the locked quantity must not churn revisions
+    rev_before = lk_mgr.project_rev
+    lk_mgr.update_element(lk_guid, {"height": 12.0})
+    check("an edit clear of the locked quantity does not re-drive the lock",
+          lk_mgr.project_rev == rev_before, f"project_rev moved by {lk_mgr.project_rev - rev_before}")
+
+    # (f) locks on independent degrees of freedom both hold and are not a conflict
+    ind_mgr = BimModelManager()
+    ind_guid = ind_mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], height=10.0, thickness=0.5)["guid"]
+    ind_mgr.add_dimension([
+        {"kind": "wall_start", "sources": [{"element_guid": ind_guid, "ordinal": 0}]},
+        {"kind": "wall_end", "sources": [{"element_guid": ind_guid, "ordinal": 0}]},
+    ], axis="x", is_locked=True)
+    ind_mgr.add_dimension([
+        {"kind": "wall_face_pos", "sources": [{"element_guid": ind_guid, "ordinal": 0}]},
+        {"kind": "wall_face_neg", "sources": [{"element_guid": ind_guid, "ordinal": 0}]},
+    ], axis="aligned", is_locked=True)
+    ind_mgr.last_constraint_conflict = None
+    ind_mgr.update_element(ind_guid, {"end": [18.0, 0.0, 0.0], "thickness": 1.2})
+    check("a length lock and a thickness lock on one element both hold",
+          abs(ind_mgr.element_meta[ind_guid]["length"] - 10.0) < 1e-4
+          and abs(ind_mgr.element_meta[ind_guid]["thickness"] - 0.5) < 1e-4,
+          f"length {ind_mgr.element_meta[ind_guid]['length']}, "
+          f"thickness {ind_mgr.element_meta[ind_guid]['thickness']}")
+    check("independent locks are not reported as a conflict",
+          ind_mgr.last_constraint_conflict is None, str(ind_mgr.last_constraint_conflict))
+
+    # (g) two locks disagreeing on the SAME degree of freedom are reported, not fought
+    oc_mgr = BimModelManager()
+    oc_guid = oc_mgr.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], height=10.0, thickness=0.5)["guid"]
+    oc_full = oc_mgr.add_dimension([
+        {"kind": "wall_start", "sources": [{"element_guid": oc_guid, "ordinal": 0}]},
+        {"kind": "wall_end", "sources": [{"element_guid": oc_guid, "ordinal": 0}]},
+    ], axis="x", is_locked=True)
+    oc_half = oc_mgr.add_dimension([
+        {"kind": "wall_start", "sources": [{"element_guid": oc_guid, "ordinal": 0}]},
+        {"kind": "wall_center", "sources": [{"element_guid": oc_guid, "ordinal": 0}]},
+    ], axis="x", is_locked=True)
+    oc_mgr.set_dimension_value(oc_half["id"], 6.0)   # implies a 12 ft wall, against the 10 ft lock
+    oc_mgr.last_constraint_conflict = None
+    oc_mgr.update_element(oc_guid, {"end": [20.0, 0.0, 0.0]})
+    oc_conflict = oc_mgr.last_constraint_conflict or {}
+    oc_unsatisfied = [
+        d["id"] for d in (oc_full, oc_half)
+        if not abs(oc_mgr.dimensions[d["id"]]["value"] - (oc_mgr.resolve_dimension(d["id"]) or 0.0)) < 1e-4
+    ]
+    check("disagreeing same-element locks report a conflict", oc_conflict.get("status") == "conflict",
+          str(oc_conflict))
+    check("the conflict names exactly the locks the model cannot satisfy",
+          bool(oc_unsatisfied) and set(oc_conflict.get("dimensions", [])) == set(oc_unsatisfied),
+          f"reported {oc_conflict.get('dimensions')}, unsatisfied {oc_unsatisfied}")
+    check("a disputed lock does not oscillate the geometry",
+          min(abs(oc_mgr.element_meta[oc_guid]["length"] - v) for v in (10.0, 12.0)) < 1e-4,
+          f"length {oc_mgr.element_meta[oc_guid]['length']}")
+
     print(f"\nRESULTS: {passed} passed, {failed} failed")
     if failed > 0:
         sys.exit(1)

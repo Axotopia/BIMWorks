@@ -143,6 +143,11 @@ class ConstraintSolver:
                 elif ctype == "dimension_lock":
                     pair = {c.get("guid_a"), c.get("guid_b")}
                 elif ctype == "length_lock":
+                    # Intra-element lock: a dimension whose two references live on the
+                    # SAME element. This node table holds one node per element GUID, so an
+                    # intra-element distance cannot be expressed here. It is enforced by
+                    # `BimModelManager._enforce_length_locks` after an edit; the constraint
+                    # is registered here only so the element joins the solve scope.
                     pair = {c.get("guid")}
                 elif ctype == "equalize":
                     pair = set(c.get("interior_guids") or []) | {

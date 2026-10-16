@@ -243,3 +243,43 @@ Throwaway, in `/tmp`; repository left clean. Run from the repo root with `.venv/
 | `/tmp/probe_r3b.py` | lock bookkeeping, self-lock, z, refusals | 4 passed, 2 failed — both stale expectations (the cross-axis case now succeeds) |
 | `/tmp/probe_r2.py`, `/tmp/probe_r2b.py` | round-2 set | failures are the known probe artifacts (invalid legacy-conflict injection; the ill-posed self-referential level scenario) |
 | `/tmp/probe_lock_semantics.py`, `/tmp/probe_path.py`, `/tmp/probe_grid.py` | lock holds; Gate 3 uses `move_reference`; grid/IFC sync | all still pass |
+
+---
+
+## 6. Closure — §3.1 (`length_lock`) fixed in the accompanying commit
+
+The one substantive finding above is now closed by the commit that carries this note.
+
+`BimModelManager._enforce_length_locks` re-asserts a single-element lock after any
+intra-element edit, called from `update_element` (the single funnel for a baseline or
+thickness change) so it fires whether the edit came from `ElementUpdate`, from
+`move_reference`, or from another dimension's solve. It re-drives the owning dimension
+through the same path a typed value takes, which reuses the reference-kind algebra the
+H1 work built, so the lock holds for every kind pair the dimension supports.
+
+Behaviour, verified in `scratch/test_dimensions_crud.py` §19n (190 checks now pass, up
+from 176) and by probe:
+
+- a length lock restores the wall after `update_element` or `move_reference` changes it,
+  and the restored value is what the edit reports back;
+- a thickness lock restores the thickness and leaves the length alone;
+- an unlocked dimension still lets edits stand (the pass does not fight ordinary edits);
+- an edit clear of the locked quantity is a no-op — no geometry rewrite, no revision churn;
+- a length lock and a thickness lock on one element are independent degrees of freedom:
+  both hold and **neither is reported as a conflict**;
+- two locks disagreeing on the same degree of freedom are reported through
+  `last_constraint_conflict` with `unlock_dimension` resolutions, naming exactly the locks
+  the model cannot satisfy, and the geometry does not oscillate.
+
+Two design notes, both recorded because they were the traps in earlier rounds:
+
+1. **The solver still does not read `locked_length`, and that is now deliberate.** The
+   element-node table holds one node per element GUID, so an intra-element distance cannot
+   be expressed there. `BimModelManager._enforce_length_locks` is the enforcement point,
+   and `constraint_solver.py` carries a comment at the `length_lock` case saying so. The
+   round-4 probe's two remaining "failures" assert the old (wrong) expectation that the
+   solver would apply it.
+2. **Re-entrancy is guarded** by `_enforcing_length_locks`: re-asserting drives
+   `_resize_wall_length` → `update_element` → the pass again, so without the guard it would
+   recurse. Verified bounded (`project_rev` moves by 1 on an enforced edit, 0 on an
+   unrelated one).
