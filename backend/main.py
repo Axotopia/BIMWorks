@@ -356,50 +356,30 @@ def reset_project(project_name: Optional[str] = "BIMWorks Project"):
 
 @app.post("/api/sample")
 def load_sample_building():
-    """Populates a realistic architectural building with walls, doors, windows, slab, roof, grids."""
+    """Populates the shipped sample building (sample_building.ifc) with 13 parametrized elements and 3 storeys."""
     bim_manager.reset_model()
     command_bus.rev += 1
 
-    # 4 Perimeter walls
-    w1 = bim_manager.add_wall((0, 0, 0), (12, 0, 0), height=3.0, thickness=0.25, name="Basic Wall : Exterior - 10\" CMU")
-    w2 = bim_manager.add_wall((12, 0, 0), (12, 9, 0), height=3.0, thickness=0.25, name="Basic Wall : Exterior - 10\" CMU")
-    w3 = bim_manager.add_wall((12, 9, 0), (0, 9, 0), height=3.0, thickness=0.25, name="Basic Wall : Exterior - 10\" CMU")
-    w4 = bim_manager.add_wall((0, 9, 0), (0, 0, 0), height=3.0, thickness=0.25, name="Basic Wall : Exterior - 10\" CMU")
+    sample_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "sample_building.ifc"))
+    if os.path.exists(sample_path):
+        bim_manager.load_ifc_file(sample_path, "sample_building.ifc")
+    else:
+        # Fallback to current working directory if relative path differs
+        fallback = os.path.abspath("sample_building.ifc")
+        if os.path.exists(fallback):
+            bim_manager.load_ifc_file(fallback, "sample_building.ifc")
 
-    # Interior partition wall
-    w_int = bim_manager.add_wall((6, 0, 0), (6, 9, 0), height=3.0, thickness=0.15, name="Basic Wall : Interior - 4 7/8\" Partition")
-
-    # Exterior Entrance Door
-    bim_manager.add_door(w1["guid"], offset_along_wall=4.5, width=1.0, height=2.13, name="Single Flush : 36\" x 84\"")
-
-    # Interior Door
-    bim_manager.add_door(w_int["guid"], offset_along_wall=3.0, width=0.9, height=2.13, name="Single Flush : 36\" x 84\"")
-
-    # Windows on exterior walls
-    bim_manager.add_window(w1["guid"], offset_along_wall=1.8, width=1.4, height=1.5, sill_height=0.9, name="Fixed Window : 48\" x 48\"")
-    bim_manager.add_window(w1["guid"], offset_along_wall=8.5, width=1.4, height=1.5, sill_height=0.9, name="Fixed Window : 48\" x 48\"")
-    bim_manager.add_window(w3["guid"], offset_along_wall=3.5, width=1.6, height=1.5, sill_height=0.9, name="Fixed Window : 48\" x 48\"")
-    bim_manager.add_window(w3["guid"], offset_along_wall=8.0, width=1.6, height=1.5, sill_height=0.9, name="Fixed Window : 48\" x 48\"")
-
-    # Ground floor slab
-    bim_manager.add_slab([(0, 0), (12, 0), (12, 9), (0, 9)], thickness=0.25, elevation=0.0)
-
-    # Roof slab
-    bim_manager.add_roof([(0, 0), (12, 0), (12, 9), (0, 9)], thickness=0.3, elevation=3.0)
-
-    # Grids
-    bim_manager.add_grid("1", (-2, 0), (14, 0))
-    bim_manager.add_grid("2", (-2, 4.5), (14, 4.5))
-    bim_manager.add_grid("3", (-2, 9), (14, 9))
-    bim_manager.add_grid("A", (0, -2), (0, 11))
-    bim_manager.add_grid("B", (6, -2), (6, 11))
-    bim_manager.add_grid("C", (12, -2), (12, 11))
-
-    return {"status": "sample_loaded", "elements_count": len(bim_manager.element_meta)}
+    return {
+        "status": "sample_loaded",
+        "elements_count": len(bim_manager.element_meta),
+        "levels_count": len(bim_manager.levels),
+        "project_name": bim_manager.project_name,
+    }
 
 
 # Auto-populate default sample building model on sidecar startup
 load_sample_building()
+
 
 
 @app.post("/api/wall")

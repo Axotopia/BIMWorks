@@ -1900,12 +1900,15 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       set({ isLoadingFile: true, statusMessage: 'Loading Sample BIM Building...' });
       const res = await fetch(`${API_BASE}/sample`, { method: 'POST' });
       if (res.ok) {
+        const data = await res.json().catch(() => ({}));
         set({ rev: undefined, docId: undefined });
         await get().fetchStateBundle();
+        const elemCount = typeof data?.elements_count === 'number' ? data.elements_count : 13;
+        const levelCount = typeof data?.levels_count === 'number' ? data.levels_count : 3;
         set({
-          projectName: 'BIMWorks Prototype Building',
+          projectName: data?.project_name || 'BIMWorks Prototype Building',
           isLoadingFile: false,
-          statusMessage: 'Sample BIM Project Loaded (13 Elements, 3 Levels)',
+          statusMessage: `Sample BIM Project Loaded (${elemCount} Elements, ${levelCount} Levels)`,
         });
       }
     } catch (e) {
