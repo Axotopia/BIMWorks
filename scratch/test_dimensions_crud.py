@@ -917,6 +917,57 @@ def run_tests():
           min(abs(oc_mgr.element_meta[oc_guid]["length"] - v) for v in (10.0, 12.0)) < 1e-4,
           f"length {oc_mgr.element_meta[oc_guid]['length']}")
 
+    # 22. Locked dimension driving across anchors (Track A2)
+    for anc, expected_a_end, expected_b_start in (
+        ("start", 10.0, 24.0),
+        ("end", 6.0, 20.0),
+        ("center", 10.0, 24.0),
+    ):
+        lk_mgr = BimModelManager()
+        lk_bus = CommandBusEngine(lk_mgr)
+        w_a = lk_bus.execute_transaction([CommandRequest(command="WallCreate", params={
+            "start": [0.0, 0.0, 0.0], "end": [10.0, 0.0, 0.0], "height": 9.0, "thickness": 0.5})])["results"][0]["result"]["guid"]
+        w_b = lk_bus.execute_transaction([CommandRequest(command="WallCreate", params={
+            "start": [20.0, 0.0, 0.0], "end": [30.0, 0.0, 0.0], "height": 9.0, "thickness": 0.5})])["results"][0]["result"]["guid"]
+        d_res = lk_bus.execute_transaction([CommandRequest(command="DimensionCreate", params={
+            "dimension_id": f"D_LOCK_{anc}", "kind": "aligned",
+            "ref_a": {"guid": w_a, "ref": "end"}, "ref_b": {"guid": w_b, "ref": "start"},
+            "axis": "x", "is_locked": True,
+        })])
+        did = d_res["results"][0]["result"]["dimension_id"]
+        lk_bus.execute_transaction([CommandRequest(command="DimensionValueSet", params={
+            "dimension_id": did, "value": 14.0, "anchor": anc,
+        })])
+        a_end = lk_mgr.element_meta[w_a]["end"][0]
+        b_start = lk_mgr.element_meta[w_b]["start"][0]
+        gap = b_start - a_end
+        check(f"locked dimension drives gap to 14.0 with anchor={anc}", abs(gap - 14.0) < 1e-4,
+              f"gap={gap}, w_a.end={a_end}, w_b.start={b_start}")
+        check(f"locked dimension anchor={anc} lands on expected coords",
+              abs(a_end - expected_a_end) < 1e-4 and abs(b_start - expected_b_start) < 1e-4,
+              f"expected ({expected_a_end}, {expected_b_start}), got ({a_end}, {b_start})")
+
+    # 23. Dimension Readability and Resolved Witnesses (Track A4)
+    import main as backend_main
+    backend_main.bim_manager.reset_model()
+    bm_bus = CommandBusEngine(backend_main.bim_manager)
+    bm_wa = bm_bus.execute_transaction([CommandRequest(command="WallCreate", params={
+        "start": [0.0, 0.0, 0.0], "end": [10.0, 0.0, 0.0], "height": 9.0, "thickness": 0.5})])["results"][0]["result"]["guid"]
+    bm_wb = bm_bus.execute_transaction([CommandRequest(command="WallCreate", params={
+        "start": [20.0, 0.0, 0.0], "end": [30.0, 0.0, 0.0], "height": 9.0, "thickness": 0.5})])["results"][0]["result"]["guid"]
+    bm_dim = bm_bus.execute_transaction([CommandRequest(command="DimensionCreate", params={
+        "dimension_id": "DIM_READ_1", "kind": "aligned",
+        "ref_a": {"guid": bm_wa, "ref": "end"}, "ref_b": {"guid": bm_wb, "ref": "start"},
+        "axis": "x",
+    })])["results"][0]["result"]
+    dim_list = backend_main.list_dimensions()
+    check("list_dimensions returns active dimensions", any(d.get("id") == "DIM_READ_1" for d in dim_list))
+    read_dim = backend_main.get_dimension("DIM_READ_1")
+    check("get_dimension returns matching id", read_dim is not None and read_dim.get("id") == "DIM_READ_1")
+    check("read_dim has resolved witness_a", read_dim.get("witness_a", {}).get("point") == [10.0, 0.0])
+    check("read_dim has resolved witness_b", read_dim.get("witness_b", {}).get("point") == [20.0, 0.0])
+    check("read_dim has measured_value 10.0", abs(read_dim.get("measured_value", 0.0) - 10.0) < 1e-4)
+
     print(f"\nRESULTS: {passed} passed, {failed} failed")
     if failed > 0:
         sys.exit(1)
