@@ -40,7 +40,7 @@ wrong.
 | [`docs/SPECIFICATION-v0.3.md`](docs/SPECIFICATION-v0.3.md) | **What BIMWorks must be.** The current contract. It incorporates v0.2 by reference and lists every delta in its §0.3. | **Normative** |
 | [`docs/REFACTOR-PLAN.md`](docs/REFACTOR-PLAN.md) | **The work in flight** — the delta-protocol refactor. Baseline protocol, D1–D9, exact gate commands, and the traps. Rules of engagement: [`GEMINI.md`](GEMINI.md). | Contract |
 | [`docs/IMPLEMENTATION-PLAN-2026-10-14.md`](docs/IMPLEMENTATION-PLAN-2026-10-14.md) | **When and in what order.** P0–P7, status tables, risk register. | Sequencing |
-| [`review/`](review/) | **Where we are heading** — the forward plans (`dimension-as-control`, `geometric-references`, `direct-manipulation`, `revit-feel`) and the measured `AUDIT-*-vs-revit.md` evidence. Superseded material is in `review/archive/`. | Plans and evidence |
+| [`review/`](review/) | **Where we are heading, and what has been verified.** The forward plans: `direct-manipulation` (the current one — see below), `dimension-as-control`, `geometric-references`, `revit-feel`. The verification record: `REVIEW-*` and `RECONCILIATION-*`. The measured `AUDIT-*-vs-revit.md` evidence. Superseded material is in `review/archive/`. | Plans and evidence |
 | [`docs/SPEC.md`](docs/SPEC.md) | **Why.** Master specification v2.3 — research rationale, Revit/IFC ground truth, sourced quotations. | Non-normative |
 | `README.md` (this) | Orientation and how to run it. | Non-normative |
 
@@ -58,8 +58,31 @@ If you are adding a feature, update the document that owns the claim — not thi
 
 **What is built, structurally** — the shape of the thing, which does not change weekly: a FastAPI +
 IfcOpenShell engine process; a React + Three.js shell; a typed command bus with atomic transactions, a
-journal and JSON Schema export; a `.bimworks` container with save/load round-trip; and 16 regression
-suites under `scratch/`.
+journal and JSON Schema export; a `.bimworks` container with save/load round-trip; a geometric-reference
+primitive with dimensions that drive geometry; a typed geometry-snap engine with a documented priority
+order and selection geometry, wired into the plan viewport; and the engine regression suites under
+`scratch/` — count them, don't trust this file: `ls scratch/test_*.py | wc -l`.
+
+---
+
+## Where the work is going
+
+**This is a router, not a roadmap**, and it deliberately carries no status. A roadmap written here goes
+stale within a day — which is precisely how this file previously went wrong (see the rule above). Each
+row names the document that owns the claim; read that, not this.
+
+| Track | What it covers | Owning document |
+|---|---|---|
+| **Track A — make it testable** | The gap between "the engine passes its gates" and "a person can see it working": which model the app loads at startup, the default view range, dimension-driven editing when the dimension is *locked*, whether a failed edit reports as a failure, reading dimensions back, fitting a view on switch, and surfacing dimensions and sections in the UI | [`review/IMPLEMENTATION-PLAN-direct-manipulation.md`](review/IMPLEMENTATION-PLAN-direct-manipulation.md) §4 |
+| **Track B — direct manipulation** | The "IngeTrazo feel": one interaction session, a drag session on the bus (one snapshot per gesture), grips that emit parameters, value entry and hot retype, inference, and validity predicates with clamping | The same plan, §5 — its §1.1 is the evidence-graded record of which phases have landed |
+| **Semantics** | Dimensions as driving constraints, and the geometric-reference primitive (witness points, re-resolution, conflict reporting) they rest on | [`IMPLEMENTATION-PLAN-dimension-as-control.md`](review/IMPLEMENTATION-PLAN-dimension-as-control.md) and [`IMPLEMENTATION-PLAN-geometric-references.md`](review/IMPLEMENTATION-PLAN-geometric-references.md); the `REVIEW-*` rounds are the verification record |
+| **Revit-parity UI** | Ribbon, palettes, project browser, status bar — chrome, deliberately orthogonal to both tracks above | [`IMPLEMENTATION-PLAN-revit-feel.md`](review/IMPLEMENTATION-PLAN-revit-feel.md), measured in the `AUDIT-*-vs-revit.md` set |
+| **Sequencing** | Order P0–P7, status tables, risk register | [`docs/IMPLEMENTATION-PLAN-2026-10-14.md`](docs/IMPLEMENTATION-PLAN-2026-10-14.md) |
+
+Two habits keep the tracks honest. **Findings are re-verified against the current tree before they are
+acted on** — every plan and review in `review/` is pinned to a commit for that reason, and the reason is
+not theoretical: findings here have gone stale inside a day. And **a claim belongs to the document that
+owns it**, so when a track moves, the plan moves and this table keeps pointing at it.
 
 ---
 
@@ -140,7 +163,7 @@ OS — or built on a different CPU — fails to load them and Vite never serves 
 ### Gates — run these before committing
 
 ```bash
-npm run check           # the five gates below, then tsc --noEmit
+npm run check           # the six gates below, then tsc --noEmit
 ```
 
 | Script | What it protects |
@@ -150,9 +173,20 @@ npm run check           # the five gates below, then tsc --noEmit
 | `npm run check:state` | The `GET /api/state` bundle's invariants |
 | `npm run check:delta` | Delta-protocol equivalence |
 | `npm run check:snap` | Snap candidate resolution, priority hierarchy and selection geometry |
+| `npm run check:py` | The engine suites that must stay green: solver capability, container fidelity, dimensions CRUD, geometric references, transactions, `ReferenceMove` and drag-time extras, dependency graph |
 | `tsc --noEmit` | Types |
 
 The gates exist because the violations they catch were real and shipped. Do not weaken them.
+
+**Assert the observable outcome.** A gate that stays green while the app is unusable is not protection — a
+check written against an internal proxy (a flag, a return value, a line count) keeps passing after the
+thing a person sees has broken. Write the assertion against the user-visible result, and keep at least
+one negative control that fails when the check is inverted.
+
+`scratch/_probe_engine_smoke.py` is an engine smoke probe needing neither server nor browser: six checks
+over the model a fresh boot loads, the default plan cut, dimension-driven editing both unlocked and
+locked, failure reporting, and section/elevation linework. It is deliberately **not** wired into
+`npm run check` yet — it reports the gaps that Track A closes, and it joins the chain when they are closed.
 
 > **The UI gate makes real HTTP calls to the engine.** Start the backend first, or the run is misread —
 > the same trap recorded in `docs/REFACTOR-PLAN.md` §2.1.
@@ -173,9 +207,12 @@ python scratch/test_sketch_model.py        # sketch data model
 python scratch/test_bus_parity_audit.py    # bus parity, audit form
 ```
 
-There are 29 `test_*.py` suites under [`scratch/`](scratch/); the nine above are the ones most often
-reached for, and the remainder cover imports, hosted openings, roof updates, mesh HLR, HTTP container
-round-trips, units boundaries, scale gating, trim/split, and the type layer.
+There are 32 `test_*.py` suites and 12 `_probe_*.py` probes under [`scratch/`](scratch/); the nine above
+are the ones most often reached for, and the remainder cover imports, hosted openings, roof updates, mesh
+HLR, HTTP container round-trips, units boundaries, scale gating, trim/split, dimensions CRUD, geometric
+references and `ReferenceMove`, and the type layer. **`npm run check:py` runs seven of them**, listed in
+[`scripts/check-python-suites.mjs`](scripts/check-python-suites.mjs) — those are the ones wired into the
+gate, and adding a suite to that list is how it starts protecting a commit.
 
 ### Why there are two join suites
 
@@ -204,6 +241,7 @@ backend/          Python engine process
   command_bus.py      typed command registry, transactions, journal
   hlr_renderer.py     coordinated 2D view generation
   mesh_hlr.py         mesh-based hidden-line removal
+  references.py       the geometric-reference primitive — witness points, re-resolution
   dependency_graph.py dirty-flag recompute
   constraint_solver.py planegcs wrapper (Align / Lock / EQ)
   units.py            the single unit-conversion point
@@ -223,11 +261,13 @@ scripts/          gates and diagnostics
   check-snap-engine.mjs       snap-engine gate
   diagnose-blank-page.mjs     blank-page diagnostic
 
-scratch/          engine regression suites (29 test_*.py, plus 5 _probe_*.py)
+scratch/          engine regression suites; 7 of the 32 test_*.py suites are wired into
+                  `npm run check:py`, and 12 _probe_*.py sit alongside them (see Testing)
 docs/             the specification (v0.3 normative, v0.2 its base), REFACTOR-PLAN and
                   DELTA-MEASUREMENT (the delta work), IMPLEMENTATION-PLAN-2026-10-14
                   (sequencing) and SPEC.md (rationale); archive/ holds the withdrawn v0.1
-review/           the forward plans and the parity audits; archive/ holds superseded material
+review/           the forward plans, the REVIEW-*/RECONCILIATION-* verification record, and
+                  the parity audits; archive/ holds superseded material
 public/           static assets
 ```
 
@@ -236,7 +276,7 @@ public/           static assets
 ## Key design decisions
 
 Each is recorded with its rationale in [`docs/SPEC.md`](docs/SPEC.md) §11 and stated normatively in
-[`docs/SPECIFICATION-v0.2.md`](docs/SPECIFICATION-v0.2.md).
+[`docs/SPECIFICATION-v0.3.md`](docs/SPECIFICATION-v0.3.md) (which incorporates v0.2 by reference).
 
 - **Hybrid container.** IFC has no recompute semantics, and property sets are static data rather than a
   constraint system. So `model.ifc` stays a valid, standalone, third-party-readable IFC4 file, and a
@@ -253,6 +293,15 @@ Each is recorded with its rationale in [`docs/SPEC.md`](docs/SPEC.md) §11 and s
 - **Sheets are a first-class subsystem, not a print dialog.** A view is a document object that can exist
   unplaced; placement is a separate object referencing both sheet and view. IFC has no view, sheet,
   viewport, marker or template model, so all of it lives in the overlay.
+- **A dimension is a document object that references geometry, not elements.** A dimension owns an ordered
+  array of witness references, and each reference carries its own resolution state — so one can be lost,
+  be *reported* as lost, and be re-resolved when the element it names is moved, split or retyped. IFC has
+  no constraint system, so this lives in the overlay too, in `backend/references.py`, shared with the
+  snap and drag paths rather than duplicated per tool.
+- **Locking a dimension turns it into a driving constraint**; unlocking returns it to an annotation that
+  only reports. A dimension that drives geometry must also be able to refuse and explain — the solver
+  reports conflicts through the same structured path as the rest of the bus. What the locked path does
+  today is Track A's business, not this file's; see "Where the work is going".
 
 ---
 

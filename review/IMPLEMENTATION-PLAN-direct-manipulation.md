@@ -1,24 +1,25 @@
 # IMPLEMENTATION PLAN — direct manipulation: making 3D modelling feel like IngeTrazo
 
-**Verified against:** `Axotopia/BIMWorks@8ffec22` (after the Revit-parity UI refactor: `7026842`, `4ed1f90`).
+**Verified against:** `Axotopia/BIMWorks@7a36697` (2026-10-16), and originally against `8ffec22` (after the Revit-parity UI refactor: `7026842`, `4ed1f90`).
 **Read for comparison:** IngeTrazo `d8ee8c0` (`/tmp/ingetrazo-src`) — `tools/base.py`, `core/snap.py`, `core/inference.py`, `core/history.py`, `tools/move.py`, `tools/scale.py`, `tools/pushpull.py`.
-**Relationship to existing plans:** this is the *interaction* layer. `review/IMPLEMENTATION-PLAN-dimension-as-control.md` is the *semantics* layer (reference primitive, solver, dimension as a driving object). They meet at the grip (§3.6), and §4 sequences them so the grip layer is not rewritten when that plan reaches Phase 3.
+**Relationship to existing plans:** this is the *interaction* layer. `review/IMPLEMENTATION-PLAN-dimension-as-control.md` is the *semantics* layer (reference primitive, solver, dimension as a driving object). They meet at the grip (§3.6), and §5 sequences them so the grip layer is not rewritten when that plan reaches Phase 3.
+**Revised 2026-10-16** after an engine probe (`scratch/_probe_engine_smoke.py`) and a browser verification pass. The revision adds **Track A** (§4): the defects and UI declarations that make the app untestable *before* any "feel" claim can be evaluated. Track B (§5) is the original manipulation plan, now with per-phase status.
 
-**Line numbers are pinned to `8ffec22`.** They will drift; cite the symbol when the two disagree.
+**Line numbers are pinned to `7a36697`** unless a citation says otherwise. They will drift; cite the symbol when the two disagree.
 
 ---
 
 ## 0. Why this plan exists
 
-The Revit-parity refactor changed the chrome — ribbon tabs, 858 lines of bespoke vector icons, a rebuilt properties palette, the project browser, the status bar — and the store's view-definition tolerance. It did **not** touch `Viewport3D.tsx` or `PlanViewport2D.tsx`: `git diff 597c079..HEAD` shows both essentially unchanged, and `Viewport3D.tsx` not at all.
+The Revit-parity refactor changed the chrome — ribbon tabs, 858 lines of bespoke vector icons, a rebuilt properties palette, the project browser, the status bar — and the store's view-definition tolerance. It did **not** touch `Viewport3D.tsx` or `PlanViewport2D.tsx`: `git diff 597c079..HEAD` showed both essentially unchanged, and `Viewport3D.tsx` not at all.
 
-So the app now *looks* like Revit and still *feels* like a form. The measurement in §1 says why: there is no direct-manipulation layer at all. Nothing in `src/` contains the string `grip`; there is no drag state outside the sheet canvas; the modify commands exist on the bus but no viewport can invoke them as a gesture.
+So the app *looks* like Revit and still *feels* like a form. §1 says why: there was no direct-manipulation layer at all. IngeTrazo is the reference for that missing layer, because it is the one open-source modeller in this space whose *feel* is its main asset: a 12-kind snap engine with a documented priority order, per-tool grips, inference with axis and reference locks, preview that applies the real mutation, and numeric entry that can be re-typed after the fact. This plan ports that layer onto BIMWorks' parametric model — not its mesh model (§6).
 
-IngeTrazo is the reference for that missing layer, because it is the one open-source modeller in this space whose *feel* is its main asset: a 12-kind snap engine with a documented priority order, per-tool grips, inference with axis and reference locks, preview that applies the real mutation, and numeric entry that can be re-typed after the fact. This plan ports that layer onto BIMWorks' parametric model — not its mesh model (§6).
+**What the 2026-10-16 probe changed.** Enough of Track B has landed that the app can no longer be assessed by reading it — and when it was run, three things turned out to be true at once: the engine passes **355 assertions across every gate**, direct manipulation and dimension-driven editing (unlocked) work end to end, and the app nevertheless presents as unusable. The cause is not the manipulation layer at all. It is that the **default model the app loads at startup is the wrong sample** (§4.1), the **UI tools that would exercise the refactors are declared unimplemented** (§4.7), and two real defects make failure invisible (§4.2, §4.3). Track A exists so that Track B's work can be *seen* when it lands.
 
 ---
 
-## 1. Diagnosis: what the 3D viewport can do today
+## 1. Diagnosis: what the 3D viewport could do at `8ffec22` (the baseline)
 
 | Capability | State in `8ffec22` | Evidence |
 |---|---|---|
@@ -40,6 +41,19 @@ IngeTrazo is the reference for that missing layer, because it is the one open-so
 
 Two structural facts make this plan cheap. First, **one mutation seam** (`dispatchTransaction`) means a gesture layer can be added without touching 24 call sites. Second, **the delta protocol already delivers per-GUID meshes**, which is exactly what a drag preview needs.
 
+### 1.1 What has landed since `8ffec22` (verified, not assumed)
+
+| Track B phase | Status at `7a36697` | Evidence |
+|---|---|---|
+| Phase 0 — SnapEngine | **Partial — 2D only, and not consolidated there either** | `src/interaction/snapEngine.ts` (10.4 KB) is imported by `PlanViewport2D.tsx:15` and **not by `Viewport3D.tsx`**, which still holds the inline quantisations — 16 occurrences of `Math.round(x * 2) / 2` at `Viewport3D.tsx:535-584` plus the preview paths. `PlanViewport2D` additionally keeps its own `findSnapVertex` (`:239, 502, 1737`) and grid rounding (`:440-441`), so two snap paths coexist in the one viewport that has the engine. Six typed kinds with source provenance and selection helpers; gate `SNAP-ENGINE 21 passed` |
+| Phase 1 — Interaction session | **Partial** | Hover pre-highlight, selection boxes and "draw-and-place feel" landed (`bc10362`); tool state still lives per-viewport |
+| Phase 2 — Drag session on the bus | **Not started** | No `/api/drag/*`, no `begin_drag`/`update_drag`, no gesture state in the store |
+| Phase 3 — Grips | **Partial, 2D only** | 2D selection endpoint grips and flip controls (`PlanViewport2D.tsx:2010-2041`); nothing in the 3D viewport |
+| Reference-shaped intent (§3.6) | **Primitive landed — and in the right order** | `backend/references.py` (19 KB), `ReferenceMove`, `DimensionCreate`, `DimensionValueSet` all registered on the bus (`command_bus.py:39, 456-457, 559`); dimension-as-control gate **123 passed**, references **32**, reference-move + drag-time extras **11** |
+| Phases 4-8 | **Not started** | — |
+
+The sequencing risk recorded in §3.6 is **retired in the favourable direction**: the reference primitive landed *before* the grip layer, so grips can be reference-qualified from the outset rather than retrofitted.
+
 ---
 
 ## 2. The IngeTrazo mechanisms to port
@@ -47,13 +61,13 @@ Two structural facts make this plan cheap. First, **one mutation seam** (`dispat
 | # | Mechanism | Where IngeTrazo implements it | What it buys | Translation for BIMWorks |
 |---|---|---|---|---|
 | 1 | **Tool lifecycle as one state machine** — `on_activate`, `on_click`, `on_hover`, `on_release`, `on_cancel`, `on_key`, `on_value`, `status_clause`, `rubber_band_lines`, `guide_preview_lines`, `inference_guide_lines` | `tools/base.py:441-566` | Every tool shares one contract, so cancel, hints and preview cannot be forgotten per tool | A single `InteractionSession` reducer replacing `wallStartPoint`, `boxStartPoint`, `firstPoint`, `alignPickState` |
-| 2 | **Snap engine with documented priority** — 12 kinds, high→low: axis lock, reference lock, close, endpoint, intersection, midpoint, origin, on-edge, aligned, axis-inference, none; **screen-space pixel radii**; the caller supplies `world_to_pixel` so the module is UI-free | `core/snap.py:1-28` | Constant snap radius under zoom; one place to add a kind; testable without a viewport | Port the priority list verbatim; `worldToScreen(camera, point)` in 3D, the SVG transform in 2D |
+| 2 | **Snap engine with documented priority** — 12 kinds, high→low: axis lock, reference lock, close, endpoint, intersection, midpoint, origin, on-edge, aligned, axis-inference, none; **screen-space pixel radii**; the caller supplies `world_to_pixel` so the module is UI-free | `core/snap.py:1-28` | Constant snap radius under zoom; one place to add a kind; testable without a viewport | Port the remaining priority list; `worldToScreen(camera, point)` in 3D, the SVG transform in 2D — **six of twelve kinds are in** |
 | 3 | **Inference state** — reference edge, encouraged points, axis/reference locks, dwell timer; magnetic axis; work-plane lock | `core/inference.py:1-52`; `AxisMagnet`/`PlaneLock` `tools/base.py:38, 75-334` | The "it knows what I mean" quality; ortho that feels automatic rather than modal | Hold in the session; render as guide lines + a cursor tip |
 | 4 | **Per-tool grips** — a 26-grip 3D box / 8-grip 2D box / 2-grip edge for Scale; rotation grips built on the box faces that look at the eye, with `_hot_grip` tracking | `tools/scale.py:3-24, 56-63, 173-196`; `tools/move.py:154-163, 627-660` | Direct manipulation without a dialog | `gripsFor(element, params) → Grip[]`, screen-space hit radius, enlarged invisible hit proxies |
-| 5 | **Preview *is* the real mutation** — the same `_mutate_inner` runs each drag frame; Move applies and reverts; commit reverts the preview then re-applies once; `SnapshotMutation` wraps the whole gesture in **one** snapshot, and redo restores the captured after-state rather than re-running | `tools/pushpull.py:2003-2007, 2043-2050`; `tools/move.py:403-410, 864-913, 915-953`; `core/history.py:2893-2935` | Preview cannot diverge from the commit — the class of bug `PlanViewport2D.tsx:270` already documents ("the rubber band had frozen") | The drag session in §4 Phase 2 — one snapshot per gesture, frames reuse it |
+| 5 | **Preview *is* the real mutation** — the same `_mutate_inner` runs each drag frame; Move applies and reverts; commit reverts the preview then re-applies once; `SnapshotMutation` wraps the whole gesture in **one** snapshot, and redo restores the captured after-state rather than re-running | `tools/pushpull.py:2003-2007, 2043-2050`; `tools/move.py:403-410, 864-913, 915-953`; `core/history.py:2893-2935` | Preview cannot diverge from the commit — the class of bug `PlanViewport2D.tsx:270` already documents ("the rubber band had frozen") | The drag session in §5 Phase 2 — one snapshot per gesture, frames reuse it |
 | 6 | **Numeric entry during the gesture, and re-typing after it** — `vcb_label` + `on_value`; Scale's `on_value` **undoes the just-committed command and re-executes a rebuilt one at the typed value**; push/pull keeps a retype payload | `tools/base.py:436-439, 508-516`; `tools/scale.py:566-590`; `tools/pushpull.py:1841-1860` | The single cheapest "professional" feel upgrade: type the number you meant, before or after | One value input bound to the session; after commit, `undo` + re-dispatch (the journal already supports both) |
 | 7 | **Drag-vs-click threshold** — `_DRAG_PX = 6.0` | `tools/pushpull.py:183-187` | A click that wobbles does not start an edit; a drag that barely moves still does not commit a zero edit | 5 px, measured in the session |
-| 8 | **Refusal with a reason, and graceful degradation** — a push that would break the solid is rolled back; the commit **binary-searches for the largest distance the guard accepts** (six halvings) rather than failing; the user is told why | `tools/pushpull.py:1940-1947, 1862-1907, 1829-1833` | A drag into an invalid state degrades instead of erroring | Validity predicates + clamp (§4 Phase 8), surfaced through the existing status/`failureMessage` path |
+| 8 | **Refusal with a reason, and graceful degradation** — a push that would break the solid is rolled back; the commit **binary-searches for the largest distance the guard accepts** (six halvings) rather than failing; the user is told why | `tools/pushpull.py:1940-1947, 1862-1907, 1829-1833` | A drag into an invalid state degrades instead of erroring | Validity predicates + clamp (§5 Phase 8), surfaced through the existing status/`failureMessage` path — **and §4.3 shows BIMWorks currently does the opposite: it reports success** |
 | 9 | **Keep/repeat** — `last_distance`, keep-mode, double-click repeat | `tools/pushpull.py:1815-1835` | Fast iteration without re-aiming | Extend the existing `chainTools` idea to "repeat last modify" |
 
 ---
@@ -70,21 +84,103 @@ Two structural facts make this plan cheap. First, **one mutation seam** (`dispat
 
 **3.5 A refusal is a clamp plus a sentence, not a failed transaction.** IngeTrazo's binary search for the largest acceptable value is the model. Every grip declares its validity range, and the drag clamps to it, showing *why*: "thickness cannot go below 0'-1\"", "the opening would leave the wall", "walls cannot be shorter than their openings".
 
-**3.6 The grip's intent payload is reference-shaped from day one.** `{ ref?: ReferenceHandle, param, value }`. While grips run on deltas, `ref` is absent; when `references.py` lands (`IMPLEMENTATION-PLAN-dimension-as-control.md` §3.1, Phase 1), the same gesture starts emitting a reference-qualified edit and nothing in the gesture layer changes. **Without this, dimension-as-control Phase 3 rewrites the grip layer.**
+**3.6 The grip's intent payload is reference-shaped from day one.** `{ ref?: ReferenceHandle, param, value }`. **As of `7a36697` the primitive is live** (`backend/references.py`; `ReferenceMove` carries a `source`/`target` pair plus drag-time `extras`), so grips emit reference-qualified edits from the start rather than being rewritten later. This decision is now a constraint on the grip layer, not a future risk.
 
 ---
 
-## 4. Phases
+## 4. Track A — make it testable and verifiable · **before any "feel" claim**
+
+The premise of Track A: at `7a36697` the engine is **verified** (355 assertions across bus parity, UI-P0 130, state-bundle 45, delta 21, snap 21, solver 17, container fidelity 68, dimensions 123, references 32, transactions 42, reference-move 11, dependency graph 41) and the app is **not demonstrable**. These phases close that gap. Each is small; together they are what makes Track B judgeable.
+
+### A1 — Load the real sample at startup · **S** · highest perceived impact
+The app auto-loads the wrong model. `backend/main.py:402` calls `load_sample_building()` at import, and `/api/sample` (`:357-398`) builds a **legacy shed**: five walls on a 12 × 9 ft footprint with `height=3.0`, `thickness=0.25/0.15`, two doors at `height=2.13`, four windows at `1.4 × 1.5` with `sill_height=0.9`, a slab at `0.25` and a roof at `3.0` — nineteen elements. Those are **metric magnitudes read as feet**: a 3 m storey became a 3 ft wall, a 2.13 m door a 2.13 ft door, a 250 mm CMU wall a 3-inch wall (the name still says `Exterior - 10" CMU`).
+
+Meanwhile the repo ships `sample_building.ifc`, and it is **correct**: measured in-process, 13 elements (5 walls, 2 doors, 4 windows, 1 slab, 1 roof), three storeys, wall heights `[10.0] ft`, thicknesses `[0.492, 0.82] ft` (150 mm and 250 mm), levels at **−0.82 / 9.84 / 19.69 ft** (0 m, 3 m, 6 m correctly converted). The import path converts properly; only the hand-written generator was never updated.
+
+The consequence is the whole first-run experience, measured through `/api/view/2d` at the default cut:
+
+| Model | plan | section | elevation |
+|---|---|---|---|
+| `/api/sample` (what runs) | **cut=0**, proj=7, hidden=25 | cut=0, proj=7, hidden=18 | cut=0, proj=7, hidden=18 |
+| `sample_building.ifc` (what ships) | **cut=130**, proj=3, hidden=63, swing=4, window=20 | cut=52, proj=11, hidden=32 | cut=0, proj=11, hidden=32 |
+
+A 4 ft default cut plane passes **above every 3 ft wall**, so the default floor plan is empty — verified in the browser: *"Floor Plan: Level 1 (Cut Plane: 4'-0")" renders no walls, doors or windows*, only grids and a stray door-swing arc. That single fact explains a large share of "the UI is unusable".
+
+**Do:** delete `load_sample_building()`'s hand-built model and have `/api/sample` call `load_ifc_file(<repo>/sample_building.ifc)` (the startup call then loads the same thing); or keep the route and point both at the IFC. Update the store's status string (`useBimStore.ts:1905` currently reports "Sample BIM Project Loaded (13 Elements, 3 Levels)" while loading nineteen elements and one storey — that string describes the IFC) to derive its counts from the response.
+**Gate:** `scratch/_probe_engine_smoke.py` check A passes (wall heights in the 7-14 ft band) **and** a fresh app boot shows a non-empty plan (cut paths > 0).
+
+### A2 — The locked dimension must satisfy itself · **M**
+Deterministic on a fresh model — asked **14.0 ft**, the geometry ends **12.0 ft** apart, five runs out of five, with or without a second `BimModelManager` in the process (so this is not cross-instance state leakage). All four anchor/lock combinations fail the same way:
+
+```
+fresh model:  locked,   anchor=start   gap  10.0 -> 12.0  (asked 14.0)   MISMATCH
+              locked,   anchor=end     gap  10.0 ->  2.0  (asked 14.0)   MISMATCH
+              locked,   anchor=center  gap  10.0 ->  2.0  (asked 14.0)   MISMATCH
+              unlocked, anchor=start   gap  10.0 -> 14.0  (asked 14.0)   OK
+```
+
+(with the sample's levels loaded the error is larger — `2.0` rather than `12.0` — so the locked path consults model state it should not.)
+
+The mechanism is consistent across cases: **the witness the anchor says to hold fixed is the one that moves.** Wall B's start correctly lands at `10 + 14 = 24`, but wall A also translates (+2 on a fresh model, +12 with levels present) instead of being held, so the measured gap is wrong while the dimension records 14. The anchor is effectively ignored whenever `is_locked=True`; the unlocked path is exactly right. This is the *driving* case — the feature the dimension-as-control refactor exists for.
+**Do:** trace `set_dimension_value` (`ifc_service.py:4278`) into the locked/constraint branch and make the solve hold the anchor witness fixed; establish why the spurious move scales with the loaded level set.
+**Gate:** all four rows above read `OK`; `scratch/test_dimensions_crud.py` gains the locked variants (it "covers only an UNLOCKED dimension", per `scratch/_probe_locked_dimension_undo.py`'s own note — which is why its 123 assertions miss this).
+
+### A3 — A failure must not report success · **S** · closes a whole defect class
+Driving a dimension whose witness cannot be resolved returns an envelope that says it worked:
+
+```
+envelope: { "status": "updated", "value": 14.0 }
+  nested: { "status": "error", "error": "Dimension witness references lost" }
+```
+
+Any caller that reads `status` — the UI, the AI driver, an MCP tool, a script — sees success. This is the same defect class as `ElementUpdate`, which "silently ignores keys it does not recognise while still returning `updated`" (§5 Phase 3), and it is why a broken model can look fine.
+**Do:** propagate the nested result's status into the command envelope (or make the envelope's `status` a function of it), and surface the reason through the existing `failureMessage`/status path. Audit the other nested-result commands for the same shape.
+**Gate:** probe check E passes — a failed solve must not present `status: "updated"`. Negative control: force a deliberate solve failure and assert the envelope is non-success.
+
+### A4 — Dimensions must be readable · **S**
+`GET /api/dimensions` → **404**. Dimensions exist, serialise richly (`{kind, ref_a: {kind, sources, hint}, axis, offset, value, is_locked, eq_group, binding}`), and appear in the 2D payload only as a **count** (`dimensions: 1`, and the lineweight table already has a 0.13 mm `#0284c7` `dimension` entry) — so neither the UI nor a test can enumerate or inspect them.
+**Do:** add `GET /api/dimensions` (list, with resolved witness points) and `GET /api/dimensions/{id}`.
+**Gate:** a test creates a dimension, reads it back through the route, and asserts the value and resolved witnesses match.
+
+### A5 — Fit the view on switch · **S**
+Switching to a 2D view does not fit it to its extents. In the browser, the real sample's plan (380 SVG paths) opened **over-zoomed and off-centre** — a fraction of the building filled the viewport — while its section (302 paths) sat small in the lower-middle with most of the frame empty. There is a `ZE`/Fit command in the status bar; it is not applied on view change or on first load.
+**Do:** compute extents from the returned 2D paths (or the model bounds for the view's range) and set the SVG transform on view switch, load and `Fit`.
+**Gate:** after switching to plan/section/elevation, the drawn content's bounding box occupies a stated fraction of the viewport (e.g. 60-90%) and is centred. Negative control: assert the gate fails when the transform is left at identity.
+
+### A6 — View semantics: an elevation is not a plan · **S**
+Three labelling defects, all visible in the browser, all passing every gate:
+
+1. **Every 2D view reports a cut plane, including the elevation** — the banner reads `Elevation: South (Cut Plane: 4'-0")`. An elevation is a projection; it has no cut. The engine already agrees: for the real sample, `elevation` returns **cut=0** while `section` returns **cut=52**. The UI is inventing a cut the engine did not apply.
+2. **The Properties palette reports the wrong view type** — it shows *"Floor Plan"* while displaying `Section: Building Section 1` and `Elevation: South`. The view type is not reaching the palette.
+3. **Sections carry no level annotation** — the real sample's section draws three storey-level dashed lines with no `Level 1 / Level 2 / Roof` names, and cut walls are unfilled (no poche). A section without levels is not a section an architect can issue.
+
+**Do:** pass `view_type` (and the view record) through to the palette; suppress the cut-plane chip for elevations; label level lines from `mgr.levels` and add poche for cut partitions.
+**Gate:** an elevation's banner contains no cut plane; the palette's type matches the open view; a section through a multi-storey sample draws one named level line per storey.
+
+### A7 — Surface the refactors in the UI · **M** · unblocks manual testing
+`src/interaction/toolCaptions.ts:41-48` declares `implemented: false` for **`DI` Aligned Dimension**, **`SEC` Section**, **`SHT` Sheet**, `GR` Grid, `LL` Level, `DL` Detail Line, `TG` Tag, `TX` Text — and the ribbon and status bar already read that flag. `types/bim.ts:210-228` has `SEC` in `ActiveTool` but **no elevation tool at all**. So there is no way to create a dimension or a section from the UI: 123 passing dimension assertions and a working section engine are unreachable by hand. This is the direct answer to "I am unable to test any of the refactoring of dimensions-as-control or geometry-reference".
+
+**Do, in this order:**
+1. Render dimension overlay objects in `PlanViewport2D` — the payload already carries the drive and a lineweight entry; then flip `DI: implemented: true`.
+2. Render the section cut linework (the engine returns it) and flip `SEC: implemented: true`.
+3. Add an elevation tool + view creation (the route accepts `view_type=elevation`).
+4. Consider `GR`/`LL` next, since grids and levels already exist as data.
+**Gate:** a scripted browser pass (the `check-ui-p0.mjs` style, extended) creates a dimension with `DI`, drags nothing, and asserts the dimension appears in the 2D payload and in the DOM; creates a section with `SEC`; and asserts each tool's `implemented` flag matches whether it produced geometry in the last N commits.
+
+### Track A dependency order
+`A1 → A5/A6` (so the app shows something) → `A3/A4` (so tests can see failures) → `A2` (the lock) → `A7` (so a human can drive it). **Wire the probe into the gate suite after A1-A4**, at which point `npm run check` genuinely covers the first-run path. Until then it stays a probe: wired today it would make `npm run check` exit non-zero, which is a deliberate choice, not an accident.
+
+---
+
+## 5. Track B — the direct-manipulation phases
 
 Each phase is independently verifiable and ends with a gate that can fail (§8).
 
-### Phase 0 — The SnapEngine · **S** · unblocks everything
-**New:** `src/interaction/SnapEngine.ts` (+ `snapProviders.ts`).
-Port `core/snap.py`'s kind list and priority order verbatim, with per-kind screen-space radii from a single tuning table. Providers: element endpoints and midpoints (from `params`), wall baselines (on-edge), slab/roof polygon vertices, level elevations, grid line intersections, the active chain's start point ("close"), and intersections between guides. Return `{kind, point, label}`; `label` feeds the cursor tip and the status bar.
-**Replace:** all 12 inline quantisations in `Viewport3D.tsx`, the 0.25 ft grid and `findSnapVertex` in `PlanViewport2D.tsx`, and the sketch-loop tolerance use in the store. The grid stays as the *lowest-priority* provider so the app still feels gridded.
-**Gate:** a scripted parity check (in the style of `scripts/check-*.mjs`) asserting that for a fixture cursor path, 2D and 3D return the same snap kind and point. Negative control: the check must fail if the snap radius is expressed in world units — prove it by asserting identical snap *behaviour* at two zoom levels.
+### Phase 0 — The SnapEngine · **S** · **partial: 2D only, and the 3D viewport is the bulk of what is left**
+`src/interaction/snapEngine.ts` exists with six typed kinds, source provenance and selection helpers, and it is wired into `PlanViewport2D.tsx`. It is **not** imported by `Viewport3D.tsx`, which still carries the inline quantisations — 16 occurrences of `Math.round(x * 2) / 2` at `Viewport3D.tsx:535-584` and in the preview paths. The gate reports 21 assertions passing.
+**Remaining:** wire the engine into `Viewport3D` and delete those quantisations (this is the largest part of the phase, not a cleanup); delete the second, competing snap path in `PlanViewport2D` (`findSnapVertex` at `:239/502/1737` and the grid rounding at `:440-441`); add the other six kinds from IngeTrazo's priority list (`axis lock`, `reference lock`, `close`, `origin`, `on-edge`, `aligned`); replace the residual quantisation in the store's sketch path (`useBimStore.ts:373`); and add the parity check that 2D and 3D agree on kind+point for a fixture cursor path — negative control: express the radius in world units so behaviour changes with zoom.
 
-### Phase 1 — The interaction session · **M**
+### Phase 1 — The interaction session · **M** · partial
 **New:** `src/interaction/session.ts` — `{tool, phase: 'idle'|'armed'|'picking'|'dragging', picks, hover, snap, preview, value}` plus a reducer with `begin/point/hover/commit/cancel`.
 **Change:** `Viewport3D.tsx` and `PlanViewport2D.tsx` stop holding tool state in `useState`; the session becomes the single source. `resetInteraction` (`useBimStore.ts:853`) drives `cancel`, so Esc, tool change and sketch cancel all take one path. Extend `toolCaptions.ts` with per-phase prompts ("Specify first point", "Specify opposite corner", "Drag to set height, or type a value") instead of the current per-tool string literals in the JSX.
 **Gate:** the UI-P0 interaction gate still passes; new assertions — a mid-gesture Esc sends **zero** commands and returns to armed; a 5 px wobble on a click does not enter `dragging`; a chained wall run produces one transaction per wall and therefore N undo steps.
@@ -95,13 +191,13 @@ Port `core/snap.py`'s kind list and priority order verbatim, with per-kind scree
 **Gate:** a 60-frame drag advances `rev` by exactly 1, adds exactly 1 journal entry, and one `undo` restores the pre-drag state exactly (deep compare, the `check-delta-equivalence.mjs` style). Negative controls: `rev` must **not** move during `update` frames; cancel must leave geometry byte-identical and `rev` unchanged.
 
 ### Phase 3 — Grips for walls · **M** · the first real "feel"
-**New:** `src/interaction/grips.ts` — `gripsFor(element, params) → Grip[]` with `{id, kind, worldPoint, axis, value, unit, range, ref?}`. Wall kinds: two end grips (baseline), a height grip (top face centre), a thickness grip (each side face centre). Render as an HTML overlay positioned by projecting the grip's world point (the pattern already exists for the dimension pill, `Viewport3D.tsx:910-948`), with enlarged invisible hit proxies; hot-grip highlight on hover.
-**Prerequisite — typed edit commands.** `ElementUpdate` takes an untyped `Dict[str, Any]` and `update_element` silently ignores keys it does not recognise while still returning `"updated"` (`backend/command_bus.py:116-118`; `backend/ifc_service.py:2303-2417`). A grip that silently no-ops is the worst possible outcome for a drag. Add `WallSetHeight`, `WallSetThickness`, `WallSetEnd` (and their slab/opening counterparts as Phase 6 needs them) with schemas and tests — this is also `REVIEW-ingetrazo-object-creation-and-editing-2026-10-15.md` §4.1, so it is paid for once.
+**New:** `src/interaction/grips.ts` — `gripsFor(element, params) → Grip[]` with `{id, kind, worldPoint, axis, value, unit, range, ref?}`. Wall kinds: two end grips (baseline), a height grip (top face centre), a thickness grip (each side face centre). Render as an HTML overlay positioned by projecting the grip's world point (the pattern already exists for the dimension pill, `Viewport3D.tsx:910-948`), with enlarged invisible hit proxies; hot-grip highlight on hover. The 2D endpoint grips (`PlanViewport2D.tsx:2010-2041`) are the existing precedent to generalise.
+**Prerequisite — typed edit commands.** `ElementUpdate` takes an untyped `Dict[str, Any]` and `update_element` silently ignores keys it does not recognise while still returning `"updated"` (`backend/command_bus.py:116-118`; `backend/ifc_service.py:2303-2417`). A grip that silently no-ops is the worst possible outcome for a drag — and §4.3 shows this class of bug is live, so this is no longer hypothetical. Add `WallSetHeight`, `WallSetThickness`, `WallSetEnd` (and their slab/opening counterparts as Phase 6 needs them) with schemas and tests.
 **Gate:** a drag emits exactly **one** command of a typed kind (assert no `ElementUpdate` in the journal); the journal's result reports the new value; the mesh actually changed. Negative control: assert the gate fails if a grip dispatches `ElementUpdate` with a misspelled key.
 
 ### Phase 4 — Value entry and hot retype · **S** · cheapest professional-feel win
 One input surface bound to the session: during a drag it displays the live value and typing overrides the pointer; after commit it remains editable and re-issues the command with the corrected value by `undo` + re-dispatch (exactly IngeTrazo's mechanism, `tools/scale.py:566-590`).
-**Change:** retire the bbox-centre pill (`useBimStore.ts:988-1046`) in favour of the session's readout, so the number the user reads is the number they type. Route every magnitude through `formatLength` (which now does integer 1/16" arithmetic) rather than hand-rolled `.toFixed()` strings — see §9.
+**Change:** retire the bbox-centre pill (`useBimStore.ts:988-1046`) in favour of the session's readout, so the number the user reads is the number they type. Route every magnitude through `formatLength` (which now does integer 1/16" arithmetic) rather than hand-rolled `.toFixed()` strings — see §9.1.
 **Gate:** typing `12'-6"` mid-drag and committing produces a wall of exactly that length; typing a correction after commit leaves **one** net undo step for the gesture, not two.
 
 ### Phase 5 — Inference · **M**
@@ -117,65 +213,89 @@ Hover a wall face → push/pull changes thickness; hover the top face → height
 ### Phase 8 — Validity predicates and clamping · **M** · required by Phase 7
 One module, `backend/validity.py`, used by **both** the create and edit paths: thickness > 0, wall longer than the openings it hosts, opening inside its host, footprint area > 0, finite coordinates. This also closes the open-boundary hole documented in `REVIEW-…§4.2` — `Sketch.validate()` currently accepts an open chain and has its closing edge inferred — which a grip drag will hit on its first day.
 
-**Dependency order:** P0 → P1 → P2 → P3 → {P4, P5} → P6 → P8 → P7.
+**Dependency order:** `P0 → P1 → P2 → P3 → {P4, P5} → P6 → P8 → P7`.
 
 ---
 
-## 5. Explicitly not doing
+## 6. Explicitly not doing
 
 - **Not adopting IngeTrazo's mesh-as-truth object model.** It would break joins, hosted openings, HLR and IFC export, and its own roadmap calls per-face Python objects a liability.
 - **Not porting push/pull's mesh booleans.** BIMWorks' openings are IFC relationships; Phase 7 changes parameters.
 - **Not running whole-model validity on the interactivity path.** IngeTrazo's `is_closed`/`signed_volume` are O(mesh) and its roadmap wants local orientation instead; a per-frame whole-model check would undo Phase 1.1's scoping work.
 - **Not previewing through per-frame transactions.** The snapshot is O(model); one per gesture, never per frame.
 - **Not adding a Move/Rotate *tool* that takes two viewport picks before anything moves.** Grips replace that interaction, not duplicate it.
-- **Not touching the ribbon/palette refactor.** The icons, tabs and palette are orthogonal; only `toolCaptions.ts` and the session's readout are shared surface.
+- **Not touching the ribbon/palette refactor.** The icons, tabs and palette are orthogonal; only `toolCaptions.ts`, the palette's view-type label (§4.6) and the session's readout are shared surface.
+- **Not "fixing the sample" by editing the generator's literals.** That would preserve two divergent samples. The IFC is the sample; the generator is the bug (§4.1).
+- **Not re-implementing HLR or the view engine.** The engine already returns correct plan/section/elevation linework for a correct model; §4.5/§4.6 are display defects, not engine defects.
 
 ---
 
-## 6. Risks
+## 7. Risks
 
 1. **React re-render per frame.** Grips and preview must live outside React state (refs + an imperative overlay), or the drag will stutter. The existing dimension pill re-renders through state; replacing it is part of Phase 4.
 2. **Preview divergence at joins and openings** (decision 3.4). Mitigate by labelling the dragged element as preview and refreshing on commit; never let the client's transform be the committed truth.
 3. **`activeTool` is a closed union** (`types/bim.ts:210-228`) consumed by the ribbon, the status bar and both viewports. Extending it ripples; the session should wrap it rather than replace it in one step.
-4. **Typed commands before grips.** Phase 3's prerequisite is real: without it, a grip can silently do nothing (§9 shows this is not hypothetical — `ElementUpdate` already reports success for ignored keys).
+4. **Typed commands before grips.** Phase 3's prerequisite is real: without it, a grip can silently do nothing — **and a live instance of exactly that class is already in the tree** (§4.3).
 5. **Undo semantics.** A gesture must be exactly one entry, and its journal `origin` should stay `ui` with a description like "Drag wall end" so the audit trail reads correctly.
-6. **The 1.85 ms figure was measured on an *unviewed* level.** With `slice2d` suppressed the viewed-level case should be comparable, but this must be measured, not assumed (§10).
+6. **The 1.85 ms figure was measured on an *unviewed* level.** With `slice2d` suppressed the viewed-level case should be comparable, but this must be measured, not assumed (§10.1).
+7. **Two samples in the tree is a trap that already fired.** Anything asserting on "the sample" must name *which* sample. The probe did not, and its first version tested the legacy generator (§9.3).
+8. **Green gates are not coverage.** 355 assertions passed while the first-run plan rendered empty, dimensions could not be created from the UI, and a locked dimension silently produced wrong geometry. Every gate in Track A is written against an observable user-facing outcome for that reason.
 
 ---
 
-## 7. Gates — each must be able to fail
+## 8. Gates — each must be able to fail
 
 | Phase | Assertion | Negative control that must fail the gate |
 |---|---|---|
-| 0 | 2D and 3D agree on snap kind+point for a fixture cursor path | Express the radius in world units → behaviour must change with zoom |
-| 1 | Esc mid-gesture sends zero commands; 5 px wobble does not drag | Remove the threshold → a wobbling click starts a drag |
-| 2 | 60 frames ⇒ `rev` +1, one journal entry, one undo restores exactly | Let `update` advance `rev` → gate fails |
-| 3 | One typed command per drag; mesh changed; result reports the value | Dispatch `ElementUpdate` with a bad key → gate fails |
-| 4 | Typed length is exact; correction leaves one net undo step | Dispatch without undo → two entries |
-| 5 | Named point beats reference lock beats grid | Invert the priority list → gate fails |
-| 8 | Dragging a wall end past an opening clamps and explains | Commit the invalid value → gate fails |
+| A1 | Startup sample is the IFC: wall heights in 7-14 ft, and a fresh boot's plan has cut paths > 0 | Load the legacy generator → gate fails |
+| A2 | Locked dimension: all three anchors land the geometry on the asked value | Keep the current locked path → gate fails |
+| A3 | A failed solve does not present `status: "updated"` | Force a solve failure → envelope must be non-success |
+| A4 | A created dimension is readable via `GET /api/dimensions` with resolved witnesses | Remove the route → 404 |
+| A5 | Content occupies 60-90% of the viewport and is centred after a view switch | Leave the transform at identity → gate fails |
+| A6 | Elevation banner has no cut plane; palette type matches the view; one named level line per storey in section | Hard-code the label → gate fails |
+| A7 | `DI`/`SEC` produce geometry and their `implemented` flags match | Flip a flag without wiring the renderer → gate fails |
+| B0 | 2D and 3D agree on snap kind+point for a fixture cursor path | Express the radius in world units → behaviour must change with zoom |
+| B1 | Esc mid-gesture sends zero commands; 5 px wobble does not drag | Remove the threshold → a wobbling click starts a drag |
+| B2 | 60 frames ⇒ `rev` +1, one journal entry, one undo restores exactly | Let `update` advance `rev` → gate fails |
+| B3 | One typed command per drag; mesh changed; result reports the value | Dispatch `ElementUpdate` with a bad key → gate fails |
+| B4 | Typed length is exact; correction leaves one net undo step | Dispatch without undo → two entries |
+| B5 | Named point beats reference lock beats grid | Invert the priority list → gate fails |
+| B8 | Dragging a wall end past an opening clamps and explains | Commit the invalid value → gate fails |
 
 Performance gate (Phase 2 onward): during a drag, `globalThis.__bimworksRefresh.engine.p95` stays under 8 ms on the 250-wall fixture with `slice2d` suppressed; record it in `docs/DELTA-MEASUREMENT.md` alongside the existing corpus. The instrumentation already separates `client` from `engine` p50/p95 — never report one as the other (`REFACTOR-PLAN.md` §2.4).
 
+**The probe.** `scratch/_probe_engine_smoke.py` (stdlib + the venv, no server, no browser) is Track A's executable form: six checks, currently **2 passed / 4 failed**, exit 1. It is the fastest available answer to "is the engine working?" and the right thing to wire into `scripts/check-python-suites.mjs` **once A1-A4 land**.
+
 ---
 
-## 8. Collateral findings from this examination
+## 9. Collateral findings from these examinations
 
 1. **The units fix went into the formatter but two hand-rolled message strings still mislabel feet.** `src/utils/units.ts` was corrected to integer 1/16" arithmetic, but `extractPolygonFromLines` still formats model coordinates as metres and a feet gap as centimetres: `${currentEnd[0].toFixed(1)}m` and `(dist(...) * 100).toFixed(0)}cm` (`useBimStore.ts:406, 424`). A 6-inch gap is still reported as "50cm". Both should call `formatLength`.
-2. **The line references in the committed review have drifted.** `REVIEW-ingetrazo-object-creation-and-editing-2026-10-15.md` cites `useBimStore.ts:353/386/404`; after the refactor inserted `normalizeView` those are now `373/406/424`. The findings stand; the citations should be re-pinned, and this is the argument for citing symbols with line numbers as a footnote rather than the reverse.
+2. **The line references in the committed review have drifted.** `REVIEW-ingetrazo-object-creation-and-editing-2026-10-15.md` cites `useBimStore.ts:353/386/404`; after the refactor inserted `normalizeView` those are now `373/406/424`. The findings stand; the citations should be re-pinned, and this is the argument for citing symbols with line numbers as a footnote rather than the reverse. **Confirmed again at `7a36697`**: `MeshBufferData` moved `34 → 58` and `Sliced2DData` `93 → 140`.
+3. **Two divergent samples, and the UI's status string describes the one it does not load.** `/api/sample` builds nineteen metric-magnitude elements and one storey while the store reports "**13 Elements, 3 Levels**" (`useBimStore.ts:1905`) — which is precisely `sample_building.ifc`'s inventory. The message was right; the loader was wrong. My own first probe made the same mistake and had to be corrected by the user, which is why §7.7 exists.
+4. **The elevation/section "looks identical" impression is a sample artefact, not a view defect.** With the legacy shed both views return `cut=0, proj=7, hidden=18` — genuinely identical. With `sample_building.ifc` they diverge correctly (`section cut=52` vs `elevation cut=0`) and the section draws the storeys, slab and door/window openings. The view engine was never broken; it was fed a 3 ft model.
+5. **There is no `GET /api/dimensions`** — dimensions are creatable, drivable and serialised, but not readable (404). See §4.4.
+6. **An elevation reports a cut plane it does not have** (`Elevation: South (Cut Plane: 4'-0")`), and the Properties palette reports "Floor Plan" for both sections and elevations. See §4.6.
+7. **`bim_manager` auto-loads at import** (`main.py:402`), so any process that imports `backend.main` mutates model state as a side effect — which is why the probe must be explicit about which sample it asserts on.
 
 ---
 
-## 9. Residual unknowns
+## 10. Residual unknowns
 
-1. **The real per-frame cost of a viewed-level drag** with `slice2d` suppressed — §6.6. Measure before promising 30 fps.
+1. **The real per-frame cost of a viewed-level drag** with `slice2d` suppressed — §7.6. Measure before promising 30 fps.
 2. **Whether Three.js raycasting can hit grips reliably** without a separate invisible proxy mesh, particularly at grazing angles on thin wall faces.
 3. **How much of the store's tool state can move into the session without disturbing the UI-P0 interaction-reset contract** — `interactionResetToken`/`resetInteraction` are the right hooks, but their callers assume the current per-tool state shape.
 4. **Whether a gesture-scoped snapshot is affordable on the largest model the project intends to support.** One O(model) snapshot per gesture is a different budget from one per command, but it is not free; `scratch/_probe_snapshot_cost.py` exists and should be pointed at it.
-5. **Whether Revit-parity expectations conflict with IngeTrazo-style directness.** Revit has grips and drag-editing too, so probably not — but the Modify tab currently renders dummy buttons (`Ribbon.tsx:1009`), which means parity there is decorative until this plan lands.
+5. **Whether Revit-parity expectations conflict with IngeTrazo-style directness.** Revit has grips and drag-editing too, so probably not — but the Modify tab still renders dummy buttons (`Ribbon.tsx:1009`), which means parity there is decorative until Track B lands.
+6. **What `is_locked` is *for*.** The locked path is the one that fails (§4.2) and it is also the one with a known dangling-constraint hazard after undo (`scratch/_probe_locked_dimension_undo.py`). Whether the lock should drive on value-set or only on regeneration is a design question the locked-path fix must answer, not just a bug to patch.
+7. **Whether the remaining twelve→six snap kinds are needed**, or whether six cover the modelling the project actually supports.
 
 ---
 
-## 10. Provenance
+## 11. Provenance
 
-Line references were read at `8ffec22` on 2026-10-15 and are pinned there: `Viewport3D.tsx` (navigation comment 485-489, `handleMouseDown` 490, tool dispatch 510-600, move/up 668-763, dimension pill 910-948), `PlanViewport2D.tsx:247-260`, `useBimStore.ts` (tmp-dimension 988-1046, delta 1265-1360, `translateElement` 1791, `executeTransaction` 2197, `dispatchTransaction` 2231, reset 44/442-444/853, instrumentation 266-290), `types/bim.ts:210-228`, `PropertiesPalette.tsx:187`, `SheetCanvas.tsx:34`, `toolCaptions.ts:1-20`, `backend/main.py:845-860, 945-975`, `backend/command_bus.py:116-118, 640-679, 692-723`, `backend/ifc_service.py:2303-2417`, `backend/sketch_model.py:49-90`. IngeTrazo references are pinned to `d8ee8c0`.
+Track B's line references were read at `8ffec22` on 2026-10-15 and are pinned there: `Viewport3D.tsx` (navigation comment 485-489, `handleMouseDown` 490, tool dispatch 510-600, move/up 668-763, dimension pill 910-948), `PlanViewport2D.tsx:247-260`, `useBimStore.ts` (tmp-dimension 988-1046, delta 1265-1360, `translateElement` 1791, `executeTransaction` 2197, `dispatchTransaction` 2231, reset 44/442-444/853, instrumentation 266-290), `types/bim.ts:210-228`, `PropertiesPalette.tsx:187`, `SheetCanvas.tsx:34`, `toolCaptions.ts:1-20`, `backend/main.py:845-860, 945-975`, `backend/command_bus.py:116-118, 640-679, 692-723`, `backend/ifc_service.py:2303-2417`, `backend/sketch_model.py:49-90`. IngeTrazo references are pinned to `d8ee8c0`.
+
+Track A and §1.1 were read at `7a36697` on 2026-10-16: `backend/main.py:357-402` (`/api/sample` and the startup call), `backend/command_bus.py:39, 456-457, 559` (`ReferenceMove`, `DimensionCreate`, `DimensionValueSet`), `backend/ifc_service.py:4278` (`set_dimension_value`), `backend/references.py`, `src/interaction/snapEngine.ts`, `src/interaction/toolCaptions.ts:41-48`, `src/types/bim.ts:58, 140-149, 210-228`, `src/store/useBimStore.ts:1898-1913`, `src/components/drafting/PlanViewport2D.tsx:2010-2041`, `sample_building.ifc`.
+
+Measurements were taken on 2026-10-16 against a live sidecar (`uvicorn backend.main:app` on `:8008`): gate suite via `npm run check` (**355 assertions, 0 failures, exit 0**); 2D path counts via `/api/view/2d` and in-process `BimModelManager.render_2d_view`; dimension behaviour via `/api/transaction` and in-process bus calls; rendering, DOM state and screenshots via **headless Firefox 157 through geckodriver/WebDriver** (no Chromium on the host, so REA's CDP browser tools were unavailable). Screenshots are saved under the session workspace `rendering-check/` (`01`-`04` legacy sample, `05`-`08` `sample_building.ifc`). Probe: `scratch/_probe_engine_smoke.py`.
