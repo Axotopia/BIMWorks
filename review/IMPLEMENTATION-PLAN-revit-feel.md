@@ -10,6 +10,11 @@ under `review/AUDIT-*-vs-revit.md`.
 **Revised:** **2026-10-16** — a verification pass at `ec2c99c` (§0b) corrected five statuses, closed the
 solver gap recorded in the spec, re-counted the gate suite, and added the four-plan ownership boundary
 (§2b). Dates are commit dates from `git log`, not recollection.
+**Revised again 2026-10-16** — a second verification pass at `7251a44` (**§0c**) corrected four more
+statuses (three of them *understating* landed work: the `DI` tool, the 3D snap engine, and memento
+coverage), re-counted the gate suite to 924 assertions, and repaired §2b's dead links to the two plans
+removed at `d54f9b1`. **Read §0c before §0b** — it supersedes it for counts and for the `DI`/`SHT`
+statuses.
 
 > ## ✅ AUDITED & RECONCILED STATUS (ROUND 4) — *2026-10-15, at `e3216fe`; historical, superseded by §0b for counts*
 >
@@ -236,6 +241,44 @@ and `DI`/`SEC` are declared unimplemented, so dimensions and sections cannot be 
 Those are **Track A** of `review/IMPLEMENTATION-PLAN-direct-manipulation.md` §4, deliberately not
 duplicated here. The two plans' boundary is set out in §2b.
 
+### 0c. Verification pass — 2026-10-16 at `7251a44` — *supersedes §0b for counts*
+
+Triggered by the audit of the gesture layer that §2b assigns to the direct-manipulation plan
+(`review/REVIEW-gemini-direct-manipulation-phases-7-8-2026-10-16.md`). Every STATUS claim below was
+re-checked against the tree. Four statuses here were stale — three of them **understating** work that has
+landed — and one count has moved.
+
+**Gate totals now.** `npm run check` exits 0 with **924 assertions**: bus parity 47 UI actions, UI-P0 130,
+state-bundle 45, delta equivalence 21, snap-engine 34, and Python **694** across **14** suites — solver 17,
+container fidelity 68, dimensions CRUD **201**, geometric references 32, transactions 42, reference-move 11,
+dependency graph 41, plus grip/gesture coverage added since (drag session 19, wall grips 49, value-entry hot
+retype 15, snap engine 34, grips beyond walls 71, validity predicates 48, face push/pull 46) — and
+`tsc --noEmit` clean. §0b's 618 is correct for `ec2c99c`; dimensions CRUD has grown 190 → 201.
+
+**Corrected statuses.**
+
+| # | This plan says | Verified at `7251a44` | Evidence |
+|---|---|---|---|
+| 2.4 | "**⬜ PARTIAL** … Interactive creation of persistent overlay dimensions (`DI` tool / `createDimension`) is disabled/deferred in UI" | ✅ **DONE** | The `DI` tool creates a persistent dimension: `createDimension({…})` at `PlanViewport2D.tsx:611`, mapped to `DimensionCreate` (`useBimStore.ts:143`) and dispatched at `:1553`. The overlay renders from the payload at `PlanViewport2D.tsx:1295` (`sliced2D.dimensions.map`). Enabled by direct-manipulation Track A7; `implemented: true` at `src/interaction/toolCaptions.ts:44`. |
+| 3.4 | "**⬜ PARTIAL.** … `DI` (Aligned Dimension tool) is disabled / `implemented: false` in `toolCaptions.ts`" | ✅ **DONE** | As 2.4. `TR`, `SL`, `SO` and `DI` are all wired. `SEC` is also live — `addView({type:'section'})` at `PlanViewport2D.tsx:637`, `SEC` in `PLACEMENT_TOOLS` at `:266`. |
+| 3.5.1 | "covers **31 of 41** registered commands … 10 commands still fall back to a full `snapshot_state()` … (`backend/command_bus.py:1519-1523`)" | 🟨 **PARTIAL — 40 of 50** | Same ten commands still fall back, and the probe lists them: `ConstraintAlign`, `ConstraintDelete`, `ConstraintEqualize`, `ConstraintLockDim`, `ConstraintLockToggle`, `SetWallJoin`, `SketchCurveAdd`, `SketchCurveMoveEdge`, `SketchCurveMoveVertex`, `SketchCurveSetSlope`. But the registry has grown to **50** and memento coverage to **40**, and the cited line has drifted: the fallback is now `backend/command_bus.py:1755` (the `else:` branch, "Fallback for any other registered command"). The 12/12 gate still exercises only memento-covered commands. |
+| 2b.1 | Phase 2's UI half "blocked on the `DI` tool being `implemented: false`" | ✅ **unblocked** | `DI` is `implemented: true`; 2.4 and 2.6-interactive are reachable by hand. Only **2.7 grid spacing** remains open in Phase 2. |
+| 2b.2 | "the 3D viewport still holds 16 inline `Math.round(x * 2) / 2` quantisations and does not import the snap engine at all" | ✅ **superseded** | **0** quantisations left in `Viewport3D.tsx`; it imports `snapEngine` and `findSnapVertex` is gone from `PlanViewport2D`. Direct-manipulation Track B P0 closed it. |
+| 1.5 | ⬜ untouched | ⬜ **still open** | Slice delta transport — unchanged, and still the only Phase 1 item open. |
+| 0.2 | 🟨 PARTIAL (§20.1 variation unmet) | 🟨 **unchanged** | The trim/split fixtures still vary thickness only, never angle or join mode. The plan's own meta-test rule, still unmet on itself. |
+| Phase 0 Exit | "a 5,000-element curve exists ⬜" | ⬜ **still open** | Measured to 484; 5,000 never run. |
+| Phase 4 | 🟨 PARTIAL | 🟨 **unchanged** | 4.1's visual snap glyphs and 4.6's non-wall temporary dimensions remain deferred. |
+| Phase 7 | 🟨 PARTIAL | 🟨 **unchanged** | Element-specific panels and interactive endpoint dragging remain deferred. |
+
+**Why §0c exists rather than a rewrite.** Three of these stale rows understated: a reader working from the
+old text would believe the `DI` tool was unusable, that the 3D viewport had no snap engine, and that
+mementos covered 31 commands. A separate dated pass, in the shape of §0b, keeps the correction auditable and
+leaves the historical rows intact.
+
+**Cross-plan note.** The gesture layer §2b delegates now runs through Phase 6 complete, with Phase 1, 7 and 8
+partial. The outstanding work is enumerated as W1–W13 in
+`review/REWORK-ORDER-direct-manipulation-2026-10-16.md`; W8 is the 3.5.1 item above and W12 is this table.
+
 ---
 
 ## 0. Objective and binding constraints
@@ -300,7 +343,7 @@ execution in `review/AUDIT-dimension-editing-vs-revit.md` (28 probe-confirmed fi
 |---|---|
 | Render a dimension with witness + dimension lines | **PRESENT** — `PlanViewport2D.tsx:773-870` |
 | Padlock a dimension → become a persistent constraint, and **the constraint genuinely holds and propagates** | **PRESENT** — `add_dimension_lock` + `_solve_constraints_after_move` (`ifc_service.py:2460`, `:2110`). **[PROBED]** locking A↔B at 10 ft then moving A made B follow with the distance held, and re-valuing the lock to 15 ft was honoured. |
-| **Edit a permanent dimension's text and drive the model** | **ABSENT** — `DI` is `implemented: false` (`toolCaptions.ts:40`); no bus command carries a dimension *value* |
+| **Edit a permanent dimension's text and drive the model** | **ABSENT** — `DI` is `implemented: false` (`toolCaptions.ts:40`); no bus command carries a dimension *value* | *(superseded — §0c: `DI` is `implemented: true`, and `DimensionValueSet` now carries the value; the `DI` tool creates and edits persistent dimensions)* |
 | Dimensions as document objects with identity and references | **ABSENT** — renderer output with `guid: None`, and the dimension list is derived by **regex over its own SVG path strings** (`ifc_service.py:4311-4364`) |
 | The one editable dimension measures the right thing | **ABSENT (wrong quantity)** — it is a 2D **bbox-centre-to-nearest-element** distance, so it changes when an unrelated element is added, and for a 10 ft wall it read **9.144**. Editing it calls `WallMove` with a derived delta: **[PROBED]** the wall's length stayed **10.000** while it moved. "Type a dimension, the wall becomes that long" is not what happens. |
 | Witness lines | **PARTIAL** — drawn for auto-extents; `witnessP1/P2` are written and **never read** (`PlanViewport2D.tsx:799-817` vs `useBimStore.ts:1016-1017`) |
@@ -374,27 +417,31 @@ recomputes the dirty closure only; the transport ships deltas. No engine path ma
 
 ## 2b. One owner per item — how the four plans divide
 
-Four plans are live at once, and they overlap where the same feature is both *semantics* and *gesture*.
-One owner per item, so a reader never has to reconcile two statuses:
+Four plans were live at once, and they overlap where the same feature is both *semantics* and *gesture*.
+One owner per item, so a reader never has to reconcile two statuses. **Two of the four have since been
+completed and their plan files removed from the tree at `d54f9b1`** — the dimension-as-control and
+geometric-references plans below are recorded here for ownership history, and their work is subsumed by
+this plan's Phase 2 and by direct-manipulation Track A. The links are intentionally not live:
 
 | Plan | Owns | Does not own |
 |---|---|---|
 | **`IMPLEMENTATION-PLAN-revit-feel.md`** (this) | Editing *semantics* and the performance that makes them usable: trim/split/extend, the type layer, sheets, chrome, and the dimension overlay's persistence and round-trip. Phases 0–7. | The gesture layer (no drag, grips or inference), and first-run testability |
 | **[`IMPLEMENTATION-PLAN-direct-manipulation.md`](IMPLEMENTATION-PLAN-direct-manipulation.md)** | **Track A** — first-run and UI-surfacing blockers (§4, A1–A7). **Track B** — the IngeTrazo-style gesture layer: interaction session, drag session on the bus, grips, value entry and hot retype, inference, validity predicates (§5) | Dimension *semantics* (it consumes them), and the trim/split semantics of §20 |
-| **[`IMPLEMENTATION-PLAN-dimension-as-control.md`](IMPLEMENTATION-PLAN-dimension-as-control.md)** | Dimensions as **driving** objects: conflict reporting, the locked path, EQ/chains, the solver's refusal channel | The dimension *overlay* (this plan, 2.2–2.3, done) and the `DI` tool (direct-manipulation A7) |
-| **[`IMPLEMENTATION-PLAN-geometric-references.md`](IMPLEMENTATION-PLAN-geometric-references.md)** | The shared **reference primitive** — witness points, re-resolution, `reference_key` stability — consumed by all three | Anything with a viewport |
+| **`IMPLEMENTATION-PLAN-dimension-as-control.md`** *(archived — file removed at `d54f9b1`)* | Dimensions as **driving** objects: conflict reporting, the locked path, EQ/chains, the solver's refusal channel | The dimension *overlay* (this plan, 2.2–2.3, done) and the `DI` tool (direct-manipulation A7) |
+| **`IMPLEMENTATION-PLAN-geometric-references.md`** *(archived — file removed at `d54f9b1`)* | The shared **reference primitive** — witness points, re-resolution, `reference_key` stability — consumed by all three | Anything with a viewport |
 
 Three consequences worth stating, because they were live contradictions:
 
-1. **This plan's Phase 2 is finished except its UI half**, which is A7's. 2.2–2.6 and 2.8 are done in
-   backend and bus; 2.4, 2.6-interactive and 2.7-grid are blocked on the `DI` tool being `implemented:
-   false`. Do not re-open them here.
-2. **This plan's Phase 4 is finished in 2D and out of scope in 3D.** 4.2–4.5 are done in
-   `PlanViewport2D`; the 3D viewport still holds 16 inline `Math.round(x * 2) / 2` quantisations and does
-   not import the snap engine at all. That work is direct-manipulation Track B Phase 0/3.
-3. **This plan's 3.5 is decided and half-done.** 3.5.2 is done and correct; 3.5.1 is 31/41 with the
-   fallback to remove. Owner of the decision: `docs/DECISION-live-edit-transaction-unit.md`. Owner of the
-   work: `docs/REFACTOR-PLAN.md` §9.
+1. **This plan's Phase 2 is finished except grid spacing** *(corrected by §0c)*. 2.2–2.6 and 2.8 are done in
+   backend and bus, and the `DI` tool is now `implemented: true`, so 2.4 and 2.6-interactive are reachable
+   by hand. Only **2.7 grid spacing** remains. Do not re-open the rest here.
+2. **This plan's Phase 4 is finished in 2D and was out of scope in 3D — and that is now closed**
+   *(corrected by §0c)*. 4.2–4.5 are done in `PlanViewport2D`; the 3D viewport no longer holds any inline
+   `Math.round(x * 2) / 2` quantisation (**0** left, was 16) and now imports the snap engine.
+   Direct-manipulation Track B P0 completed it.
+3. **This plan's 3.5 is decided and mostly done** *(corrected by §0c)*. 3.5.2 is done and correct; 3.5.1
+   covers **40 of 50** commands (was 31 of 41) with the ten-command fallback to remove. Owner of the
+   decision: `docs/DECISION-live-edit-transaction-unit.md`. Owner of the work: `docs/REFACTOR-PLAN.md` §9.
 
 ---
 
@@ -412,7 +459,7 @@ Effort key: **S** ≤ 1 day · **M** ~1 week · **L** 2+ weeks.
 | 0.2 | **Dimension/trim gate**: fixtures that assert trim-to-corner geometry, split preserving hosted openings, and dimension-edit propagation. Must vary thickness, angle, and join mode (§20.1's meta-test rule). | The workflow's core operations have no falsifiable tests today. | **⬜ NOT DONE.** Deliberately deferred: these fixtures assert the *intended* Phase 3 semantics, so writing them now would produce a red suite with no owner. Write them as the first step of Phase 3, and expect the split-opening case to fail until 3.2 lands. |
 | 0.3 | **Fix the units boundary — not just the label.** `ifc_service.py:3767` mislabels decimal feet as metres; underneath it, mesh geometry is metres while `params` are feet, which is why the one editable dimension shows `9'-2"` for a real 30 ft spacing and cannot round-trip. Fix the boundary (or the single conversion point), then audit every length-emitting site. | Every dimensional feature sits on this; it is the cheapest high-value fix in the plan and it currently mislabels every number on every drawing. | **✅ `b6b3cdd`.** Three defects, not one: mesh unit, a self-amplifying cache, and `mesh_hlr` fed the wrong unit. Also `format_feet_inches` rounded to a 3/4" grid. Gate: `scratch/test_units_boundary.py` (27 checks). |
 | 0.4 | Stop the **Project Browser and Ribbon showing seed literals** on load — `/api/state` already returns `views` and `sheets`. | Makes the app's own state trustworthy while the rest is rebuilt. | **✅ `73b7dbb`.** `App.tsx` now calls `fetchStateBundle()` on mount instead of `fetch2DSlice()`. |
-| 0.5 | **Do NOT bind Ctrl+Z/Ctrl+Y yet.** Undo serialized the whole IFC to STEP twice per transaction. | At 5,000 elements the undo stack was projected at **GBs**; shipping the keybinding first would have handed users a button that hangs and then crashes the engine. Bind it in Phase 3.5. | **✅ CLOSED 2026-10-16 — superseded by 3.5.2.** The keybinding *is* bound now (`src/App.tsx:53`, `:62`), which is correct because 3.5.1 landed (31 of 41 commands use mementos). Do **not** unbind it. The old two-snapshots-per-transaction description is the pre-memento design; see §0b and `docs/DECISION-live-edit-transaction-unit.md`. |
+| 0.5 | **Do NOT bind Ctrl+Z/Ctrl+Y yet.** Undo serialized the whole IFC to STEP twice per transaction. | At 5,000 elements the undo stack was projected at **GBs**; shipping the keybinding first would have handed users a button that hangs and then crashes the engine. Bind it in Phase 3.5. | **✅ CLOSED 2026-10-16 — superseded by 3.5.2.** The keybinding *is* bound now (`src/App.tsx:53`, `:62`), which is correct because 3.5.1 landed (40 of 50 commands use mementos — §0c). Do **not** unbind it. The old two-snapshots-per-transaction description is the pre-memento design; see §0b and `docs/DECISION-live-edit-transaction-unit.md`. |
 
 **Exit:** gates run and fail meaningfully on injected regressions ✅; a 5,000-element curve exists ⬜
 (measured to 484; 961 measured in an earlier pass, 5,000 never run — see §0a.2).
@@ -437,7 +484,7 @@ N=2,000 not measured. The §19 16 ms budget is therefore **met at N≤100, while
 
 ### Phase 2 — Dimension-driven editing (M, reduced from L) — *the user's primary control*
 
-**STATUS: 🟨 PARTIAL (Backend CRUD, parametric overlay, level editing, and bus commands ✅ DONE; interactive DI tool & grid spacing dimension edits deferred).**
+**STATUS: 🟨 PARTIAL (Backend CRUD, parametric overlay, level editing, bus commands and the interactive DI tool ✅ DONE; grid spacing dimension edit deferred).** *(DI corrected from deferred to DONE by §0c.)*
 Persisted dimension overlay, `Dimension*` bus commands, in-canvas inline dimension editor with `tryParseLength`, baseline resizing preserving unanchored endpoints, level datum lines in elevations/sections with interactive `move_level` editing, rotated dimension text on angled walls, real witness lines on selection, and dimension chains with EQ. Gates: `scratch/test_dimensions_crud.py` — **190 checks at `ec2c99c`**, up from 53 — and `scratch/test_pure_python_solver.py` (13/13).
 
 | # | Task | Notes |
@@ -445,7 +492,7 @@ Persisted dimension overlay, `Dimension*` bus commands, in-canvas inline dimensi
 | ~~2.1~~ | ~~**Fix the units boundary**~~ | **✅ DONE in Phase 0.3 (`b6b3cdd`).** All three sub-defects (mesh unit, self-amplifying cache, `mesh_hlr` unit) plus `format_feet_inches`. Gate: `scratch/test_units_boundary.py`. Nothing to do here — do not re-fix it; if a dimension still fails to round-trip, that is a **new** defect, not this one returning. |
 | 2.2 | **Dimension objects in the overlay** (A4): id, kind, ordered **references** (element + face/endpoint/plane), axis, offset, value, lock flag, EQ group; persisted and round-tripped; bump `constraints_rev`/`project_rev` on change. | **✅ DONE.** `self.dimensions`, `self.dimensions_rev`, and `self.constraints_rev` increment on create/set/delete, persisted in `parametric.json` overlay, round-tripped on load/save container, and output in `_finish_plan_contract`. Gate: `scratch/test_dimensions_crud.py`. |
 | 2.3 | **`DimensionCreate` and `DimensionValueSet` bus commands.** `DimensionValueSet{dimension_id, value}` carries the **value, not a delta**. | **✅ DONE.** `DimensionCreateParams`, `DimensionValueSetParams`, `DimensionDeleteParams` registered in `command_bus.py:COMMAND_REGISTRY` and executed through `CommandBusEngine`. Gate: `scratch/test_dimensions_crud.py`. |
-| 2.4 | **Render real dimensions and edit the text in place** — reuse the existing witness/dimension-line drawing (`PlanViewport2D.tsx:799-846`) and the genuinely good `tryParseLength` (`src/utils/units.ts:145-212`, handles `12'-6"`); replace the detached top-centre HTML pill with in-canvas entry. | **⬜ PARTIAL.** In-canvas inline editor exists on temporary selection dimensions committing via `setDimensionValue` with `tryParseLength`. Interactive creation of persistent overlay dimensions (`DI` tool / `createDimension`) is disabled/deferred in UI. |
+| 2.4 | **Render real dimensions and edit the text in place** — reuse the existing witness/dimension-line drawing (`PlanViewport2D.tsx:799-846`) and the genuinely good `tryParseLength` (`src/utils/units.ts:145-212`, handles `12'-6"`); replace the detached top-centre HTML pill with in-canvas entry. | **✅ DONE** *(was ⬜ PARTIAL — corrected by §0c)*. In-canvas inline editor on temporary selection dimensions committing via `setDimensionValue` with `tryParseLength`, **and** interactive creation of persistent overlay dimensions is live: `DI` → `createDimension` (`PlanViewport2D.tsx:611`) → `DimensionCreate`, rendered from the payload at `:1295`. |
 | 2.5 | **Edit moves the referenced face, not the element.** Extend `_solve_constraints_after_move` (`ifc_service.py:2110`) to move the referenced endpoint **along the baseline** (a length change), reusing the endpoint maths already in `trim_extend_wall`. Do **not** reuse the temporary-dimension translate semantic (`useBimStore.ts:1066-1077`). | **✅ DONE.** `set_dimension_value` resizes wall along baseline (`_resize_wall_length`), preserving unanchored endpoint position, updating length and mesh, reseating hosted openings, incrementally recomputing joins, and propagating constraints. Gate: `scratch/test_dimensions_crud.py`. |
 | 2.6 | **Dimension chains with EQ** — a linear string across N walls; editing one segment redistributes with locked segments and EQ groups honoured. Reuse the verified lock propagation; do this **after** 2.2–2.5, never before. | **✅ DONE (Backend / Bus) / ⬜ PARTIAL (UI).** Chained dimensions with `refs` and `eq_group` registered in overlay; `ConstraintEqualize` bus command and `equalize_span` redistribute both multi-wall spans and single-wall hosted openings without collapse. Interactive in-canvas multi-segment chain dragging in UI is deferred. Gate: `scratch/test_pure_python_solver.py`. |
 | 2.7 | **Grid and level dimensions as controls.** Add a `levels` key to the plan contract (it does not exist — `ifc_service.py:3894`), draw level lines, expose `LevelMove` (zero callers today), make grid spacing editable by dimension. | **⬜ PARTIAL.** `levels` contract key generated for elevations/sections with datum lines, bubbles, and interactive in-canvas elevation text editing via `set_dimension_value` / `move_level`. Grid spacing editable by dimension is deferred (grid click selects only). Gate: `scratch/test_dimensions_crud.py`. |
@@ -464,23 +511,23 @@ Asserted by gate 0.2.
 | 3.1 | **Trim-to-corner moves BOTH walls** and applies the join, and clamps to the target's **body** rather than its infinite baseline. Today only the named wall moves, and two walls that do not reach each other produce an endpoint the target does not occupy (`ifc_service.py:1016-1053`). | **✅ DONE.** Two-wall corner trim calculates intersection, moves both wall endpoints to corner, and recomputes wall joins (`corner_trimmed`). Single trim clamps hit to target body segment. (Note: corner trim extends/trims walls to baseline intersection rather than clamping within pre-existing segment bounds). Gate: `scratch/test_trim_split_gate.py`. |
 | 3.2 | **Split must re-host or refuse.** A door at offset 15 on a wall split at 10 currently stays hosted to the shortened half, **outside its own host** (`ifc_service.py:1055-1099`). Re-host openings onto the correct half, and **refuse the split** when an opening straddles the cut — silently stranding an opening is the §17 failure class. Carry join policy to the new half. | **✅ DONE.** `split_wall` strictly refuses cuts straddling openings; re-hosts openings past cut offset onto new wall with adjusted `offset_along_wall` and updated `IfcRelVoidsElement`; carries join policies and uses scoped join recomputation. Gate: `scratch/test_trim_split_gate.py`. |
 | 3.3 | **Split-with-gap**, and join state preserved across the split. | **✅ DONE.** `split_wall` supports `gap` parameter (default 0.0, or 0.5/1.0 ft), trimming original wall to `offset - gap/2` and placing new wall from `offset + gap/2`. Gate: `scratch/test_trim_split_gate.py`. |
-| 3.4 | **Hotkeys and picks** — `TR`, `SL`, `SO`, `DI` reachable from the ribbon and by two-letter sequence, with Revit's pick-two-elements gesture. None are bound today, and the store methods have zero callers. | **⬜ PARTIAL.** Added `TR`, `SL`, `SO` to `ActiveTool`, hotkey sequence bindings, Ribbon buttons in Modify panel, and in-canvas pick gestures in `PlanViewport2D.tsx`. `DI` (Aligned Dimension tool) is disabled / `implemented: false` in `toolCaptions.ts`. |
+| 3.4 | **Hotkeys and picks** — `TR`, `SL`, `SO`, `DI` reachable from the ribbon and by two-letter sequence, with Revit's pick-two-elements gesture. None are bound today, and the store methods have zero callers. | **✅ DONE** *(was ⬜ PARTIAL — corrected by §0c)*. `TR`, `SL`, `SO` **and `DI`** are all in `ActiveTool` with hotkey bindings, Ribbon buttons in the Modify panel, and in-canvas pick gestures in `PlanViewport2D.tsx`; `implemented: true` at `src/interaction/toolCaptions.ts:44`. |
 | 3.5 | Extend/trim to a **grid line or level** (the datum-driven version of the same operation). | **✅ DONE.** `trim_extend_wall` detects grid datum lines and level elevations, moving wall endpoints or adjusting wall height to match datum. Gate: `scratch/test_trim_split_gate.py`. |
 
 ### Phase 3.5 — Survive a working session (M)
 
-**🟨 PARTIAL — see §0b.** 3.5.2 is done and correct; 3.5.1 covers **31 of 41** commands and 10 still fall back to a full `snapshot_state()`. Gate: `scratch/test_session_undo_memento.py` (12/12 passed, but it exercises only memento-covered commands). 500 sequential edits completed in 4.73 s (9.46 ms/tx), peak memory 1.06 MB (< 25 MB ceiling).
+**🟨 PARTIAL — see §0c.** 3.5.2 is done and correct; 3.5.1 covers **40 of 50** commands and 10 still fall back to a full `snapshot_state()`. Gate: `scratch/test_session_undo_memento.py` (12/12 passed, but it exercises only memento-covered commands). 500 sequential edits completed in 4.73 s (9.46 ms/tx), peak memory 1.06 MB (< 25 MB ceiling).
 
 | # | Task | Notes |
 |---|---|---|
-| 3.5.1 | **Command-scoped mementos** replacing the two full `snapshot_state` copies per transaction. | **✅ DONE.** `CommandMemento` pattern in `command_bus.py` executing localized reversible closures for element creation, movement, rotation, offset, and trim/extend, **🟨 PARTIAL (verified 2026-10-16, §0b)** — 31 of 41 commands; the other 10 still snapshot, and `ReferenceMove` is memento-shaped but O(model). Stack capped by count (200), not bytes. Decision: `docs/DECISION-live-edit-transaction-unit.md`; gate V1 is probe check G. The 12/12 gate passes because it exercises only memento-covered commands. |
+| 3.5.1 | **Command-scoped mementos** replacing the two full `snapshot_state` copies per transaction. | **✅ DONE.** `CommandMemento` pattern in `command_bus.py` executing localized reversible closures for element creation, movement, rotation, offset, and trim/extend, **🟨 PARTIAL (verified 2026-10-16, §0c)** — 40 of 50 commands; the other 10 still snapshot, and `ReferenceMove` is memento-shaped but O(model). Stack capped by count (200), not bytes. Decision: `docs/DECISION-live-edit-transaction-unit.md`; gate V1 is probe check G. The 12/12 gate passes because it exercises only memento-covered commands. |
 | 3.5.2 | **Then** bind Ctrl+Z / Ctrl+Y, and add journal persistence. | **✅ DONE.** Bound `Ctrl+Z` (Undo), `Ctrl+Y` / `Ctrl+Shift+Z` (Redo) in `App.tsx` calling `/api/transaction/undo` and `/api/transaction/redo` with full state bundle refresh. |
 
 **Exit:** 500 sequential edits at 2,000 elements without unbounded memory growth.
 
 ### Phase 4 — Draw-and-place feel (M)
 
-**🟨 PARTIAL.** Verification: `npm run check` (618 assertions, exit 0) and full TypeScript compilation (`npx tsc --noEmit`).
+**🟨 PARTIAL.** Verification: `npm run check` (618 assertions at `ec2c99c`, exit 0; 924 at `7251a44` — §0c) and full TypeScript compilation (`npx tsc --noEmit`).
 
 | # | Feature | Notes |
 |---|---|---|
@@ -500,13 +547,13 @@ Asserted by gate 0.2.
 
 ### Phase 6 — Sheet management (M)
 
-**✅ DONE.** Verification: `npm run check` (618 assertions, exit 0) + `scratch/test_sheets_pdf.py` (95/95 checks).
+**✅ DONE.** Verification: `npm run check` (618 assertions at `ec2c99c`, exit 0; 924 at `7251a44` — §0c) + `scratch/test_sheets_pdf.py` (95/95 checks).
 
 Sheet list in Project Browser with `+ New Sheet` auto-numbering (`A101`, `A102`...) and sheet deletion; in-place title block editing (Sheet Number, Sheet Title, Drawn By) via inline SVG inputs committing to `SheetUpdate` bus command; interactive viewport dragging and hover deletion; batch vector PDF export set (`exportBatchPdf` serializes each sheet with its own title block, metadata, and viewports); real Schedule viewer modal with Wall, Door, and Window schedules, computed quantities (length, area, volume, fire rating), and CSV export.
 
 ### Phase 7 — Chrome (M)
 
-**🟨 PARTIAL.** Verification: `npm run check` (618 assertions, exit 0) + all Python gate suites.
+**🟨 PARTIAL.** Verification: `npm run check` (618 assertions at `ec2c99c`, exit 0; 924 at `7251a44` — §0c) + all Python gate suites.
 
 Interactive Revit Options Bar (`OptionsBar.tsx`) positioned below ribbon with context-sensitive parameters based on `activeTool` (Wall height/level/location-line/chain/offset, Door/Window sill height and tag toggle, Align multi/lock, Trim modes, and selection modify options); right-click context menu (`ContextMenu.tsx`) in both 2D and 3D viewports with "Create Similar" (`CS`), "Select All Instances" (visible in view / entire project), "Flip Orientation / Swing", "Delete", and "Zoom Extents" (`ZE`/`ZA`); contextual teal/green ribbon tab label (`Modify | Walls`, `Modify | Doors`, etc.) switching to general Modify panel (element-specific tool panels deferred); remaining Revit hotkeys (`CS`, `WT`, `ZA`, `ZE`, `MD`); Selection outline, visual endpoint grip circles, and interactive baseline flip arrows in 2D plan (interactive endpoint dragging deferred).
 
@@ -525,7 +572,7 @@ Phase 2 (weeks)     editable dimensions                 🟨 PARTIAL (Backend & 
    ↓
 Phase 3 (week)      trim/split semantics                ✅ DONE (3.1–3.3, 3.5; 3.4 DI ⬜)
    ↓
-Phase 3.5 (week)    undo that survives 5,000 elements   🟨 3.5.2 ✅; 3.5.1 31/41 (§0b)
+Phase 3.5 (week)    undo that survives 5,000 elements   🟨 3.5.2 ✅; 3.5.1 40/50 (§0c)
    ↓
 Phase 4 (week)      draw-and-place feel                 🟨 PARTIAL (4.2–4.5 ✅; 4.1 ext & 4.6 non-wall ⬜)
    ↓
@@ -578,7 +625,7 @@ without which the dimension work cannot be exercised by hand at all.
 | Dimension chains need solver behaviour the current planegcs wrapper cannot express | Phase 1.4 scopes the solve first; if a chain is not expressible, ship edit-one-dimension (2.2–2.5) and defer chains (2.6) rather than blocking. | **De-risked.** Lock propagation is probe-confirmed working, and the single-dimension case (2.2–2.5) does not need the solver work at all. |
 | Three 2D pipelines drift further apart | A1 freezes them at Phase 1.3; the scale gate covers whichever path is default. | **Partially done.** `_meshes_for_projection()` was added as the single metric accessor for the projector; the three renderers still coexist. |
 | The Rust port is derailed by Python-only abstractions | A2/A3 are enforced by review, and the Phase 1 work is deliberately written as numeric-array in / plain-dict out. | **Held.** The new code passes plain lists and dicts; the join index and plan cache are data, not control flow. |
-| Undo memory crashes a long session before 3.5 lands | 0.5 kept the keybinding unbound until 3.5.1; both are now **closed** — Ctrl+Z/Ctrl+Y are bound (`App.tsx:53`, `:62`) and mementos cover 31/41 commands. What remains is the 10-command fallback and the byte cap, owned by `docs/DECISION-live-edit-transaction-unit.md`. | **Resolved, with a remainder** — see §0b. |
+| Undo memory crashes a long session before 3.5 lands | 0.5 kept the keybinding unbound until 3.5.1; both are now **closed** — Ctrl+Z/Ctrl+Y are bound (`App.tsx:53`, `:62`) and mementos cover 40/50 commands (was 31/41 — §0c). What remains is the 10-command fallback and the byte cap, owned by `docs/DECISION-live-edit-transaction-unit.md`. | **Resolved, with a remainder** — see §0c. |
 | **NEW: a conservative cache is mistaken for a correct one** | Both new caches (plan contract, prepared geometry) can be keyed wrongly in a way that produces *silently stale* drawings, which no existing suite would necessarily catch. | The plan cache folds sorted GUIDs into its key and is guarded by "repeat request served from cache". **1.3c will add a second such cache — it must carry an equivalence test like `test_join_incremental.py`, not just a speed assertion.** |
 | A dimension edit changes a value in a way the solver silently cannot honour | Reuse the **verified** `add_dimension_lock` propagation rather than writing a new solve; assert round-trip (typed value == re-read value) in gate 0.2, which the current temporary dimension fails by 3.28×. |
 
