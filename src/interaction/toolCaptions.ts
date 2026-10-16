@@ -40,11 +40,11 @@ export const TOOL_CAPTIONS: Record<ActiveTool, ToolCaption> = {
   // the Options Bar (UI-P3) rather than as buttons that arm a dead tool.
   GR: { caption: 'Grid', shortcut: 'GR', implemented: false },
   LL: { caption: 'Level', shortcut: 'LL', implemented: false },
-  DI: { caption: 'Aligned Dimension', shortcut: 'DI', implemented: false },
+  DI: { caption: 'Aligned Dimension', shortcut: 'DI', implemented: true },
   DL: { caption: 'Detail Line', shortcut: 'DL', implemented: false },
   TG: { caption: 'Tag', shortcut: 'TG', implemented: false },
   TX: { caption: 'Text', shortcut: 'TX', implemented: false },
-  SEC: { caption: 'Section', shortcut: 'SEC', implemented: false },
+  SEC: { caption: 'Section', shortcut: 'SEC', implemented: true },
   SHT: { caption: 'Sheet', shortcut: 'SHT', implemented: false },
 };
 
@@ -73,6 +73,10 @@ export function toolPrompt(tool: ActiveTool): string {
       return 'Click a wall at the cut location to split it into two segments.';
     case 'SO':
       return 'Click a wall to split with a 6" joint gap.';
+    case 'DI':
+      return 'Click first reference point, then click second point to place dimension.';
+    case 'SEC':
+      return 'Click first point, then click second point to place section cut line.';
     case 'select':
       return '';
     default:

@@ -241,6 +241,7 @@ export interface ViewDefinition {
     min: [number, number, number];
     max: [number, number, number];
   };
+  line?: { start: [number, number]; end: [number, number] };
 }
 
 export interface SheetViewport {

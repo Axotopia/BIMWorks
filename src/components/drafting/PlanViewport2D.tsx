@@ -154,6 +154,7 @@ export const PlanViewport2D: React.FC = () => {
     createWindow,
     activeViewId,
     views,
+    addView,
     sketchSession,
     startSketchMode,
     cancelSketchMode,
@@ -170,7 +171,14 @@ export const PlanViewport2D: React.FC = () => {
     levels,
     moveLevel,
     flipElementOrientation,
+    setActiveViewId,
   } = useBimStore();
+
+  const currentView = views.find((v) => v.id === activeViewId) || {
+    name: 'Floor Plan: Level 1',
+    type: 'floor_plan',
+    viewRange: { cut: 4.0 },
+  };
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -270,7 +278,7 @@ export const PlanViewport2D: React.FC = () => {
    * dimension, and inserting a door both inserted and selected it. Placement and
    * selection are different intents and must not run from one click.
    */
-  const PLACEMENT_TOOLS = ['WA', 'DR', 'WN', 'RF', 'SB'];
+  const PLACEMENT_TOOLS = ['WA', 'DR', 'WN', 'RF', 'SB', 'DI', 'SEC'];
 
   const getRawModelCoords = useCallback(
     (clientX: number, clientY: number): [number, number] | null => {
@@ -578,6 +586,78 @@ export const PlanViewport2D: React.FC = () => {
         } else {
           // The pick is silently dropped today; say why rather than doing nothing.
           setStatusMessage('No wall within reach — click on or near a wall to host the element.');
+        }
+      } else if (activeTool === 'DI') {
+        if (!firstPoint) {
+          setFirstPoint([x, y]);
+        } else {
+          const distA = Math.hypot(x - firstPoint[0], y - firstPoint[1]);
+          if (distA >= 0.1) {
+            const findNearestRef = (pt: [number, number]) => {
+              let nearestGuid: string | undefined = undefined;
+              let bestDist = 2.0;
+              let bestRef: string = 'start';
+              for (const cp of (sliced2D?.cut_paths || [])) {
+                const el = elements[cp.guid];
+                if (el?.start && el?.end) {
+                  const dStart = Math.hypot(pt[0] - el.start[0], pt[1] - el.start[1]);
+                  const dEnd = Math.hypot(pt[0] - el.end[0], pt[1] - el.end[1]);
+                  if (dStart < bestDist) {
+                    bestDist = dStart;
+                    nearestGuid = cp.guid;
+                    bestRef = 'start';
+                  }
+                  if (dEnd < bestDist) {
+                    bestDist = dEnd;
+                    nearestGuid = cp.guid;
+                    bestRef = 'end';
+                  }
+                }
+              }
+              return {
+                guid: nearestGuid || '',
+                ref: nearestGuid ? bestRef : undefined,
+                point: pt,
+              };
+            };
+            const refA = findNearestRef(firstPoint);
+            const refB = findNearestRef([x, y]);
+            createDimension({
+              ref_a: refA,
+              ref_b: refB,
+              kind: 'aligned',
+              offset: 1.5,
+            });
+          }
+          if (chainTools) {
+            setFirstPoint([x, y]);
+          } else {
+            setFirstPoint(null);
+            setCurrentPoint(null);
+          }
+        }
+      } else if (activeTool === 'SEC') {
+        if (!firstPoint) {
+          setFirstPoint([x, y]);
+        } else {
+          const secDist = Math.hypot(x - firstPoint[0], y - firstPoint[1]);
+          if (secDist >= 1.0) {
+            const secNum = views.filter((v) => v.type === 'section').length + 1;
+            const newId = `view-section-${Date.now()}`;
+            addView({
+              id: newId,
+              name: `Building Section ${secNum}`,
+              type: 'section',
+              scale: '1/4" = 1\'-0"',
+              detailLevel: 'fine',
+              visualStyle: 'hidden_line',
+              viewRange: { top: 8.0, cut: 4.0, bottom: 0.0, viewDepth: 0.0 },
+              line: { start: firstPoint, end: [x, y] },
+            });
+            setStatusMessage(`Created Building Section ${secNum}`);
+          }
+          setFirstPoint(null);
+          setCurrentPoint(null);
         }
       }
     }
@@ -1374,6 +1454,93 @@ export const PlanViewport2D: React.FC = () => {
             );
           })}
 
+          {/* 6c. Section Cut Lines on Floor Plans */}
+          {currentView?.type === 'floor_plan' &&
+            views
+              .filter((v) => v.type === 'section')
+              .map((secView, secIdx) => {
+                const line = secView.line || { start: [-2.0, 15.0], end: [35.0, 15.0] };
+                const s = line.start;
+                const e = line.end;
+                const dx = e[0] - s[0];
+                const dy = e[1] - s[1];
+                const len = Math.hypot(dx, dy);
+                if (len < 0.1) return null;
+                const nx = -dy / len;
+                const ny = dx / len;
+                const headR = 0.65;
+                const tag = String(secIdx + 1);
+
+                return (
+                  <g key={`sec-line-${secView.id}`} className="section-marker select-none">
+                    <line
+                      x1={s[0]}
+                      y1={s[1]}
+                      x2={e[0]}
+                      y2={e[1]}
+                      stroke="#0284c7"
+                      strokeWidth="1.2"
+                      strokeDasharray="6 3 2 3"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    <circle
+                      cx={s[0]}
+                      cy={s[1]}
+                      r={headR}
+                      fill="#0284c7"
+                      className="cursor-pointer hover:fill-sky-700 transition-colors"
+                      onClick={(evt) => {
+                        evt.stopPropagation();
+                        setActiveViewId(secView.id);
+                      }}
+                    />
+                    <polygon
+                      points={`${s[0] + nx * 0.9},${s[1] + ny * 0.9} ${s[0] + nx * 0.4 - ny * 0.3},${s[1] + ny * 0.4 + nx * 0.3} ${s[0] + nx * 0.4 + ny * 0.3},${s[1] + ny * 0.4 - nx * 0.3}`}
+                      fill="#0284c7"
+                    />
+                    <text
+                      x={s[0]}
+                      y={-s[1] + 0.16}
+                      transform="scale(1, -1)"
+                      textAnchor="middle"
+                      fontSize="0.4"
+                      fontWeight="bold"
+                      fill="#ffffff"
+                      className="pointer-events-none"
+                    >
+                      {tag}
+                    </text>
+                    <circle
+                      cx={e[0]}
+                      cy={e[1]}
+                      r={headR}
+                      fill="#0284c7"
+                      className="cursor-pointer hover:fill-sky-700 transition-colors"
+                      onClick={(evt) => {
+                        evt.stopPropagation();
+                        setActiveViewId(secView.id);
+                      }}
+                    />
+                    <polygon
+                      points={`${e[0] + nx * 0.9},${e[1] + ny * 0.9} ${e[0] + nx * 0.4 - ny * 0.3},${e[1] + ny * 0.4 + nx * 0.3} ${e[0] + nx * 0.4 + ny * 0.3},${e[1] + ny * 0.4 - nx * 0.3}`}
+                      fill="#0284c7"
+                    />
+                    <text
+                      x={e[0]}
+                      y={-e[1] + 0.16}
+                      transform="scale(1, -1)"
+                      textAnchor="middle"
+                      fontSize="0.4"
+                      fontWeight="bold"
+                      fill="#ffffff"
+                      className="pointer-events-none"
+                    >
+                      {tag}
+                    </text>
+                  </g>
+                );
+              })}
+
           {/* 6b. In-Canvas Temporary Selection Dimension with Real Witness Lines (Task 2.8) */}
           {tempDimension && tempDimension.witnessP1 && tempDimension.witnessP2 && (
             (() => {
@@ -1808,6 +1975,73 @@ export const PlanViewport2D: React.FC = () => {
                       Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]),
                       displayUnit
                     )}
+                  </text>
+                </>
+              )}
+              {activeTool === 'DI' && (
+                <>
+                  <line
+                    x1={firstPoint[0]}
+                    y1={firstPoint[1]}
+                    x2={currentPoint[0]}
+                    y2={currentPoint[1]}
+                    stroke="#0284c7"
+                    strokeWidth="1.5"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  <circle cx={firstPoint[0]} cy={firstPoint[1]} r="0.10" fill="#0284c7" />
+                  <circle cx={currentPoint[0]} cy={currentPoint[1]} r="0.10" fill="#0284c7" />
+                  <text
+                    x={(firstPoint[0] + currentPoint[0]) / 2}
+                    y={-((firstPoint[1] + currentPoint[1]) / 2) - 0.25}
+                    transform="scale(1, -1)"
+                    textAnchor="middle"
+                    fontSize="0.22"
+                    fontFamily="JetBrains Mono, monospace"
+                    fontWeight="bold"
+                    fill="#0284c7"
+                    paintOrder="stroke"
+                    stroke="#ffffff"
+                    strokeWidth="0.08"
+                  >
+                    {formatLength(
+                      Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]),
+                      displayUnit
+                    )}
+                  </text>
+                </>
+              )}
+              {activeTool === 'SEC' && (
+                <>
+                  <line
+                    x1={firstPoint[0]}
+                    y1={firstPoint[1]}
+                    x2={currentPoint[0]}
+                    y2={currentPoint[1]}
+                    stroke="#0284c7"
+                    strokeWidth="1.5"
+                    strokeDasharray="6 3 2 3"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  <circle cx={firstPoint[0]} cy={firstPoint[1]} r="0.35" fill="#0284c7" />
+                  <circle cx={currentPoint[0]} cy={currentPoint[1]} r="0.35" fill="#0284c7" />
+                  <text
+                    x={(firstPoint[0] + currentPoint[0]) / 2}
+                    y={-((firstPoint[1] + currentPoint[1]) / 2) - 0.25}
+                    transform="scale(1, -1)"
+                    textAnchor="middle"
+                    fontSize="0.22"
+                    fontFamily="JetBrains Mono, monospace"
+                    fontWeight="bold"
+                    fill="#0284c7"
+                    paintOrder="stroke"
+                    stroke="#ffffff"
+                    strokeWidth="0.08"
+                  >
+                    Section Line ({formatLength(
+                      Math.hypot(currentPoint[0] - firstPoint[0], currentPoint[1] - firstPoint[1]),
+                      displayUnit
+                    )})
                   </text>
                 </>
               )}
@@ -2289,6 +2523,8 @@ export const PlanViewport2D: React.FC = () => {
               {activeTool === 'SB' && (!firstPoint ? 'FLOOR SLAB TOOL (SB): Click 1st corner for floor slab' : `Click opposite corner to place floor slab (${Math.abs((currentPoint?.[0] || 0) - firstPoint[0]).toFixed(1)}' × ${Math.abs((currentPoint?.[1] || 0) - firstPoint[1]).toFixed(1)}')`)}
               {activeTool === 'DR' && 'DOOR TOOL (DR): Click near any wall to place door'}
               {activeTool === 'WN' && 'WINDOW TOOL (WN): Click near any wall to place window'}
+              {activeTool === 'DI' && (!firstPoint ? 'ALIGNED DIMENSION (DI): Click 1st reference point' : `Click 2nd point to place dimension (${formatLength(Math.hypot((currentPoint?.[0] || 0) - firstPoint[0], (currentPoint?.[1] || 0) - firstPoint[1]), displayUnit)})`)}
+              {activeTool === 'SEC' && (!firstPoint ? 'SECTION TOOL (SEC): Click 1st point for section cut line' : `Click 2nd point to place section cut (${formatLength(Math.hypot((currentPoint?.[0] || 0) - firstPoint[0], (currentPoint?.[1] || 0) - firstPoint[1]), displayUnit)})`)}
             </span>
             <button
               onClick={() => {

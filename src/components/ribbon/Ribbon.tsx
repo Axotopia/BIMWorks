@@ -882,8 +882,19 @@ export const Ribbon: React.FC = () => {
                 'Section',
                 'SEC',
                 <Scissors size={22} className="text-[#ea580c]" />,
-                () => firstSection && setActiveViewId(firstSection.id),
-                firstSection ? undefined : 'No section view in this project'
+                undefined,
+                notYet('SEC')
+              )}
+              {renderToolButton(
+                'select',
+                'Elevation',
+                'EL',
+                <Eye size={22} className="text-[#0284c7]" />,
+                () => {
+                  const firstElev = views.find((v) => v.type === 'elevation');
+                  if (firstElev) setActiveViewId(firstElev.id);
+                },
+                views.some((v) => v.type === 'elevation') ? undefined : 'No elevation in this project'
               )}
               {renderToolButton(
                 'SHT',

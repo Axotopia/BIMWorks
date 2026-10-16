@@ -545,6 +545,7 @@ interface BimStoreState {
   clearKeyBuffer: () => void;
 
   setActiveViewId: (id: string) => void;
+  addView: (view: ViewDefinition) => void;
   /** Assigns the storey a 2D view draws, then refetches it. */
   setViewLevel: (viewId: string, levelId: string | undefined) => void;
   /** Sets the cut plane as a height ABOVE the view's level, then refetches. */
@@ -793,6 +794,43 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       type: 'section',
       scale: '1/4" = 1\'-0"',
       detailLevel: 'fine',
+      visualStyle: 'hidden_line',
+      viewRange: { ...DEFAULT_VIEW_RANGE },
+      line: { start: [-2.0, 15.0], end: [35.0, 15.0] },
+    },
+    {
+      id: 'view-elev-s',
+      name: 'Elevation: South',
+      type: 'elevation',
+      scale: '1/4" = 1\'-0"',
+      detailLevel: 'medium',
+      visualStyle: 'hidden_line',
+      viewRange: { ...DEFAULT_VIEW_RANGE },
+    },
+    {
+      id: 'view-elev-n',
+      name: 'Elevation: North',
+      type: 'elevation',
+      scale: '1/4" = 1\'-0"',
+      detailLevel: 'medium',
+      visualStyle: 'hidden_line',
+      viewRange: { ...DEFAULT_VIEW_RANGE },
+    },
+    {
+      id: 'view-elev-e',
+      name: 'Elevation: East',
+      type: 'elevation',
+      scale: '1/4" = 1\'-0"',
+      detailLevel: 'medium',
+      visualStyle: 'hidden_line',
+      viewRange: { ...DEFAULT_VIEW_RANGE },
+    },
+    {
+      id: 'view-elev-w',
+      name: 'Elevation: West',
+      type: 'elevation',
+      scale: '1/4" = 1\'-0"',
+      detailLevel: 'medium',
       visualStyle: 'hidden_line',
       viewRange: { ...DEFAULT_VIEW_RANGE },
     },
@@ -1058,6 +1096,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       get().fetch2DSlice(cut);
     }
   },
+
+  addView: (view) => set((s) => ({ views: [...s.views, view] })),
 
   setActiveSheetId: (id) => set({ activeSheetId: id }),
 
