@@ -6,4 +6,3 @@ __pycache__/
 *.orlt
 *.bimworks
 .DS_Store
-archive/
