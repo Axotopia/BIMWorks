@@ -40,7 +40,7 @@ try {
   }
 }
 
-const { findSnapCandidate, segmentIntersection, distToSegment, isBoxInside, isBoxCrossing } = snapEngine;
+const { findSnapCandidate, segmentIntersection, distToSegment, isBoxInside, isBoxCrossing, project3DToScreen } = snapEngine;
 
 let passed = 0;
 let failed = 0;
@@ -151,7 +151,74 @@ check('extension candidate resolves before segment start',
   `kind: ${hitExtBackward?.kind}, pt: [${hitExtBackward?.point}]`
 );
 
-// 6. Grid snap (fallthrough when no geometry candidate is near)
+// 6. Close loop candidate
+const hitClose = findSnapCandidate([0.05, 0.05], {
+  scale: 20,
+  segments: [],
+  closePoint: [0, 0],
+});
+check('close candidate resolves near closePoint',
+  hitClose?.kind === 'close' && hitClose.point[0] === 0 && hitClose.point[1] === 0,
+  `kind: ${hitClose?.kind}, pt: [${hitClose?.point}]`
+);
+
+// 7. Axis Lock candidate
+const hitAxisX = findSnapCandidate([7.2, 3.4], {
+  scale: 20,
+  segments: [],
+  axisLock: { axis: 'x', origin: [0, 2] },
+});
+check('axis lock candidate locks coordinate to locked axis',
+  hitAxisX?.kind === 'axis_lock' && hitAxisX.point[0] === 7.2 && hitAxisX.point[1] === 2,
+  `kind: ${hitAxisX?.kind}, pt: [${hitAxisX?.point}]`
+);
+
+// 8. Reference Lock candidate
+const hitRefLock = findSnapCandidate([4.0, 1.2], {
+  scale: 20,
+  segments: [],
+  referenceLock: { p1: [0, 0], p2: [10, 0], guid: 'ref-wall' },
+});
+check('reference lock candidate projects onto reference segment',
+  hitRefLock?.kind === 'reference_lock' && Math.abs(hitRefLock.point[0] - 4.0) < 1e-4 && Math.abs(hitRefLock.point[1] - 0) < 1e-4,
+  `kind: ${hitRefLock?.kind}, pt: [${hitRefLock?.point}], source: ${hitRefLock?.sourceGuid}`
+);
+
+// 9. Origin Snap candidate
+const hitOrigin = findSnapCandidate([0.05, -0.05], {
+  scale: 20,
+  segments: [],
+  enableOriginSnap: true,
+});
+check('origin candidate resolves at [0, 0]',
+  hitOrigin?.kind === 'origin' && hitOrigin.point[0] === 0 && hitOrigin.point[1] === 0,
+  `kind: ${hitOrigin?.kind}, pt: [${hitOrigin?.point}]`
+);
+
+// 10. On-Edge Snap candidate
+const hitOnEdge = findSnapCandidate([3.0, 0.05], {
+  scale: 20,
+  segments: [segH],
+  enableOnEdgeSnap: true,
+});
+check('on-edge candidate resolves along interior of segment',
+  hitOnEdge?.kind === 'on_edge' && Math.abs(hitOnEdge.point[0] - 3.0) < 1e-4 && Math.abs(hitOnEdge.point[1] - 0.0) < 1e-4,
+  `kind: ${hitOnEdge?.kind}, pt: [${hitOnEdge?.point}]`
+);
+
+// 11. Aligned Snap candidate
+const hitAligned = findSnapCandidate([10.02, 7.5], {
+  scale: 20,
+  segments: [segH],
+  activePoint: [0, 0],
+  enableAlignedSnap: true,
+});
+check('aligned candidate aligns with geometry endpoint coordinate',
+  hitAligned?.kind === 'aligned' && Math.abs(hitAligned.point[0] - 10.0) < 1e-4,
+  `kind: ${hitAligned?.kind}, pt: [${hitAligned?.point}]`
+);
+
+// 12. Grid snap (fallthrough when no geometry candidate is near)
 const hitGrid = findSnapCandidate([7.35, 2.65], {
   scale: 20,
   segments: [segH],
@@ -166,6 +233,17 @@ check('grid candidate resolves when away from geometry',
 
 // Priority checks:
 console.log('\n--- SnapEngine Gate: Priority Hierarchy ---');
+
+// Close vs Endpoint:
+const prioCloseVsEnd = findSnapCandidate([10.02, 0.02], {
+  scale: 20,
+  segments: [segH],
+  closePoint: [10, 0],
+});
+check('close takes precedence when closing loop at start point',
+  prioCloseVsEnd?.kind === 'close',
+  `got: ${prioCloseVsEnd?.kind}`
+);
 
 // Intersection vs Endpoint: intersecting lines at endpoint [10, 0]
 const segH2 = { p1: [10, 0], p2: [10, 5], guid: 'wall-corner' };
@@ -186,6 +264,28 @@ const prioEndVsMid = findSnapCandidate([10.02, 0.02], {
 check('endpoint beats midpoint near endpoint',
   prioEndVsMid?.kind === 'endpoint',
   `got: ${prioEndVsMid?.kind}`
+);
+
+// Endpoint vs Axis Lock (Named points take precedence over axis locks)
+const prioEndVsAxis = findSnapCandidate([10.02, 0.02], {
+  scale: 20,
+  segments: [segH],
+  axisLock: { axis: 'x', origin: [0, 0] },
+});
+check('endpoint takes precedence over axis lock (named point invariance)',
+  prioEndVsAxis?.kind === 'endpoint',
+  `got: ${prioEndVsAxis?.kind}`
+);
+
+// Endpoint vs Reference Lock
+const prioEndVsRef = findSnapCandidate([10.02, 0.02], {
+  scale: 20,
+  segments: [segH],
+  referenceLock: { p1: [0, 0], p2: [10, 0] },
+});
+check('endpoint takes precedence over reference lock',
+  prioEndVsRef?.kind === 'endpoint',
+  `got: ${prioEndVsRef?.kind}`
 );
 
 // Perpendicular vs Extension:
@@ -247,6 +347,24 @@ check('isBoxInside returns false for outside box', isBoxInside(outsideBox, selBo
 check('isBoxCrossing returns true for enclosed box', isBoxCrossing(insideBox, selBox) === true);
 check('isBoxCrossing returns true for crossing box', isBoxCrossing(crossingBox, selBox) === true);
 check('isBoxCrossing returns false for outside box', isBoxCrossing(outsideBox, selBox) === false);
+
+console.log('\n--- SnapEngine Gate: 3D Projection Parity ---');
+const identityMat = [
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+];
+const screenOrigin = project3DToScreen([0, 0, 0], identityMat, 800, 600);
+check('project3DToScreen maps (0,0,0) to center of viewport',
+  Math.abs(screenOrigin[0] - 400) < 1e-4 && Math.abs(screenOrigin[1] - 300) < 1e-4,
+  `got: [${screenOrigin}]`
+);
+const screenTopRight = project3DToScreen([1, 1, 0], identityMat, 800, 600);
+check('project3DToScreen maps (1,1,0) to top-right viewport coordinate',
+  Math.abs(screenTopRight[0] - 800) < 1e-4 && Math.abs(screenTopRight[1] - 0) < 1e-4,
+  `got: [${screenTopRight}]`
+);
 
 console.log('\n------------------------------------------------------------------------');
 console.log(`SNAP-ENGINE GATE: ${passed} passed, ${failed} failed`);

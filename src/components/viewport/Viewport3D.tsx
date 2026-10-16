@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as THREE from 'three';
 import { useBimStore, ZOOM_EXTENTS_EVENT } from '../../store/useBimStore';
 import { formatLength, tryParseLength } from '../../utils/units';
 import { Scissors, Maximize, RotateCw, Move, Lock } from 'lucide-react';
 import { ContextMenu } from '../common/ContextMenu';
+import { findSnapCandidate, SnapSegment } from '../../interaction/snapEngine';
 
 /**
  * UI-P0-13: pointer capture over a React synthetic mouse event.
@@ -161,6 +162,58 @@ export const Viewport3D: React.FC = () => {
 
   const [editingDimValue, setEditingDimValue] = useState<string>('');
   const [isEditingDim, setIsEditingDim] = useState<boolean>(false);
+
+  const snapSegments = useMemo<SnapSegment[]>(() => {
+    const segs: SnapSegment[] = [];
+    for (const elem of Object.values(elements)) {
+      if (elem.start && elem.end && elem.ifc_class?.includes('Wall')) {
+        segs.push({
+          p1: [elem.start[0], elem.start[1]],
+          p2: [elem.end[0], elem.end[1]],
+          guid: elem.guid,
+        });
+      }
+    }
+    for (const g of grids) {
+      if (g.start && g.end) {
+        segs.push({
+          p1: [g.start[0], g.start[1]],
+          p2: [g.end[0], g.end[1]],
+          guid: g.guid,
+        });
+      }
+    }
+    return segs;
+  }, [elements, grids]);
+
+  const getSnappedPoint3D = useCallback(
+    (rawX: number, rawY: number, activePt?: [number, number] | null, forceOrtho = false): [number, number] => {
+      if (!cameraRef.current || !containerRef.current) {
+        return [rawX, rawY];
+      }
+      const rect = containerRef.current.getBoundingClientRect();
+      const p1 = new THREE.Vector3(rawX, rawY, 0).project(cameraRef.current);
+      const p2 = new THREE.Vector3(rawX + 1, rawY, 0).project(cameraRef.current);
+      const screenDist = Math.hypot(
+        ((p2.x - p1.x) * rect.width) / 2,
+        ((p2.y - p1.y) * rect.height) / 2
+      );
+      const scale3D = Math.max(5, screenDist);
+
+      const snap = findSnapCandidate([rawX, rawY], {
+        scale: scale3D,
+        pixelTolerance: 14,
+        activePoint: activePt,
+        segments: snapSegments,
+        enableGridSnap: true,
+        gridSize: 0.5,
+        forceOrtho,
+      });
+
+      return snap ? snap.point : [rawX, rawY];
+    },
+    [snapSegments]
+  );
 
   /**
    * UI-P0-10/UI-P0-11: discard every piece of in-progress interaction state.
@@ -530,15 +583,15 @@ export const Viewport3D: React.FC = () => {
         raycaster.ray.intersectPlane(groundPlane, intersectPt);
 
         if (!wallStartPoint) {
-          // First point: quantised to a 0.5 ft (6 in) grid. UI-P0-8: the comment
-          // said 0.5 m. UI-P1-3 replaces this with the shared SnapEngine.
-          const x = Math.round(intersectPt.x * 2) / 2;
-          const y = Math.round(intersectPt.y * 2) / 2;
+          const [x, y] = getSnappedPoint3D(intersectPt.x, intersectPt.y, null, e.shiftKey);
           setWallStartPoint([x, y, 0]);
         } else {
-          // Second point: create wall
-          const x = Math.round(intersectPt.x * 2) / 2;
-          const y = Math.round(intersectPt.y * 2) / 2;
+          const [x, y] = getSnappedPoint3D(
+            intersectPt.x,
+            intersectPt.y,
+            [wallStartPoint[0], wallStartPoint[1]],
+            e.shiftKey
+          );
           createWall(wallStartPoint, [x, y, 0]);
           setWallStartPoint(null);
           setWallCurrentPoint(null);
@@ -553,12 +606,10 @@ export const Viewport3D: React.FC = () => {
         raycaster.ray.intersectPlane(groundPlane, intersectPt);
 
         if (!boxStartPoint) {
-          const x = Math.round(intersectPt.x * 2) / 2;
-          const y = Math.round(intersectPt.y * 2) / 2;
+          const [x, y] = getSnappedPoint3D(intersectPt.x, intersectPt.y, null, e.shiftKey);
           setBoxStartPoint([x, y]);
         } else {
-          const x2 = Math.round(intersectPt.x * 2) / 2;
-          const y2 = Math.round(intersectPt.y * 2) / 2;
+          const [x2, y2] = getSnappedPoint3D(intersectPt.x, intersectPt.y, boxStartPoint, e.shiftKey);
           const minX = Math.min(boxStartPoint[0], x2);
           const maxX = Math.max(boxStartPoint[0], x2);
           const minY = Math.min(boxStartPoint[1], y2);
@@ -579,12 +630,10 @@ export const Viewport3D: React.FC = () => {
         raycaster.ray.intersectPlane(groundPlane, intersectPt);
 
         if (!boxStartPoint) {
-          const x = Math.round(intersectPt.x * 2) / 2;
-          const y = Math.round(intersectPt.y * 2) / 2;
+          const [x, y] = getSnappedPoint3D(intersectPt.x, intersectPt.y, null, e.shiftKey);
           setBoxStartPoint([x, y]);
         } else {
-          const x2 = Math.round(intersectPt.x * 2) / 2;
-          const y2 = Math.round(intersectPt.y * 2) / 2;
+          const [x2, y2] = getSnappedPoint3D(intersectPt.x, intersectPt.y, boxStartPoint, e.shiftKey);
           const minX = Math.min(boxStartPoint[0], x2);
           const maxX = Math.max(boxStartPoint[0], x2);
           const minY = Math.min(boxStartPoint[1], y2);
@@ -722,11 +771,8 @@ export const Viewport3D: React.FC = () => {
       const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
       const pt = new THREE.Vector3();
       raycaster.ray.intersectPlane(groundPlane, pt);
-      setWallCurrentPoint([
-        Math.round(pt.x * 2) / 2,
-        Math.round(pt.y * 2) / 2,
-        0,
-      ]);
+      const [x, y] = getSnappedPoint3D(pt.x, pt.y, [wallStartPoint[0], wallStartPoint[1]], e.shiftKey);
+      setWallCurrentPoint([x, y, 0]);
     }
 
     // Roof / Slab creation preview
@@ -742,10 +788,8 @@ export const Viewport3D: React.FC = () => {
         const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
         const pt = new THREE.Vector3();
         raycaster.ray.intersectPlane(groundPlane, pt);
-        setBoxCurrentPoint([
-          Math.round(pt.x * 2) / 2,
-          Math.round(pt.y * 2) / 2,
-        ]);
+        const [x, y] = getSnappedPoint3D(pt.x, pt.y, boxStartPoint, e.shiftKey);
+        setBoxCurrentPoint([x, y]);
       }
     }
   };

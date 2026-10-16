@@ -243,30 +243,7 @@ export const PlanViewport2D: React.FC = () => {
     return segs;
   }, [sliced2D, elements, grids, sketchSession]);
 
-  // Helper to snap to nearest existing sketch vertex within tolerance
-  const findSnapVertex = useCallback(
-    (arg1: number | [number, number], arg2?: number, tol = 0.35): [number, number] | null => {
-      if (!sketchSession) return null;
-      let mx: number, my: number;
-      if (Array.isArray(arg1)) {
-        mx = arg1[0];
-        my = arg1[1];
-      } else {
-        mx = arg1;
-        my = arg2 ?? 0;
-      }
-      for (const l of sketchSession.lines) {
-        if (Math.hypot(l.start[0] - mx, l.start[1] - my) <= tol) {
-          return l.start;
-        }
-        if (Math.hypot(l.end[0] - mx, l.end[1] - my) <= tol) {
-          return l.end;
-        }
-      }
-      return null;
-    },
-    [sketchSession]
-  );
+
 
   /** Set while a placement mousedown is completing, so the click that follows the
    *  same gesture does not also re-select and re-derive a temporary dimension. */
@@ -444,10 +421,7 @@ export const PlanViewport2D: React.FC = () => {
         return snap.point;
       }
       setActiveSnapCandidate(null);
-      const snapGrid = 0.25;
-      const snappedX = Math.round(raw[0] / snapGrid) * snapGrid;
-      const snappedY = Math.round(raw[1] / snapGrid) * snapGrid;
-      return [snappedX, snappedY];
+      return raw;
     },
     [getRawModelCoords, snapsEnabled, scale, sketchSession, sketchStartPoint, firstPoint, snapSegments]
   );
@@ -507,23 +481,19 @@ export const PlanViewport2D: React.FC = () => {
       const [x, y] = coords;
 
       if (sketchSession) {
-        const snap = findSnapVertex(x, y);
-        const finalX = snap ? snap[0] : x;
-        const finalY = snap ? snap[1] : y;
-
         if (sketchSession.drawTool === 'line') {
           if (!sketchStartPoint) {
-            setSketchStartPoint([finalX, finalY]);
+            setSketchStartPoint([x, y]);
           } else {
-            addSketchLine(sketchStartPoint, [finalX, finalY]);
+            addSketchLine(sketchStartPoint, [x, y]);
             // Chain to next point (Revit chain sketch mode)
-            setSketchStartPoint([finalX, finalY]);
+            setSketchStartPoint([x, y]);
           }
         } else if (sketchSession.drawTool === 'rectangle') {
           if (!sketchStartPoint) {
-            setSketchStartPoint([finalX, finalY]);
+            setSketchStartPoint([x, y]);
           } else {
-            addSketchRectangle(sketchStartPoint, [finalX, finalY]);
+            addSketchRectangle(sketchStartPoint, [x, y]);
             setSketchStartPoint(null);
           }
         }
@@ -1893,50 +1863,6 @@ export const PlanViewport2D: React.FC = () => {
                   )}
                 </g>
               )}
-
-              {/* Snap Point Indicator */}
-              {currentPoint && (() => {
-                const snap = findSnapVertex(currentPoint);
-                if (!snap) return null;
-                return (
-                  <g className="pointer-events-none select-none">
-                    <circle
-                      cx={snap[0]}
-                      cy={snap[1]}
-                      r="0.18"
-                      fill="none"
-                      stroke="#ec4899"
-                      strokeWidth="2"
-                      vectorEffect="non-scaling-stroke"
-                      className="animate-ping"
-                    />
-                    <circle
-                      cx={snap[0]}
-                      cy={snap[1]}
-                      r="0.14"
-                      fill="#ec4899"
-                      stroke="#ffffff"
-                      strokeWidth="1.5"
-                      vectorEffect="non-scaling-stroke"
-                    />
-                    <text
-                      x={snap[0]}
-                      y={-snap[1] - 0.28}
-                      transform="scale(1, -1)"
-                      textAnchor="middle"
-                      fontSize="0.18"
-                      fontFamily="Inter, sans-serif"
-                      fontWeight="bold"
-                      fill="#be185d"
-                      paintOrder="stroke"
-                      stroke="#ffffff"
-                      strokeWidth="0.06"
-                    >
-                      Endpoint Snap
-                    </text>
-                  </g>
-                );
-              })()}
             </g>
           )}
 

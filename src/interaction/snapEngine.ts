@@ -12,7 +12,19 @@
  * 2. Window vs Crossing selection box containment helpers.
  */
 
-export type SnapKind = 'intersection' | 'endpoint' | 'midpoint' | 'perpendicular' | 'extension' | 'grid';
+export type SnapKind =
+  | 'axis_lock'
+  | 'reference_lock'
+  | 'close'
+  | 'endpoint'
+  | 'intersection'
+  | 'midpoint'
+  | 'origin'
+  | 'on_edge'
+  | 'aligned'
+  | 'perpendicular'
+  | 'extension'
+  | 'grid';
 
 export interface SnapCandidate {
   point: [number, number];
@@ -38,6 +50,12 @@ export interface SnapOptions {
   enableGridSnap?: boolean;
   gridSize?: number; // default 0.25 ft (3 inches)
   forceOrtho?: boolean; // Shift key held
+  axisLock?: { axis: 'x' | 'y'; origin: [number, number] };
+  referenceLock?: { p1: [number, number]; p2: [number, number]; guid?: string };
+  closePoint?: [number, number] | null;
+  enableOriginSnap?: boolean;
+  enableOnEdgeSnap?: boolean;
+  enableAlignedSnap?: boolean;
 }
 
 /** Intersection of two 2D line segments, or null if parallel / outside segments */
@@ -108,6 +126,20 @@ export function findSnapCandidate(
   const pixelTol = options.pixelTolerance ?? 14;
   const tol = pixelTol / Math.max(1, options.scale);
   const [mx, my] = cursor;
+
+  // 0. Close loop (snapping back to starting point of chain)
+  if (options.closePoint) {
+    const dClose = Math.hypot(options.closePoint[0] - mx, options.closePoint[1] - my);
+    if (dClose <= tol) {
+      return {
+        point: [options.closePoint[0], options.closePoint[1]],
+        kind: 'close',
+        description: 'Close Loop',
+        distance: dClose,
+        sources: [],
+      };
+    }
+  }
 
   // 1. Intersections between segments within search radius
   const nearbySegments = options.segments.filter(
@@ -186,6 +218,101 @@ export function findSnapCandidate(
     }
   }
   if (bestMidpoint) return bestMidpoint;
+
+  // 4a. Axis Lock (e.g. Shift constraint or explicit axis lock)
+  if (options.axisLock) {
+    const { axis, origin } = options.axisLock;
+    const pt: [number, number] = axis === 'x' ? [mx, origin[1]] : [origin[0], my];
+    const d = axis === 'x' ? Math.abs(my - origin[1]) : Math.abs(mx - origin[0]);
+    return {
+      point: pt,
+      kind: 'axis_lock',
+      description: `Axis Lock (${axis.toUpperCase()})`,
+      distance: d,
+      sources: [],
+    };
+  }
+
+  // 4b. Reference Lock (locked to a specific reference edge)
+  if (options.referenceLock) {
+    const res = distToSegment([mx, my], options.referenceLock.p1, options.referenceLock.p2);
+    return {
+      point: [Number(res.projected[0].toFixed(4)), Number(res.projected[1].toFixed(4))],
+      kind: 'reference_lock',
+      description: 'Reference Lock',
+      distance: res.distance,
+      sources: options.referenceLock.guid ? [options.referenceLock.guid] : [],
+      sourceGuid: options.referenceLock.guid,
+    };
+  }
+
+  // 4c. Origin Snap: [0, 0]
+  if (options.enableOriginSnap) {
+    const dOrigin = Math.hypot(mx, my);
+    if (dOrigin <= tol) {
+      return {
+        point: [0, 0],
+        kind: 'origin',
+        description: 'Origin (0, 0)',
+        distance: dOrigin,
+        sources: [],
+      };
+    }
+  }
+
+  // 4d. On-Edge Snap: along segment interior
+  if (options.enableOnEdgeSnap) {
+    let bestOnEdge: SnapCandidate | null = null;
+    for (const s of nearbySegments) {
+      const res = distToSegment([mx, my], s.p1, s.p2);
+      if (res.t > 0.05 && res.t < 0.95 && res.distance <= tol) {
+        if (!bestOnEdge || res.distance < bestOnEdge.distance) {
+          bestOnEdge = {
+            point: [Number(res.projected[0].toFixed(4)), Number(res.projected[1].toFixed(4))],
+            kind: 'on_edge',
+            description: 'Nearest (On Edge)',
+            distance: res.distance,
+            sources: s.guid ? [s.guid] : [],
+            sourceGuid: s.guid,
+          };
+        }
+      }
+    }
+    if (bestOnEdge) return bestOnEdge;
+  }
+
+  // 4e. Aligned Snap: tracking shared X or Y coordinate with any segment endpoint
+  if (options.enableAlignedSnap && options.activePoint) {
+    let bestAligned: SnapCandidate | null = null;
+    for (const s of options.segments) {
+      for (const pt of [s.p1, s.p2]) {
+        if (Math.hypot(pt[0] - options.activePoint[0], pt[1] - options.activePoint[1]) < 1e-4) continue;
+        const dX = Math.abs(mx - pt[0]);
+        const dY = Math.abs(my - pt[1]);
+        if (dX <= tol && (!bestAligned || dX < bestAligned.distance)) {
+          bestAligned = {
+            point: [pt[0], my],
+            kind: 'aligned',
+            description: `Aligned X (${pt[0].toFixed(2)}')`,
+            distance: dX,
+            sources: s.guid ? [s.guid] : [],
+            sourceGuid: s.guid,
+          };
+        }
+        if (dY <= tol && (!bestAligned || dY < bestAligned.distance)) {
+          bestAligned = {
+            point: [mx, pt[1]],
+            kind: 'aligned',
+            description: `Aligned Y (${pt[1].toFixed(2)}')`,
+            distance: dY,
+            sources: s.guid ? [s.guid] : [],
+            sourceGuid: s.guid,
+          };
+        }
+      }
+    }
+    if (bestAligned) return bestAligned;
+  }
 
   // 4. Perpendicular / Orthogonal
   if (options.activePoint) {
@@ -346,4 +473,24 @@ export function isBoxCrossing(target: BoundingBox2D, sel: BoundingBox2D): boolea
     target.maxY < sel.minY ||
     target.minY > sel.maxY
   );
+}
+
+/**
+ * Projects a 3D point to 2D screen coordinates using a camera projection matrix and viewport dimensions.
+ */
+export function project3DToScreen(
+  point: [number, number, number],
+  viewProjectionMatrix: number[], // 16-element column-major matrix
+  viewportWidth: number,
+  viewportHeight: number
+): [number, number] {
+  const [x, y, z] = point;
+  const m = viewProjectionMatrix;
+  const w = m[3] * x + m[7] * y + m[11] * z + m[15];
+  const invW = Math.abs(w) > 1e-6 ? 1.0 / w : 1.0;
+  const ndcX = (m[0] * x + m[4] * y + m[8] * z + m[12]) * invW;
+  const ndcY = (m[1] * x + m[5] * y + m[9] * z + m[13]) * invW;
+  const screenX = ((ndcX + 1.0) / 2.0) * viewportWidth;
+  const screenY = ((-ndcY + 1.0) / 2.0) * viewportHeight;
+  return [screenX, screenY];
 }

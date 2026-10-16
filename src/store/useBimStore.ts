@@ -418,7 +418,7 @@ function extractPolygonFromLines(lines: SketchLine[]): { polygon: [number, numbe
     if (nextIdx === -1) {
       return {
         polygon: null,
-        error: `Open boundary detected: segment at (${currentEnd[0].toFixed(1)}m, ${currentEnd[1].toFixed(1)}m) does not connect to another line. All magenta lines must form a continuous closed loop.`,
+        error: `Open boundary detected: segment at (${formatLength(currentEnd[0])}, ${formatLength(currentEnd[1])}) does not connect to another line. All magenta lines must form a continuous closed loop.`,
       };
     }
 
@@ -436,7 +436,7 @@ function extractPolygonFromLines(lines: SketchLine[]): { polygon: [number, numbe
   if (dist(currentEnd, loopStart) > tol) {
     return {
       polygon: null,
-      error: `Boundary loop is not closed (gap between start and end is ${(dist(currentEnd, loopStart) * 100).toFixed(0)}cm). Close the loop by snapping to the starting point.`,
+      error: `Boundary loop is not closed (gap between start and end is ${formatLength(dist(currentEnd, loopStart))}). Close the loop by snapping to the starting point.`,
     };
   }
 
