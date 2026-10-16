@@ -627,6 +627,184 @@ def run_tests():
     check("start<->face_pos aligned set 4.0 succeeds", res_s_fp.get("status") == "updated")
     check("start<->face_pos aligned resolve returns 4.0", abs(mgr.resolve_dimension(dim_s_fp["id"]) - 4.0) < 1e-4)
 
+    # === ROUND 3 TESTS ===
+    def create_test_manager():
+        return BimModelManager()
+
+    # N1: Single-axis conflict retention
+    # An over-constraint on x with a clean solve on y must preserve the x conflict report
+    mgr_n1 = create_test_manager()
+    w_n1_a = mgr_n1.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], thickness=0.5)
+    w_n1_b = mgr_n1.add_wall([20.0, 5.0, 0.0], [30.0, 5.0, 0.0], thickness=0.5)
+    # Add align constraint on x between w_n1_a and w_n1_b
+    mgr_n1.add_align_constraint(w_n1_a["guid"], w_n1_b["guid"], axis="x")
+    # Add a conflicting locked dimension on x between them
+    mgr_n1.add_dimension_lock(w_n1_a["guid"], w_n1_b["guid"], locked_distance=10.0, axis="x")
+    # Move w_n1_a on x
+    mgr_n1._solve_constraints_after_move(w_n1_a["guid"])
+    check("N1: single-axis conflict preserved on last_constraint_conflict", mgr_n1.last_constraint_conflict is not None)
+    if mgr_n1.last_constraint_conflict:
+        check("N1: conflict reports axis x", mgr_n1.last_constraint_conflict.get("axis") == "x")
+        check("N1: conflict status is 'conflict'", mgr_n1.last_constraint_conflict.get("status") == "conflict")
+
+    # N2: Same-element lock does not poison multi-element scope
+    mgr_n2 = create_test_manager()
+    w_n2_a = mgr_n2.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], thickness=0.5)
+    w_n2_b = mgr_n2.add_wall([0.0, 10.0, 0.0], [10.0, 10.0, 0.0], thickness=0.5)
+    # Align w_n2_a and w_n2_b on axis x
+    mgr_n2.add_align_constraint(w_n2_a["guid"], w_n2_b["guid"], axis="x")
+    # Add a same-element locked dimension on w_n2_a
+    dim_n2 = mgr_n2.create_dimension(
+        ref_a={"kind": "wall_start", "sources": [{"element_guid": w_n2_a["guid"], "ordinal": 0}]},
+        ref_b={"kind": "wall_end", "sources": [{"element_guid": w_n2_a["guid"], "ordinal": 0}]},
+        axis="aligned",
+        is_locked=True,
+    )
+    cid_n2 = dim_n2.get("constraint_id")
+    check("N2: same-element lock constraint created", cid_n2 is not None and cid_n2 in mgr_n2.constraints)
+    check("N2: same-element lock type is length_lock", mgr_n2.constraints[cid_n2].get("type") == "length_lock")
+    # Now solve after move in multi-element scope (size 2)
+    mgr_n2._solve_constraints_after_move(w_n2_a["guid"])
+    check("N2: no false conflict in multi-element scope with same-element lock", mgr_n2.last_constraint_conflict is None)
+
+    # N3: Refresh origin_distance when locked dimension target is edited
+    mgr_n3 = create_test_manager()
+    w_n3_a = mgr_n3.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], thickness=0.5)
+    w_n3_b = mgr_n3.add_wall([20.0, 0.0, 0.0], [30.0, 0.0, 0.0], thickness=0.5)
+    dim_n3 = mgr_n3.create_dimension(
+        ref_a={"kind": "wall_start", "sources": [{"element_guid": w_n3_a["guid"], "ordinal": 0}]},
+        ref_b={"kind": "wall_start", "sources": [{"element_guid": w_n3_b["guid"], "ordinal": 0}]},
+        axis="x",
+        is_locked=True,
+    )
+    cid_n3 = dim_n3.get("constraint_id")
+    check("N3: initial locked distance is 20.0", abs(mgr_n3.constraints[cid_n3]["locked_distance"] - 20.0) < 1e-4)
+    # Set locked dimension to 25.0
+    res_n3 = mgr_n3.set_dimension_value(dim_n3["id"], 25.0)
+    check("N3: set_dimension_value on locked dim succeeds", res_n3.get("status") == "updated")
+    check("N3: stored dimension value is 25.0", abs(mgr_n3.dimensions[dim_n3["id"]]["value"] - 25.0) < 1e-4)
+    measured_n3 = mgr_n3.resolve_dimension(dim_n3["id"])
+    check("N3: resolve_dimension matches target 25.0", abs(measured_n3 - 25.0) < 1e-4)
+    check("N3: constraint locked_distance updated to 25.0", abs(mgr_n3.constraints[cid_n3]["locked_distance"] - 25.0) < 1e-4)
+    check("N3: constraint origin_distance updated to 25.0", abs(mgr_n3.constraints[cid_n3]["origin_distance"] - 25.0) < 1e-4)
+
+    # N4: Reject axis="z" for non-level references
+    mgr_n4 = create_test_manager()
+    w_n4_a = mgr_n4.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], thickness=0.5)
+    w_n4_b = mgr_n4.add_wall([0.0, 5.0, 0.0], [10.0, 5.0, 0.0], thickness=0.5)
+    z_rejected = False
+    try:
+        mgr_n4.create_dimension(
+            ref_a={"kind": "wall_start", "sources": [{"element_guid": w_n4_a["guid"], "ordinal": 0}]},
+            ref_b={"kind": "wall_start", "sources": [{"element_guid": w_n4_b["guid"], "ordinal": 0}]},
+            axis="z",
+        )
+    except ValueError:
+        z_rejected = True
+    check("N4: create_dimension rejects axis='z' for walls", z_rejected)
+
+    # Bus rejects axis="z"
+    bus_z_rejected = False
+    try:
+        from command_bus import DimensionCreateParams
+        DimensionCreateParams(
+            ref_a={"kind": "wall_start", "sources": [{"element_guid": w_n4_a["guid"], "ordinal": 0}]},
+            ref_b={"kind": "wall_start", "sources": [{"element_guid": w_n4_b["guid"], "ordinal": 0}]},
+            axis="z",
+        )
+    except Exception:
+        bus_z_rejected = True
+    check("N4: DimensionCreateParams rejects axis='z'", bus_z_rejected)
+
+    # H1 Cross-Axis: x-aligned wall start<->face on axis y
+    mgr_h1 = create_test_manager()
+    w_h1_x = mgr_h1.add_wall([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], thickness=0.5) # half-thickness = 0.25
+    dim_h1_xy = mgr_h1.create_dimension(
+        ref_a={"kind": "wall_start", "sources": [{"element_guid": w_h1_x["guid"], "ordinal": 0}]},
+        ref_b={"kind": "wall_face_pos", "sources": [{"element_guid": w_h1_x["guid"], "ordinal": 0}]},
+        axis="y",
+    )
+    check("H1: x-aligned start<->face_pos on y initial is 0.25", abs(mgr_h1.resolve_dimension(dim_h1_xy["id"]) - 0.25) < 1e-4)
+    res_h1_xy = mgr_h1.set_dimension_value(dim_h1_xy["id"], 0.4)
+    check("H1: x-aligned start<->face_pos on y set 0.4 succeeds", res_h1_xy.get("status") == "updated")
+    check("H1: x-aligned start<->face_pos on y resolve returns 0.4", abs(mgr_h1.resolve_dimension(dim_h1_xy["id"]) - 0.4) < 1e-4)
+    check("H1: x-aligned thickness updated to 0.8", abs(mgr_h1.element_meta[w_h1_x["guid"]]["thickness"] - 0.8) < 1e-4)
+    check("H1: x-aligned wall length remains 10.0", abs(mgr_h1.element_meta[w_h1_x["guid"]]["length"] - 10.0) < 1e-4)
+
+    # H1 Cross-Axis: y-aligned wall start<->face on axis x
+    w_h1_y = mgr_h1.add_wall([0.0, 0.0, 0.0], [0.0, 10.0, 0.0], thickness=0.5)
+    dim_h1_yx = mgr_h1.create_dimension(
+        ref_a={"kind": "wall_start", "sources": [{"element_guid": w_h1_y["guid"], "ordinal": 0}]},
+        ref_b={"kind": "wall_face_pos", "sources": [{"element_guid": w_h1_y["guid"], "ordinal": 0}]},
+        axis="x",
+    )
+    check("H1: y-aligned start<->face_pos on x initial is 0.25", abs(mgr_h1.resolve_dimension(dim_h1_yx["id"]) - 0.25) < 1e-4)
+    res_h1_yx = mgr_h1.set_dimension_value(dim_h1_yx["id"], 0.35)
+    check("H1: y-aligned start<->face_pos on x set 0.35 succeeds", res_h1_yx.get("status") == "updated")
+    check("H1: y-aligned start<->face_pos on x resolve returns 0.35", abs(mgr_h1.resolve_dimension(dim_h1_yx["id"]) - 0.35) < 1e-4)
+    check("H1: y-aligned thickness updated to 0.7", abs(mgr_h1.element_meta[w_h1_y["guid"]]["thickness"] - 0.7) < 1e-4)
+    check("H1: y-aligned wall length remains 10.0", abs(mgr_h1.element_meta[w_h1_y["guid"]]["length"] - 10.0) < 1e-4)
+
+    # Full Matrix Sweep (§3.5): 10 pairs x 3 axes x 3 orientations
+    KINDS = ["wall_start", "wall_end", "wall_center", "wall_face_pos", "wall_face_neg"]
+    kind_pairs = []
+    for i in range(len(KINDS)):
+        for j in range(i + 1, len(KINDS)):
+            kind_pairs.append((KINDS[i], KINDS[j]))
+
+    orientations = [
+        ("x_aligned", [0.0, 0.0, 0.0], [10.0, 0.0, 0.0]),
+        ("y_aligned", [0.0, 0.0, 0.0], [0.0, 10.0, 0.0]),
+        ("diagonal",  [0.0, 0.0, 0.0], [6.0, 8.0, 0.0]),
+    ]
+    axes = ["aligned", "x", "y"]
+
+    matrix_successes = 0
+    matrix_safe_refusals = 0
+    matrix_corruptions = 0
+
+    for ori_name, sp, ep in orientations:
+        for ka, kb in kind_pairs:
+            for ax in axes:
+                sw_mgr = create_test_manager()
+                w = sw_mgr.add_wall(sp, ep, thickness=0.5)
+                gid = w["guid"]
+                orig_len = sw_mgr.element_meta[gid]["length"]
+                orig_th = sw_mgr.element_meta[gid]["thickness"]
+                try:
+                    d = sw_mgr.create_dimension(
+                        ref_a={"kind": ka, "sources": [{"element_guid": gid, "ordinal": 0}]},
+                        ref_b={"kind": kb, "sources": [{"element_guid": gid, "ordinal": 0}]},
+                        axis=ax,
+                    )
+                except Exception:
+                    continue
+
+                cur_val = sw_mgr.resolve_dimension(d["id"])
+                if cur_val is None or cur_val < 1e-3:
+                    # Degenerate zero distance
+                    continue
+
+                target = cur_val * 1.2
+                res = sw_mgr.set_dimension_value(d["id"], target)
+                if res.get("status") == "updated":
+                    new_val = sw_mgr.resolve_dimension(d["id"])
+                    if new_val is not None and abs(new_val - target) < 1e-3:
+                        matrix_successes += 1
+                    else:
+                        matrix_corruptions += 1
+                elif res.get("status") in ("failed", "error"):
+                    # Safe refusal: verify geometry untouched
+                    cur_len = sw_mgr.element_meta[gid]["length"]
+                    cur_th = sw_mgr.element_meta[gid]["thickness"]
+                    if abs(cur_len - orig_len) < 1e-4 and abs(cur_th - orig_th) < 1e-4:
+                        matrix_safe_refusals += 1
+                    else:
+                        matrix_corruptions += 1
+
+    check("Matrix sweep: zero corruptions across all combinations", matrix_corruptions == 0)
+    check("Matrix sweep: 78/78 non-degenerate combinations round-trip", matrix_successes == 78)
+
     print(f"\nRESULTS: {passed} passed, {failed} failed")
     if failed > 0:
         sys.exit(1)

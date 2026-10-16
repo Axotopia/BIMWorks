@@ -127,7 +127,7 @@ class DimensionCreateParams(BaseModel):
     kind: Literal["aligned", "linear", "angular", "radial"] = Field(default="aligned", description="Dimension type")
     ref_a: Dict[str, Any] = Field(..., description="First witness reference, e.g. {'guid': str, 'ref': 'start'}")
     ref_b: Dict[str, Any] = Field(..., description="Second witness reference, e.g. {'guid': str, 'ref': 'end'}")
-    axis: Literal["x", "y", "z", "aligned"] = Field(default="aligned", description="Measurement axis")
+    axis: Literal["x", "y", "aligned"] = Field(default="aligned", description="Measurement axis")
     offset: float = Field(default=1.0, description="Dimension line offset from reference in feet")
     value: Optional[float] = Field(default=None, description="Optional explicit initial value in feet")
     is_locked: bool = Field(default=False, description="Whether dimension is locked as constraint")
@@ -905,8 +905,28 @@ class CommandBusEngine:
             cid = dim.get("constraint_id")
             if p.is_locked:
                 if cid and cid in self.manager.constraints:
-                    self.manager.constraints[cid]["is_locked"] = True
-                    self.manager.constraints[cid]["locked_distance"] = float(dim.get("value", 0.0))
+                    c = self.manager.constraints[cid]
+                    c["is_locked"] = True
+                    val_float = float(dim.get("value", 0.0))
+                    c["locked_distance"] = val_float
+                    if c.get("type") == "length_lock":
+                        c["locked_length"] = val_float
+                    ref_a = c.get("ref_a") or dim.get("ref_a", {})
+                    ref_b = c.get("ref_b") or dim.get("ref_b", {})
+                    guid_a = c.get("guid_a")
+                    guid_b = c.get("guid_b")
+                    axis = c.get("axis", "x")
+                    if ref_a and ref_b and guid_a and guid_b and guid_a != guid_b and guid_a in self.manager.element_meta and guid_b in self.manager.element_meta:
+                        from references import resolve_reference_axis
+                        ca, _ = resolve_reference_axis(self.manager, ref_a, axis)
+                        cb, _ = resolve_reference_axis(self.manager, ref_b, axis)
+                        oa = self.manager.get_element_coord(guid_a, axis)
+                        ob = self.manager.get_element_coord(guid_b, axis)
+                        if ca is not None and cb is not None:
+                            delta_a = ca - oa
+                            delta_b = cb - ob
+                            s = 1.0 if (cb - ca) >= 0 else -1.0
+                            c["origin_distance"] = abs(s * val_float - (delta_b - delta_a))
                 else:
                     ref_a = dim.get("ref_a", {})
                     ref_b = dim.get("ref_b", {})
@@ -925,12 +945,14 @@ class CommandBusEngine:
                             )
                             dim["constraint_id"] = c.get("id")
                         elif not guid_b or guid_a == guid_b:
-                            c_id = f"dimlock_{uuid.uuid4().hex[:8]}"
+                            c_id = f"lenlock_{uuid.uuid4().hex[:8]}"
                             c = {
                                 "id": c_id,
-                                "type": "dimension_lock",
+                                "type": "length_lock",
+                                "guid": guid_a,
                                 "guid_a": guid_a,
                                 "guid_b": guid_a,
+                                "locked_length": float(dim.get("value", 0.0)),
                                 "locked_distance": float(dim.get("value", 0.0)),
                                 "axis": dim.get("axis", "aligned"),
                                 "is_locked": True,

@@ -142,6 +142,8 @@ class ConstraintSolver:
                     pair = {c.get("ref_guid"), c.get("target_guid")}
                 elif ctype == "dimension_lock":
                     pair = {c.get("guid_a"), c.get("guid_b")}
+                elif ctype == "length_lock":
+                    pair = {c.get("guid")}
                 elif ctype == "equalize":
                     pair = set(c.get("interior_guids") or []) | {
                         c.get("span_start_guid"), c.get("span_end_guid")
@@ -284,9 +286,26 @@ class ConstraintSolver:
                     applied.append(cid)
             elif ctype == "dimension_lock":
                 a, b = c.get("guid_a"), c.get("guid_b")
-                dist = c.get("origin_distance")
+                if not a or not b or a == b:
+                    continue
+                ref_a = c.get("ref_a")
+                ref_b = c.get("ref_b")
+                locked_dist = c.get("locked_distance")
+                dist = None
+                if ref_a and ref_b and locked_dist is not None:
+                    ca, _ = resolve_reference_axis(self.manager, ref_a, axis)
+                    cb, _ = resolve_reference_axis(self.manager, ref_b, axis)
+                    oa = self._position(a, axis)
+                    ob = self._position(b, axis)
+                    if ca is not None and cb is not None and oa is not None and ob is not None:
+                        delta_a = ca - oa
+                        delta_b = cb - ob
+                        s = 1.0 if (cb - ca) >= 0 else -1.0
+                        dist = abs(s * float(locked_dist) - (delta_b - delta_a))
                 if dist is None:
-                    dist = c.get("locked_distance")
+                    dist = c.get("origin_distance")
+                if dist is None:
+                    dist = locked_dist
                 if dist is None:
                     ref = self._position(a, axis)
                     cur = self._position(b, axis)
@@ -416,9 +435,26 @@ class ConstraintSolver:
                 elif ctype == "dimension_lock":
                     a = c.get("guid_a")
                     b = c.get("guid_b")
-                    dist = c.get("origin_distance")
+                    if not a or not b or a == b:
+                        continue
+                    ref_a = c.get("ref_a")
+                    ref_b = c.get("ref_b")
+                    locked_dist = c.get("locked_distance")
+                    dist = None
+                    if ref_a and ref_b and locked_dist is not None:
+                        ca, _ = resolve_reference_axis(self.manager, ref_a, axis)
+                        cb, _ = resolve_reference_axis(self.manager, ref_b, axis)
+                        oa = self._position(a, axis)
+                        ob = self._position(b, axis)
+                        if ca is not None and cb is not None and oa is not None and ob is not None:
+                            delta_a = ca - oa
+                            delta_b = cb - ob
+                            s = 1.0 if (cb - ca) >= 0 else -1.0
+                            dist = abs(s * float(locked_dist) - (delta_b - delta_a))
                     if dist is None:
-                        dist = c.get("locked_distance")
+                        dist = c.get("origin_distance")
+                    if dist is None:
+                        dist = locked_dist
                     if a in out and b in out:
                         orig_a = self._position(a, axis) or 0.0
                         orig_b = self._position(b, axis) or 0.0
