@@ -164,15 +164,16 @@ export interface Sliced2DData {
     id?: string;
     guid?: string | null;
     kind?: string;
-    start: [number, number];
-    end: [number, number];
+    start?: [number, number] | null;
+    end?: [number, number] | null;
     length: number;
     text: string;
-    offset_norm: [number, number];
+    offset_norm?: [number, number] | null;
     is_locked?: boolean;
     ref_a?: { guid: string; ref?: string };
     ref_b?: { guid: string; ref?: string };
     axis?: string;
+    status?: string;
   }>;
 }
 

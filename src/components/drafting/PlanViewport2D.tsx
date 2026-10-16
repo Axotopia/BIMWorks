@@ -1208,10 +1208,12 @@ export const PlanViewport2D: React.FC = () => {
 
           {/* 6. Associative Dimensions with Interactive Padlock & EQ Toggles */}
           {sliced2D?.dimensions.map((dim, idx) => {
+            if (!dim.start || !dim.end || dim.status === 'lost') return null;
             const isSelected = selectedGuid === dim.guid;
             const offDist = 0.8;
-            const dx = dim.offset_norm[0] * offDist;
-            const dy = dim.offset_norm[1] * offDist;
+            const offsetNorm = dim.offset_norm || [0, 1];
+            const dx = offsetNorm[0] * offDist;
+            const dy = offsetNorm[1] * offDist;
             const mx = (dim.start[0] + dim.end[0]) / 2 + dx;
             const my = (dim.start[1] + dim.end[1]) / 2 + dy;
             const dimDx = dim.end[0] - dim.start[0];

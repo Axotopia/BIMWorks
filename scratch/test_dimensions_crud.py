@@ -269,10 +269,13 @@ def run_tests():
     edit_dangling = mgr.set_dimension_value(dim_dangling["id"], 20.0)
     check("set_dimension_value on lost reference returns error", edit_dangling.get("status") == "error")
 
-    # 16d. Plan contract does not emit dangling dimensions anchored to (0,0)
+    # 16d. Plan contract surfaces lost dimensions with status 'lost' and None start/end (never anchored to 0,0)
     plan_with_dangling = mgr.slice_2d_vector_plan(cut_elevation=4.0)
-    dangling_emitted = any(d.get("id") == dim_dangling["id"] for d in plan_with_dangling.get("dimensions", []))
-    check("lost reference dimension excluded from plan contract (not anchored to 0,0)", not dangling_emitted)
+    dangling_dim = next((d for d in plan_with_dangling.get("dimensions", []) if d.get("id") == dim_dangling["id"]), None)
+    check("lost reference dimension emitted in plan contract", dangling_dim is not None)
+    check("lost reference dimension has status 'lost'", dangling_dim is not None and dangling_dim.get("status") == "lost")
+    check("lost reference dimension start is None (not anchored to 0,0)", dangling_dim is not None and dangling_dim.get("start") is None)
+    check("lost reference dimension end is None (not anchored to 0,0)", dangling_dim is not None and dangling_dim.get("end") is None)
 
     # Clean up test dimension
     mgr.delete_dimension(dim_dangling["id"])

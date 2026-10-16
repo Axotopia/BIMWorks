@@ -6128,7 +6128,23 @@ class BimModelManager:
                 ref_b = d.get("ref_b", {})
                 pa, out_a = resolve_reference(self, ref_a)
                 pb, out_b = resolve_reference(self, ref_b)
-                if pa is None or pb is None:
+                if pa is None or pb is None or out_a == "lost" or out_b == "lost" or d.get("status") == "lost":
+                    val = float(d.get("value", 0.0))
+                    dims_out.append({
+                        "id": did,
+                        "guid": ref_a.get("guid"),
+                        "kind": d.get("kind", "aligned"),
+                        "start": None,
+                        "end": None,
+                        "length": val,
+                        "text": format_feet_inches(val),
+                        "offset_norm": [0.0, 1.0],
+                        "is_locked": bool(d.get("is_locked", False)),
+                        "ref_a": ref_a,
+                        "ref_b": ref_b,
+                        "axis": d.get("axis", "aligned"),
+                        "status": "lost",
+                    })
                     continue
                 dx, dy = pb[0] - pa[0], pb[1] - pa[1]
                 dist = _math.hypot(dx, dy)
@@ -6150,7 +6166,7 @@ class BimModelManager:
                     "ref_a": ref_a,
                     "ref_b": ref_b,
                     "axis": d.get("axis", "aligned"),
-                    "status": d.get("status", "repaired" if (out_a == "repaired" or out_b == "repaired") else "exact"),
+                    "status": d.get("status", "ambiguous" if (out_a == "ambiguous" or out_b == "ambiguous") else ("repaired" if (out_a == "repaired" or out_b == "repaired") else "exact")),
                 })
         if not dims_out and not getattr(self, "dimensions", None):
             dims_out = self._overall_dimensions(contract)

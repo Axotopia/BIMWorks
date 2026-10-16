@@ -17,8 +17,7 @@ and the same reference must keep its key across a copy, a save/load round-trip, 
 a separate process. `scratch/_probe_references_adversarial.py` asserted only that two inline dict
 literals differ, which `id()` satisfies trivially — it passed for the wrong reason.
 
-Exits 0 when the key is stable (defect fixed); non-zero while the defect is present.
-It is expected to exit non-zero until `reference_key` stops deriving identity from `id()`.
+Exits 0 when the key is stable (defect fixed). Confirmed fixed in Round 2.
 
 Run:  .venv/bin/python scratch/_probe_reference_key_stability.py
 """

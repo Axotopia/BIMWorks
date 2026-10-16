@@ -134,10 +134,12 @@ def normalize_reference(raw: Any) -> Dict[str, Any]:
 
 def reference_key(ref: Dict[str, Any]) -> str:
     """
-    Returns an order-stable, collision-resistant canonical string key.
+    Returns an order-stable canonical string key for reference identity.
     Multi-source references (e.g. intersection) are sorted by source identity so
     order of operands does not affect key.
     A multi-source intersection does not collide with single sources.
+    Note: Full identity requires element sources or a persistent guid/id;
+    hint-less points share a deterministic 'point:unresolved' sentinel by design.
     """
     norm = normalize_reference(ref)
     kind = norm["kind"]
