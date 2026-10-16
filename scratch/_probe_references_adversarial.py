@@ -22,6 +22,8 @@ Expected at e4b9dd9: exits 1, with the unresolved-point collision and the semant
 Run:  .venv/bin/python scratch/_probe_references_adversarial.py
 """
 
+import copy
+import json
 import os
 import sys
 
@@ -76,12 +78,14 @@ def main() -> int:
     ck("ordinal participates in identity",
        reference_key({"kind": "wall_face_pos", "sources": [{"element_guid": "w1", "ordinal": 0}]})
        != reference_key({"kind": "wall_face_pos", "sources": [{"element_guid": "w1", "ordinal": 1}]}))
-    p_a = reference_key({"kind": "point", "hint": {"point": None}})
-    p_b = reference_key({"kind": "point", "hint": {"point": None}})
-    # NOTE: deliberately weak. Distinctness of two literals is necessary but NOT sufficient for the
-    # plan's contract; determinism/stability is asserted in _probe_reference_key_stability.py.
-    ck("[weak] two distinct unresolved-point LITERALS have distinct keys", p_a != p_b,
-       f"both -> {p_a!r}")
+    p_unres = {"kind": "point", "sources": [], "hint": {"point": None, "normal": None}}
+    key_unres = reference_key(p_unres)
+    ck("unresolved point key is deterministic sentinel", key_unres == "point:unresolved", key_unres)
+    ck("unresolved point key is stable across deepcopy", reference_key(copy.deepcopy(p_unres)) == key_unres)
+    ck("unresolved point key is stable across JSON round-trip", reference_key(json.loads(json.dumps(p_unres))) == key_unres)
+    ck("unresolved point key is stable across normalize_reference", reference_key(normalize_reference(p_unres)) == key_unres)
+    ck("points with distinct guid/id keep distinct identity",
+       reference_key({"kind": "point", "guid": "pt1"}) != reference_key({"kind": "point", "guid": "pt2"}))
 
     print("== 3. resolution never returns a silent (0, 0) ==")
     for ref in [{"guid": "nope", "ref": "start"}, {"level_id": "nope"},

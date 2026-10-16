@@ -36,22 +36,22 @@ def main() -> int:
         "WallCreate", {"start": [0.0, 0.0], "end": [10.0, 0.0], "height": 10.0, "thickness": 0.5})["guid"]
     w2 = bus.execute_single_command(
         "WallCreate", {"start": [0.0, 8.0], "end": [10.0, 8.0], "height": 10.0, "thickness": 0.5})["guid"]
+    w3 = bus.execute_single_command(
+        "WallCreate", {"start": [0.0, 16.0], "end": [10.0, 16.0], "height": 10.0, "thickness": 0.5})["guid"]
     mgr.add_align_constraint(ref_guid=w1, target_guid=w2, axis="x")
-    grid = mgr.add_grid(axis_name="Grid-A", start_pt=(15.0, -10.0), end_pt=(15.0, 30.0))["guid"]
 
     solver = ConstraintSolver(mgr)
     scope = solver.affected_guids([w1])
     print("affected_guids([w1]) =", scope)
-    print("grid in scope?", grid in scope)
-    print("grid in element_meta?", grid in mgr.element_meta)
+    print("w3 in initial scope?", w3 in scope)
 
-    # Replicate the ReferenceMove handler's extras pass:
-    # Grids/datums are fixed references; the dragged element moves to satisfy the constraint.
-    pins = {grid: mgr.get_element_coord(grid, "x")}
-    res = solver.solve(axis="x", pins=pins, scope=scope, extras=[("align", (grid, w1))])
+    # Discriminating test: pin only w1. w3 is unpinned and not in scope,
+    # reachable ONLY through the extras payload.
+    pins = {w1: mgr.get_element_coord(w1, "x")}
+    res = solver.solve(axis="x", pins=pins, scope=scope, extras=[("align", (w1, w3))])
     print("extras apply result: ok =", res.ok, "applied =", res.applied)
 
-    extra_applied = any(c.startswith("extra:") for c in res.applied)
+    extra_applied = any(c == "extra:align" for c in res.applied)
     print("drag-time extra actually applied?", extra_applied)
     return 0 if extra_applied else 1
 

@@ -145,10 +145,12 @@ def reference_key(ref: Dict[str, Any]) -> str:
 
     if kind == "point":
         pt = norm.get("hint", {}).get("point")
-        if pt and len(pt) >= 2:
-            return f"point:{pt[0]:.4f},{pt[1]:.4f}"
-        uid = norm.get("id") or norm.get("guid") or str(id(ref))
-        return f"point:unresolved:{uid}"
+        if pt and len(pt) >= 2 and pt[0] is not None and pt[1] is not None:
+            return f"point:{float(pt[0]):.4f},{float(pt[1]):.4f}"
+        uid = norm.get("id") or norm.get("guid")
+        if uid:
+            return f"point:unresolved:{uid}"
+        return "point:unresolved"
 
     sorted_sources = sorted(sources, key=lambda s: (s["element_guid"], s.get("ordinal", 0)))
     src_str = ",".join(f"{s['element_guid']}#{s.get('ordinal', 0)}" for s in sorted_sources)

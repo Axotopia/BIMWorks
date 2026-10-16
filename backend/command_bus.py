@@ -13,7 +13,7 @@ from typing import Dict, List, Any, Optional, Literal, Tuple
 from pydantic import BaseModel, Field, model_validator
 
 from ifc_service import bim_manager
-from references import normalize_reference, resolve_reference, ReferenceKind
+from references import normalize_reference, resolve_reference
 
 
 # ============================================================================

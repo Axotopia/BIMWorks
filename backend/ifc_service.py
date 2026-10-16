@@ -3559,6 +3559,17 @@ class BimModelManager:
             )
         val_float = float(value)
 
+        pa, out_a = resolve_reference(self, norm_ref_a)
+        pb, out_b = resolve_reference(self, norm_ref_b)
+        if out_a == "lost" or out_b == "lost" or pa is None or pb is None:
+            init_status = "lost"
+        elif out_a == "ambiguous" or out_b == "ambiguous":
+            init_status = "ambiguous"
+        elif out_a == "repaired" or out_b == "repaired":
+            init_status = "repaired"
+        else:
+            init_status = "exact"
+
         constraint_id = None
         if is_locked:
             guid_a = norm_ref_a.get("guid")
@@ -3585,7 +3596,7 @@ class BimModelManager:
             "constraint_id": constraint_id,
             "eq_group": eq_group,
             "refs": norm_refs,
-            "status": "exact",
+            "status": init_status,
         }
         self.dimensions[dim_id] = dim
         self.dimensions_rev += 1
@@ -5876,7 +5887,7 @@ class BimModelManager:
         how sections ended up bare.
         """
         contract = self._finish_plan_contract(contract, cut_elevation, view_type)
-        if not contract.get("dimensions"):
+        if not contract.get("dimensions") and not getattr(self, "dimensions", None):
             contract["dimensions"] = self._overall_dimensions(contract)
         return contract
 
