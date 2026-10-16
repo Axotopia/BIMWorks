@@ -31,7 +31,7 @@ So the app *looks* like Revit and still *feels* like a form. §1 says why: there
 | Grips | **None** (`grep -ri grip src/` → no matches) | — |
 | Live preview of an edit | None. Creation has a rubber band + a length readout in the status bar | `Viewport3D.tsx:963-973, 992-1019` |
 | Numeric entry during a gesture | None, except the temporary-dimension pill, which is an *after-the-fact* editor | `Viewport3D.tsx:910-948` |
-| The one "dimension" that exists | Measures **bbox-centre → nearest bbox-centre** (not face-to-face), displayed as an HTML pill, committed as a **delta** through `translateElement` → `WallMove` — so element length never changes | `useBimStore.ts:988-1046, 1087`; the same conclusion is in `review/revit-dimension-as-control.md:449` |
+| The one "dimension" that exists | Measures **bbox-centre → nearest bbox-centre** (not face-to-face), displayed as an HTML pill, committed as a **delta** through `translateElement` → `WallMove` — so element length never changes | `useBimStore.ts:988-1046, 1087`; the same conclusion is in `review/old/revit-dimension-as-control.md:449` (also at `review/archive/revit-dimension-as-control.md`, byte-identical) |
 | Inference / axis lock | None | — |
 | Esc / cancel | A working reset path exists and is wired to tool change and sketch cancel — the hook a session needs is already there | `useBimStore.ts:44, 442-444, 853` |
 | Hint text | A single caption table exists, with `implemented: false` already used to suppress unimplemented tools | `src/interaction/toolCaptions.ts:1-20` |
