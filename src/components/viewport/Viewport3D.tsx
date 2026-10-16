@@ -6,6 +6,7 @@ import { Scissors, Maximize, RotateCw, Move, Lock } from 'lucide-react';
 import { ContextMenu } from '../common/ContextMenu';
 import { findSnapCandidate, SnapSegment } from '../../interaction/snapEngine';
 import { gripsFor, computeGripDragCommand, Grip } from '../../interaction/grips';
+import { ValueControlBox } from './ValueControlBox';
 
 /**
  * UI-P0-13: pointer capture over a React synthetic mouse event.
@@ -172,7 +173,55 @@ export const Viewport3D: React.FC = () => {
   const [cameraTick, setCameraTick] = useState(0);
   const [hoveredGripId, setHoveredGripId] = useState<string | null>(null);
   const activeDragGripRef = useRef<{ grip: Grip; element: any } | null>(null);
+  const [liveGripValue, setLiveGripValue] = useState<{ label: string; value: number } | null>(null);
   const [isEditingDim, setIsEditingDim] = useState<boolean>(false);
+
+  const handleCommitLiveValue = useCallback((feet: number) => {
+    if (activeTool === 'WA' && wallStartPoint && wallCurrentPoint) {
+      const dx = wallCurrentPoint[0] - wallStartPoint[0];
+      const dy = wallCurrentPoint[1] - wallStartPoint[1];
+      const len = Math.hypot(dx, dy);
+      const dir = len > 0.001 ? [dx / len, dy / len] : [1, 0];
+      const endPt: [number, number, number] = [
+        wallStartPoint[0] + dir[0] * feet,
+        wallStartPoint[1] + dir[1] * feet,
+        wallStartPoint[2],
+      ];
+      createWall(wallStartPoint, endPt);
+      setWallStartPoint(null);
+      setWallCurrentPoint(null);
+      setActiveTool('select');
+      setLiveGripValue(null);
+    } else if (activeDragGripRef.current) {
+      const { grip, element } = activeDragGripRef.current;
+      if (grip.kind === 'wall_height') {
+        modifyWallHeight(element.guid, feet);
+      } else if (grip.kind === 'wall_thickness_pos' || grip.kind === 'wall_thickness_neg') {
+        modifyWallThickness(element.guid, feet);
+      } else if (grip.kind === 'wall_start' || grip.kind === 'wall_end') {
+        const isStart = grip.kind === 'wall_start';
+        const fixedPt = isStart ? element.end : element.start;
+        const movingPt = isStart ? element.start : element.end;
+        if (fixedPt && movingPt) {
+          const dx = movingPt[0] - fixedPt[0];
+          const dy = movingPt[1] - fixedPt[1];
+          const curLen = Math.hypot(dx, dy);
+          if (curLen > 0.001) {
+            const ratio = feet / curLen;
+            const newPt: [number, number, number] = [
+              fixedPt[0] + dx * ratio,
+              fixedPt[1] + dy * ratio,
+              movingPt[2] ?? 0,
+            ];
+            modifyWallEnd(element.guid, isStart ? 'start' : 'end', newPt);
+          }
+        }
+      }
+      endDrag(true);
+      activeDragGripRef.current = null;
+      setLiveGripValue(null);
+    }
+  }, [activeTool, wallStartPoint, wallCurrentPoint, createWall, setActiveTool, modifyWallHeight, modifyWallThickness, modifyWallEnd, endDrag]);
 
   const snapSegments = useMemo<SnapSegment[]>(() => {
     const segs: SnapSegment[] = [];
@@ -778,10 +827,18 @@ export const Viewport3D: React.FC = () => {
           const cmd = computeGripDragCommand(grip, targetPoint, element);
           if (cmd.action === 'modifyWallHeight') {
             modifyWallHeight(element.guid, cmd.params.height);
+            setLiveGripValue({ label: 'Wall Height', value: cmd.params.height });
           } else if (cmd.action === 'modifyWallThickness') {
             modifyWallThickness(element.guid, cmd.params.thickness);
+            setLiveGripValue({ label: 'Wall Thickness', value: cmd.params.thickness });
           } else if (cmd.action === 'modifyWallEnd') {
             modifyWallEnd(element.guid, cmd.params.end, cmd.params.point);
+            const isStart = cmd.params.end === 'start';
+            const fixedPt = isStart ? element.end : element.start;
+            if (fixedPt) {
+              const len = Math.hypot(cmd.params.point[0] - fixedPt[0], cmd.params.point[1] - fixedPt[1]);
+              setLiveGripValue({ label: 'Wall Length', value: len });
+            }
           }
         }
       }
@@ -868,6 +925,7 @@ export const Viewport3D: React.FC = () => {
     if (activeDragGripRef.current) {
       endDrag(true);
       activeDragGripRef.current = null;
+      setLiveGripValue(null);
     }
     isNavigatingRef.current.mode = null;
     dispatchInteraction({ type: 'pointer_up', screenPoint: [e.clientX, e.clientY] });
@@ -884,6 +942,7 @@ export const Viewport3D: React.FC = () => {
     if (activeDragGripRef.current) {
       endDrag(false);
       activeDragGripRef.current = null;
+      setLiveGripValue(null);
     }
     isNavigatingRef.current.mode = null;
   };
@@ -1127,51 +1186,21 @@ export const Viewport3D: React.FC = () => {
         });
       })()}
 
-      {/* Dynamic Temporary Dimension Pill Overlay */}
-      {tempDimension && (
-        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-20 flex items-center space-x-2 bg-[#0284c7] text-white px-3 py-1 rounded shadow-lg border border-[#38bdf8] text-xs font-mono">
-          <span className="text-[11px] font-semibold">Distance:</span>
-          {isEditingDim ? (
-            <input
-              type="text"
-              autoFocus
-              value={editingDimValue}
-              placeholder={'12\'-6"'}
-              onChange={(e) => setEditingDimValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  // UI-P0-2/UI-P1-5: same defect as the plan viewport — `parseFloat`
-                  // rejected the app's own imperial-fractional display, so typing
-                  // 12'-6" did nothing and the editor closed as if it had committed.
-                  const feet = tryParseLength(editingDimValue);
-                  if (feet === null || feet <= 0) {
-                    setStatusMessage(`Not a length: "${editingDimValue}". Try 12'-6", 12.5', or 3800 mm.`);
-                    return;
-                  }
-                  applyTemporaryDimensionChange(feet);
-                  setIsEditingDim(false);
-                } else if (e.key === 'Escape') {
-                  e.stopPropagation();
-                  setIsEditingDim(false);
-                }
-              }}
-              className="w-24 px-1 py-0.5 bg-black/50 text-white rounded border border-white text-xs font-mono"
-            />
-          ) : (
-            <span
-              onClick={() => {
-                setEditingDimValue(formatLength(tempDimension.distance, displayUnit));
-                setIsEditingDim(true);
-              }}
-              className="underline cursor-pointer hover:text-yellow-200"
-              title="Click to change dimension and translate element"
-            >
-              {tempDimension.displayValue}
-            </span>
-          )}
-          <span className="text-[10px] text-sky-200">(Click to edit)</span>
-        </div>
-      )}
+      {/* Phase 4: Value Control Box & Direct Numeric Entry HUD */}
+      <ValueControlBox
+        currentLiveValue={
+          activeTool === 'WA' && wallStartPoint && wallCurrentPoint
+            ? Math.hypot(wallCurrentPoint[0] - wallStartPoint[0], wallCurrentPoint[1] - wallStartPoint[1])
+            : liveGripValue?.value ?? null
+        }
+        liveLabel={
+          activeTool === 'WA' && wallStartPoint
+            ? 'Wall Length'
+            : liveGripValue?.label
+        }
+        onCommitLiveValue={handleCommitLiveValue}
+        className="absolute top-14 left-1/2 -translate-x-1/2 z-20"
+      />
 
       {/* Wall Placement Status Banner */}
       {activeTool === 'WA' && (

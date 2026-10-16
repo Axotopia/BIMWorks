@@ -32,6 +32,7 @@ const SUITES = [
   'scratch/test_dependency_graph.py',
   'scratch/test_drag_session.py',
   'scratch/test_wall_grips.py',
+  'scratch/test_value_entry_hot_retype.py',
 ];
 
 let failed = false;

@@ -4,6 +4,7 @@ import { formatLength, tryParseLength } from '../../utils/units';
 import { BimElement, MeshBufferData } from '../../types/bim';
 import { Maximize2, ZoomIn, ZoomOut, Lock, Equal, Check, X, Crosshair } from 'lucide-react';
 import { ContextMenu } from '../common/ContextMenu';
+import { ValueControlBox } from '../viewport/ValueControlBox';
 import {
   findSnapCandidate,
   SnapCandidate,
@@ -2323,6 +2324,9 @@ export const PlanViewport2D: React.FC = () => {
           </div>
         );
       })()}
+
+      {/* Phase 4: Value Control Box & Direct Numeric Entry HUD */}
+      <ValueControlBox className="absolute top-14 left-1/2 -translate-x-1/2 z-20" />
 
       {/* In-Canvas Inline Dimension Editor (Revit-feel in-place editing) */}
       {editingDimension && (

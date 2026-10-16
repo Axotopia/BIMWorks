@@ -20,7 +20,7 @@ import {
   SketchLine,
   SketchDrawTool,
 } from '../types/bim';
-import { UnitSystem, formatLength } from '../utils/units';
+import { UnitSystem, formatLength, tryParseLength } from '../utils/units';
 import {
   InteractionSessionState,
   InteractionAction,
@@ -705,6 +705,14 @@ interface BimStoreState {
   activeDragSessionId: string | null;
   beginDrag: (description?: string) => Promise<string>;
   endDrag: (commit?: boolean) => Promise<any>;
+  lastGestureCommit: {
+    action: UiAction;
+    params: Record<string, any>;
+    paramKey: string;
+    guid: string;
+  } | null;
+  setLastGestureCommit: (commit: BimStoreState['lastGestureCommit']) => void;
+  retypeCommittedValue: (rawInput: string) => Promise<boolean>;
   undoTransaction: () => Promise<void>;
   redoTransaction: () => Promise<void>;
   transactionJournal: TransactionJournalEntry[];
@@ -751,6 +759,8 @@ interface BimStoreState {
 // the backend both said 4 ft. One number, three components, and the lowest won.
 const DEFAULT_VIEW_RANGE = { top: 8.0, cut: 4.0, bottom: 0.0, viewDepth: 0.0 } as const;
 const ROOF_VIEW_RANGE = { top: 30.0, cut: 20.0, bottom: 0.0, viewDepth: 0.0 } as const;
+
+let activeDragTracking: { action?: UiAction; params?: Record<string, any>; guid?: string; paramKey?: string } | null = null;
 
 export const useBimStore = create<BimStoreState>((set, get) => ({
   activeRibbonTab: 'Architecture',
@@ -968,6 +978,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   // Unified Interaction Session (Track B Phase 1)
   interactionSession: createInitialSession('select'),
   activeDragSessionId: null,
+  lastGestureCommit: null,
+  setLastGestureCommit: (commit) => set({ lastGestureCommit: commit }),
   dispatchInteraction: (action: InteractionAction) =>
     set((state) => ({
       interactionSession: interactionReducer(state.interactionSession, action),
@@ -2866,6 +2878,12 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     const dragSessionId = get().activeDragSessionId;
     if (dragSessionId) {
       // Gesture in progress mode (Track B Phase 2)
+      activeDragTracking = {
+        action,
+        params: { ...params },
+        guid: (params.guid || '') as string,
+        paramKey: params.height !== undefined ? 'height' : (params.thickness !== undefined ? 'thickness' : (params.end !== undefined ? 'length' : 'value')),
+      };
       const res = await fetch(`${API_BASE}/drag/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2891,14 +2909,27 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       return data;
     }
 
-    return get().executeTransaction(
+    const result = await get().executeTransaction(
       [{ command, params, origin: 'ui' }],
       'ui',
       description || command
     );
+    const targetGuid = (params.guid || (result.results?.[0]?.result?.guid)) as string;
+    if (targetGuid) {
+      set({
+        lastGestureCommit: {
+          action,
+          params: { ...params },
+          paramKey: params.height !== undefined ? 'height' : (params.thickness !== undefined ? 'thickness' : (params.end !== undefined ? 'length' : 'value')),
+          guid: targetGuid,
+        },
+      });
+    }
+    return result;
   },
 
   beginDrag: async (description = 'Drag gesture') => {
+    activeDragTracking = null;
     const res = await fetch(`${API_BASE}/drag/begin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2927,8 +2958,74 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       throw new Error(describeApiError(err));
     }
     const data = await res.json();
+    if (commit && activeDragTracking && activeDragTracking.action && activeDragTracking.guid) {
+      set({
+        lastGestureCommit: {
+          action: activeDragTracking.action,
+          params: { ...activeDragTracking.params },
+          paramKey: activeDragTracking.paramKey || 'value',
+          guid: activeDragTracking.guid,
+        },
+      });
+    }
+    activeDragTracking = null;
     await get().fetchStateBundle();
     return data;
+  },
+
+  retypeCommittedValue: async (rawInput: string) => {
+    const { lastGestureCommit, undoTransaction, dispatchTransaction, elements } = get();
+    if (!lastGestureCommit) return false;
+
+    const feet = tryParseLength(rawInput);
+    if (feet === null || feet <= 0) return false;
+
+    // 1. Undo the just-committed transaction
+    await undoTransaction();
+
+    // 2. Re-dispatch the transaction with the corrected value
+    const updatedParams = { ...lastGestureCommit.params };
+
+    if (lastGestureCommit.action === 'modifyWallHeight') {
+      updatedParams.height = feet;
+    } else if (lastGestureCommit.action === 'modifyWallThickness') {
+      updatedParams.thickness = feet;
+    } else if (lastGestureCommit.action === 'modifyWallEnd') {
+      const el = elements[lastGestureCommit.guid];
+      if (el && el.start && el.end) {
+        const isStart = updatedParams.end === 'start';
+        const fixedPt = isStart ? el.end : el.start;
+        const movingPt = isStart ? el.start : el.end;
+        const dx = movingPt[0] - fixedPt[0];
+        const dy = movingPt[1] - fixedPt[1];
+        const curLen = Math.hypot(dx, dy);
+        if (curLen > 0.001) {
+          const ratio = feet / curLen;
+          const newPt = [fixedPt[0] + dx * ratio, fixedPt[1] + dy * ratio, movingPt[2] ?? 0];
+          updatedParams.point = newPt;
+        }
+      }
+    } else if (lastGestureCommit.action === 'createWall') {
+      const sp = updatedParams.start as [number, number, number];
+      const ep = updatedParams.end as [number, number, number];
+      if (sp && ep) {
+        const dx = ep[0] - sp[0];
+        const dy = ep[1] - sp[1];
+        const curLen = Math.hypot(dx, dy);
+        if (curLen > 0.001) {
+          const ratio = feet / curLen;
+          updatedParams.end = [sp[0] + dx * ratio, sp[1] + dy * ratio, sp[2] ?? 0];
+        }
+      }
+    }
+
+    await dispatchTransaction(
+      lastGestureCommit.action,
+      updatedParams,
+      `Retype ${lastGestureCommit.action}`
+    );
+
+    return true;
   },
 
   undoTransaction: async () => {
@@ -3066,7 +3163,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       const offsetVal = planHostedOffset(text, elements[targetWall], doorWidth, 'centered');
 
       return {
-        intentSummary: `Insert 36" × 84" Single Flush Door into host wall at ${offsetVal.toFixed(2)}m from its start`,
+        intentSummary: `Insert 36" × 84" Single Flush Door into host wall at ${formatLength(offsetVal, get().displayUnit)} from its start`,
         affectedGuids: [targetWall],
         commands: [
           {
@@ -3095,7 +3192,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       const winOffset = planHostedOffset(text, elements[targetWall], winWidth, 'start');
 
       return {
-        intentSummary: `Insert 48" × 48" Fixed Window into host wall at ${winOffset.toFixed(2)}m from its start`,
+        intentSummary: `Insert 48" × 48" Fixed Window into host wall at ${formatLength(winOffset, get().displayUnit)} from its start`,
         affectedGuids: [targetWall],
         commands: [
           {
