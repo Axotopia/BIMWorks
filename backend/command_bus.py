@@ -553,22 +553,40 @@ class CommandBusEngine:
             if not src_guid:
                 raise ValueError("Source reference has no element guid to move")
 
-            if p.extras:
-                try:
-                    from constraint_solver import ConstraintSolver
-                    solver = ConstraintSolver(self.manager)
-                    scope = solver.affected_guids([src_guid])
-                    for ax in ("x", "y"):
-                        pins = {src_guid: self.manager.get_element_coord(src_guid, ax)}
-                        res = solver.solve(axis=ax, pins=pins, scope=scope, extras=p.extras)
-                        if res.ok:
-                            solver.apply_solve(res)
-                except Exception:
-                    pass
-
-            ok = self.manager.translate_element(src_guid, dx, dy, 0.0)
+            ok = self.manager.translate_element(src_guid, dx, dy, 0.0, _propagate=(not bool(p.extras)))
             if not ok:
                 raise ValueError(f"Element {src_guid} could not be moved to reference target")
+
+            applied_extras = []
+            if p.extras:
+                from constraint_solver import ConstraintSolver
+                solver = ConstraintSolver(self.manager)
+                extra_guids = set()
+                for k, payload in p.extras:
+                    if k in ("align", "dimension_lock"):
+                        extra_guids.update([str(g) for g in payload[:2] if g])
+                    elif k == "equalize":
+                        start, end, interiors = payload
+                        extra_guids.update([start, end] + list(interiors))
+                scope = solver.affected_guids(list(set([src_guid]) | extra_guids))
+                axes = [p.axis] if p.axis in ("x", "y") else ["x", "y"]
+                for ax in axes:
+                    pins = {}
+                    if src_guid in self.manager.element_meta:
+                        pins[src_guid] = self.manager.get_element_coord(src_guid, ax)
+                    for eg in (extra_guids | {src_guid}):
+                        if eg in self.manager.element_meta and self.manager.element_meta[eg].get("ifc_class") == "IfcGrid":
+                            c = self.manager.get_element_coord(eg, ax)
+                            if c is not None:
+                                pins[eg] = c
+                    res = solver.solve(axis=ax, pins=pins, scope=scope, extras=p.extras)
+                    if res.ok:
+                        solver.apply_solve(res)
+                        applied_extras.extend(res.applied)
+                    elif res.status == "conflict":
+                        raise ValueError(f"Constraint conflict during ReferenceMove on axis {ax}: {res.conflicting}")
+                    elif res.status == "failed":
+                        raise ValueError(f"Constraint solver failure during ReferenceMove on axis {ax}: {res.conflicting}")
 
             return {
                 "status": "moved",
@@ -577,6 +595,7 @@ class CommandBusEngine:
                 "target": norm_tgt,
                 "dx": dx,
                 "dy": dy,
+                "applied_extras": applied_extras,
             }
 
         elif cmd_name == "DoorInsert":
@@ -879,14 +898,23 @@ class CommandBusEngine:
             return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "moved", "guid": guid, "dx": dx, "dy": dy, "dz": dz}
 
         elif cmd_name == "ReferenceMove":
+            pre_coords = {
+                g: (self.manager.get_element_coord(g, "x"), self.manager.get_element_coord(g, "y"))
+                for g in self.manager.element_meta
+            }
             res = self.execute_single_command(cmd_name, params)
-            src_guid = res["guid"]
-            dx = res["dx"]
-            dy = res["dy"]
+            moved_deltas = {}
+            for g, (ox, oy) in pre_coords.items():
+                if g in self.manager.element_meta:
+                    cx, cy = self.manager.get_element_coord(g, "x"), self.manager.get_element_coord(g, "y")
+                    if abs(cx - ox) > 1e-6 or abs(cy - oy) > 1e-6:
+                        moved_deltas[g] = (cx - ox, cy - oy)
             def undo_fn(mgr):
-                mgr.translate_element(src_guid, -dx, -dy, 0.0)
+                for mg, (mdx, mdy) in moved_deltas.items():
+                    mgr.translate_element(mg, -mdx, -mdy, 0.0, _propagate=False)
             def redo_fn(mgr):
-                mgr.translate_element(src_guid, dx, dy, 0.0)
+                for mg, (mdx, mdy) in moved_deltas.items():
+                    mgr.translate_element(mg, mdx, mdy, 0.0, _propagate=False)
             return CommandMemento(cmd_name, undo_fn, redo_fn), res
 
         elif cmd_name == "DoorInsert":
@@ -975,6 +1003,10 @@ class CommandBusEngine:
                     or any(s.get("element_guid") == guid for s in (d.get("ref_a", {}).get("sources", []) + d.get("ref_b", {}).get("sources", [])))
                 )
             })
+            cids_pre = [d["constraint_id"] for d in dims_pre.values() if d.get("constraint_id")]
+            constraints_pre = copy.deepcopy({
+                cid: self.manager.constraints[cid] for cid in cids_pre if cid in getattr(self.manager, "constraints", {})
+            })
             ok = self.manager.delete_element(guid)
             if not ok:
                 raise ValueError(f"Element {guid} could not be deleted")
@@ -991,6 +1023,9 @@ class CommandBusEngine:
                         mgr.add_slab(meta_pre.get("polygon", []), elevation=meta_pre.get("elevation", 0.0), thickness=meta_pre.get("thickness", 0.25), name=meta_pre.get("name", "Floor"), guid=guid)
                     elif ifc_cls == "IfcRoof":
                         mgr.add_roof(meta_pre.get("polygon", []), elevation=meta_pre.get("elevation", 6.0), thickness=meta_pre.get("thickness", 0.3), pitch=meta_pre.get("pitch", 15.0), name=meta_pre.get("name", "Roof"), guid=guid)
+                if constraints_pre:
+                    mgr.constraints.update(copy.deepcopy(constraints_pre))
+                    mgr.constraints_rev += 1
                 if dims_pre:
                     mgr.dimensions.update(copy.deepcopy(dims_pre))
                     mgr.dimensions_rev += 1

@@ -45,9 +45,9 @@ def main() -> int:
     print("grid in scope?", grid in scope)
     print("grid in element_meta?", grid in mgr.element_meta)
 
-    # Replicate the ReferenceMove handler's extras pass exactly (command_bus.py, ReferenceMove).
-    pins = {w1: mgr.get_element_coord(w1, "x")}
-    print("pin value used by handler (pre-move coord):", pins[w1])
+    # Replicate the ReferenceMove handler's extras pass:
+    # Grids/datums are fixed references; the dragged element moves to satisfy the constraint.
+    pins = {grid: mgr.get_element_coord(grid, "x")}
     res = solver.solve(axis="x", pins=pins, scope=scope, extras=[("align", (grid, w1))])
     print("extras apply result: ok =", res.ok, "applied =", res.applied)
 

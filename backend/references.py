@@ -147,7 +147,8 @@ def reference_key(ref: Dict[str, Any]) -> str:
         pt = norm.get("hint", {}).get("point")
         if pt and len(pt) >= 2:
             return f"point:{pt[0]:.4f},{pt[1]:.4f}"
-        return "point:unresolved"
+        uid = norm.get("id") or norm.get("guid") or str(id(ref))
+        return f"point:unresolved:{uid}"
 
     sorted_sources = sorted(sources, key=lambda s: (s["element_guid"], s.get("ordinal", 0)))
     src_str = ",".join(f"{s['element_guid']}#{s.get('ordinal', 0)}" for s in sorted_sources)
@@ -423,6 +424,8 @@ def resolve_reference_axis(
 def repair_reference(
     manager: Any,
     ref: Dict[str, Any],
+    candidate_guids: Optional[List[str]] = None,
+    tolerance: float = 1.0,
 ) -> Tuple[Dict[str, Any], str]:
     """
     Attempts to repair an unresolved reference using hints or nearby geometry.
@@ -442,10 +445,13 @@ def repair_reference(
     kind = norm["kind"]
     meta = getattr(manager, "element_meta", {})
 
-    # Candidate search among elements matching kind within 1.0 ft tolerance
+    # Candidate search among elements matching kind within tolerance
     matches: List[Tuple[str, float]] = []
-    tol = 1.0
-    for guid, m in meta.items():
+    tol = float(tolerance)
+    search_guids = candidate_guids if candidate_guids is not None else list(meta.keys())
+    for guid in search_guids:
+        if guid not in meta:
+            continue
         test_ref = {"kind": kind, "sources": [{"element_guid": guid, "ordinal": 0}]}
         pt, res = resolve_reference(manager, test_ref)
         if pt is not None:

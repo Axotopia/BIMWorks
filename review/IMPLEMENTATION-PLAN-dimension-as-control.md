@@ -11,8 +11,8 @@
 The companion document establishes that a Revit dimension is a **constraint element** — an ordered array of
 durable references plus a binding. In previous revisions, BIMWorks had the solver, the overlay, the dependency graph and
 the command bus, but lacked persistent dimension objects and reference identity. While dimension objects arrived in
-commit `d786484` (`self.dimensions` at `ifc_service.py:249`, `create_dimension` at `:3464`, `DimensionCreate` verb at
-`command_bus.py:430`, overlay persistence at `:6391`/`:6532`), the missing foundation was **durable, typed geometric
+commit `d786484` (`self.dimensions` at `ifc_service.py:249`, `create_dimension` at `:3515`, `DimensionCreate` verb at
+`command_bus.py:429`, overlay persistence at `:6472` and normalization on load at `:4700`/`:6605`), the missing foundation was **durable, typed geometric
 reference identity** (`backend/references.py`), explicit resolution outcomes, repair, and multi-source provenance.
 
 This plan is amended to consume `backend/references.py` per [`IMPLEMENTATION-PLAN-geometric-references.md`](IMPLEMENTATION-PLAN-geometric-references.md).
@@ -122,7 +122,7 @@ def normalize_reference(raw: Dict[str, Any]) -> Dict[str, Any]: ...
 def reference_key(ref: Dict[str, Any]) -> str: ...
 def resolve_reference(manager: Any, ref: Dict[str, Any]) -> Tuple[Optional[Tuple[float, float]], str]: ...
 def resolve_reference_axis(manager: Any, ref: Dict[str, Any], axis: str) -> Tuple[Optional[float], str]: ...
-def repair_reference(manager: Any, ref: Dict[str, Any], candidate_guids: Optional[List[str]] = None, tolerance: float = 2.0) -> Tuple[Dict[str, Any], str]: ...
+def repair_reference(manager: Any, ref: Dict[str, Any], candidate_guids: Optional[List[str]] = None, tolerance: float = 1.0) -> Tuple[Dict[str, Any], str]: ...
 ```
 
 `repair_reference` is the BIMWorks counterpart of `Reference.Refresh` +

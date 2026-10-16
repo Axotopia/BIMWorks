@@ -81,9 +81,7 @@ from units import (  # noqa: E402  (kept beside the constants it documents)
 from references import (
     normalize_reference,
     resolve_reference,
-    resolve_reference_axis,
     repair_reference,
-    reference_key,
 )
 
 
@@ -3040,10 +3038,23 @@ class BimModelManager:
 
             pa, out_a = resolve_reference(self, ref_a)
             pb, out_b = resolve_reference(self, ref_b)
+            if (out_a in ("lost", "ambiguous") or pa is None) and ref_a.get("hint"):
+                rep_a, rep_out_a = repair_reference(self, ref_a)
+                if rep_out_a in ("exact", "repaired"):
+                    ref_a.update(rep_a)
+                    pa, out_a = resolve_reference(self, ref_a)
+            if (out_b in ("lost", "ambiguous") or pb is None) and ref_b.get("hint"):
+                rep_b, rep_out_b = repair_reference(self, ref_b)
+                if rep_out_b in ("exact", "repaired"):
+                    ref_b.update(rep_b)
+                    pb, out_b = resolve_reference(self, ref_b)
+
             if out_a == "lost" or out_b == "lost" or pa is None or pb is None:
                 d["status"] = "lost"
+                self.dimensions_rev += 1
             elif out_a == "ambiguous" or out_b == "ambiguous":
                 d["status"] = "ambiguous"
+                self.dimensions_rev += 1
             else:
                 axis = d.get("axis", "aligned")
                 if axis == "x":
@@ -3492,17 +3503,14 @@ class BimModelManager:
     # PARAMETRIC OVERLAY DIMENSIONS & DIMENSION-DRIVEN EDITING (Phase 2)
     # =========================================================================
 
-    def _resolve_ref_coords(self, ref: Dict[str, Any]) -> Tuple[float, float]:
+    def _resolve_ref_coords(self, ref: Dict[str, Any]) -> Tuple[Optional[Tuple[float, float]], str]:
         """
         Resolves 2D coordinates [x, y] in decimal feet for a dimension witness reference.
-        Delegates to references.resolve_reference.
+        Delegates to references.resolve_reference, returning (point, status).
         """
         if not isinstance(ref, dict):
-            return (0.0, 0.0)
-        pt, outcome = resolve_reference(self, ref)
-        if pt is not None:
-            return pt
-        return (0.0, 0.0)
+            return (None, "lost")
+        return resolve_reference(self, ref)
 
     def create_dimension(
         self,
@@ -3545,7 +3553,11 @@ class BimModelManager:
                     else:
                         value = float(math.hypot(pb[0] - pa[0], pb[1] - pa[1]))
 
-        val_float = float(value if value is not None else 10.0)
+        if value is None:
+            raise ValueError(
+                f"Cannot derive dimension value: references {norm_ref_a} and {norm_ref_b} cannot be resolved and no value was provided"
+            )
+        val_float = float(value)
 
         constraint_id = None
         if is_locked:
@@ -6127,8 +6139,9 @@ class BimModelManager:
                     "ref_a": ref_a,
                     "ref_b": ref_b,
                     "axis": d.get("axis", "aligned"),
+                    "status": d.get("status", "repaired" if (out_a == "repaired" or out_b == "repaired") else "exact"),
                 })
-        if not dims_out:
+        if not dims_out and not getattr(self, "dimensions", None):
             dims_out = self._overall_dimensions(contract)
         contract["dimensions"] = dims_out
         return contract
@@ -6596,6 +6609,8 @@ class BimModelManager:
             # Legacy container: no parametric geometry in the overlay. Keep the
             # tessellation import and only re-attach metadata that is GUID-gated.
             self.constraints = self._jsonable(overlay.get("constraints", {}) or {})
+            self.join_policies = self._jsonable(overlay.get("join_policies", {}) or {})
+            elements_overlay = overlay.get("elements", {}) or {}
             legacy_dims = self._jsonable(overlay.get("dimensions", {}) or {})
             self.dimensions = {}
             if isinstance(legacy_dims, list):

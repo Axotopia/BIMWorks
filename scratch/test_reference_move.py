@@ -73,7 +73,7 @@ def run_tests():
             "source": ref_src,
             "target": ref_tgt,
             "axis": "x",
-            "extras": [("align", (grid_guid, w1_guid))],
+            "extras": [("align", (w1_guid, w2_guid))],
         })],
         description="move wall to grid",
     )

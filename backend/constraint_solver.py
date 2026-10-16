@@ -162,6 +162,13 @@ class ConstraintSolver:
         # partner, so a constraint is never solved against a missing node.
         participants = set(scope or [])
         participants |= set(pins)
+        for kind, payload in extras:
+            if kind in ("align", "dimension_lock"):
+                participants.update([str(g) for g in payload[:2] if g])
+            elif kind == "equalize":
+                start, end, interiors = payload
+                participants.update([start, end] + list(interiors))
+
         participants = {
             g for g in self.affected_guids(sorted(participants)) if g in self.manager.element_meta
         }
@@ -174,6 +181,12 @@ class ConstraintSolver:
             if pos is None:
                 continue
             coords[g] = pos
+
+        # Grids and datums are fixed references: pin them at their coordinates
+        for g in sorted(participants):
+            meta = self.manager.element_meta.get(g, {})
+            if meta.get("ifc_class") == "IfcGrid" and g in coords:
+                pins.setdefault(g, coords[g])
 
         # An EQ span defines the spacing between its two endpoints, so both are
         # held at their current coordinates while the interior elements are
