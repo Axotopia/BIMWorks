@@ -7,8 +7,11 @@ These are deliberately NOT the shipped assertions in `scratch/test_references.py
 key/identity semantics the plan (§5.1) calls the actual risk, plus the §3.3 decisions.
 
 Findings exercised here:
-  * `reference_key` collapses all unresolved point references onto "point:unresolved", so two
-    distinct dangling points compare equal (identity collision).
+  * `reference_key` for unresolved points: this probe asserted only that two inline dict literals
+    differ, which a memory-address-based key satisfies trivially. It therefore does NOT establish
+    the property the plan requires ("canonical, order-stable, for dedup + equality"). The key was
+    subsequently made non-deterministic via `str(id(ref))`; stability is covered by the dedicated
+    probe `scratch/_probe_reference_key_stability.py`, which is expected to fail until that is fixed.
   * §3.3.1 is unresolved: 2D `level_plane` still returns (0.0, elevation) labelled "exact", while
     the axis form that fixes it is never called by production code.
   * §3.3.2: the level NAME fallback was retained (relabelled "repaired"), not dropped.
@@ -75,7 +78,10 @@ def main() -> int:
        != reference_key({"kind": "wall_face_pos", "sources": [{"element_guid": "w1", "ordinal": 1}]}))
     p_a = reference_key({"kind": "point", "hint": {"point": None}})
     p_b = reference_key({"kind": "point", "hint": {"point": None}})
-    ck("two DISTINCT unresolved points have distinct keys", p_a != p_b, f"both -> {p_a!r}")
+    # NOTE: deliberately weak. Distinctness of two literals is necessary but NOT sufficient for the
+    # plan's contract; determinism/stability is asserted in _probe_reference_key_stability.py.
+    ck("[weak] two distinct unresolved-point LITERALS have distinct keys", p_a != p_b,
+       f"both -> {p_a!r}")
 
     print("== 3. resolution never returns a silent (0, 0) ==")
     for ref in [{"guid": "nope", "ref": "start"}, {"level_id": "nope"},
