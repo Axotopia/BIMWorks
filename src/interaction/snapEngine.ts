@@ -19,6 +19,7 @@ export interface SnapCandidate {
   kind: SnapKind;
   description: string;
   distance: number;
+  sources: string[];
   sourceGuid?: string;
 }
 
@@ -126,12 +127,14 @@ export function findSnapCandidate(
       if (hit) {
         const d = Math.hypot(hit[0] - mx, hit[1] - my);
         if (d <= tol && (!bestIntersection || d < bestIntersection.distance)) {
+          const srcs = [s1.guid, s2.guid].filter((g): g is string => typeof g === 'string' && g.length > 0);
           bestIntersection = {
             point: hit,
             kind: 'intersection',
             description: 'Intersection',
             distance: d,
-            sourceGuid: s1.guid || s2.guid,
+            sources: srcs,
+            sourceGuid: srcs[0],
           };
         }
       }
@@ -149,6 +152,7 @@ export function findSnapCandidate(
         kind: 'endpoint',
         description: 'Endpoint',
         distance: d,
+        sources: guid ? [guid] : [],
         sourceGuid: guid,
       };
     }
@@ -176,6 +180,7 @@ export function findSnapCandidate(
         kind: 'midpoint',
         description: 'Midpoint',
         distance: d,
+        sources: s.guid ? [s.guid] : [],
         sourceGuid: s.guid,
       };
     }
@@ -196,6 +201,7 @@ export function findSnapCandidate(
           kind: 'perpendicular',
           description: 'Horizontal (Ortho)',
           distance: dy,
+          sources: [],
         };
       } else {
         return {
@@ -203,6 +209,7 @@ export function findSnapCandidate(
           kind: 'perpendicular',
           description: 'Vertical (Ortho)',
           distance: dx,
+          sources: [],
         };
       }
     }
@@ -213,6 +220,7 @@ export function findSnapCandidate(
         kind: 'perpendicular',
         description: 'Horizontal',
         distance: dy,
+        sources: [],
       };
     }
     if (dx <= tol && dy >= tol) {
@@ -221,6 +229,7 @@ export function findSnapCandidate(
         kind: 'perpendicular',
         description: 'Vertical',
         distance: dx,
+        sources: [],
       };
     }
 
@@ -246,6 +255,7 @@ export function findSnapCandidate(
             kind: 'perpendicular',
             description: 'Perpendicular',
             distance: d,
+            sources: s.guid ? [s.guid] : [],
             sourceGuid: s.guid,
           };
         }
@@ -279,6 +289,7 @@ export function findSnapCandidate(
             kind: 'extension',
             description: 'Extension',
             distance: d,
+            sources: s.guid ? [s.guid] : [],
             sourceGuid: s.guid,
           };
         }
@@ -298,8 +309,10 @@ export function findSnapCandidate(
       kind: 'grid',
       description: grid >= 1.0 ? `Grid (${grid.toFixed(0)}')` : `Grid (${(grid * 12).toFixed(0)}")`,
       distance: gd,
+      sources: [],
     };
   }
+
 
   return null;
 }

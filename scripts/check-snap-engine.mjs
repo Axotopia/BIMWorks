@@ -72,6 +72,13 @@ check('intersection candidate resolves at crossing segments',
   Math.abs(hitIntersection.point[1] - 0.0) < 1e-4,
   `kind: ${hitIntersection?.kind}, pt: [${hitIntersection?.point}]`
 );
+check('intersection candidate carries BOTH source guids (Phase 3 provenance)',
+  Array.isArray(hitIntersection?.sources) &&
+  hitIntersection.sources.length === 2 &&
+  hitIntersection.sources.includes('wall-h') &&
+  hitIntersection.sources.includes('wall-v'),
+  `sources: ${JSON.stringify(hitIntersection?.sources)}`
+);
 
 // 2. Endpoint candidate
 const hitEndpoint = findSnapCandidate([10.05, 0.02], {
