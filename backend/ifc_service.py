@@ -211,6 +211,9 @@ class BimModelManager:
         self.constraints_rev: int = 0
         self.wall_joins_rev: int = 0
         self.project_rev: int = 0
+        self.dimensions_rev: int = 0
+        self.types_rev: int = 0
+        self.type_registry: Dict[str, Dict[str, Any]] = {}
 
         # Storeys (Levels)
         self.levels: Dict[str, Any] = {}
@@ -229,8 +232,14 @@ class BimModelManager:
         self.removed_items_by_rev: Dict[int, List[Dict[str, Any]]] = {}
         self._pending_removed_items: List[Dict[str, Any]] = []
 
+        # Mesh HLR projection caches (Phase 1.3c)
+        self._prepared_mesh_cache: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+        self._cut_mesh_cache: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
+
         # 1D/2D Parametric Constraints Manager
         self.constraints: Dict[str, Dict[str, Any]] = {}
+        # Parametric Overlay Dimensions (Phase 2)
+        self.dimensions: Dict[str, Dict[str, Any]] = {}
         # Last over-constraint/conflict report from the solver (None when clean).
         self.last_constraint_conflict: Optional[Dict[str, Any]] = None
         # Counters from the most recent incremental recompute (P3), used by the
@@ -388,7 +397,286 @@ class BimModelManager:
             },
         }
 
-    # ------------------------------------------------------------------
+        self._init_default_types()
+
+    def _init_default_types(self) -> None:
+        """Initializes the default Revit-style type registry and links IFC type products."""
+        defaults = [
+            {
+                "id": "wall-type-cmu-10",
+                "name": 'Basic Wall : Exterior - 10" CMU',
+                "ifc_class": "IfcWallType",
+                "parameters": {
+                    "thickness": 10.0 / 12.0,
+                    "function": "Exterior",
+                    "fire_rating": "2 HR",
+                    "structural_material": "Concrete Masonry Units",
+                    "thermal_resistance": "R-19.0",
+                    "layers": [
+                        {"name": "Exterior Finish", "thickness": 1.0 / 12.0, "material": "Stucco", "function": "Finish 1"},
+                        {"name": "Core", "thickness": 8.0 / 12.0, "material": "Concrete Masonry Units", "function": "Structure"},
+                        {"name": "Interior Finish", "thickness": 1.0 / 12.0, "material": "Gypsum Wall Board", "function": "Finish 2"},
+                    ],
+                },
+            },
+            {
+                "id": "wall-type-cmu-8",
+                "name": 'Basic Wall : Exterior - 8" CMU',
+                "ifc_class": "IfcWallType",
+                "parameters": {
+                    "thickness": 8.0 / 12.0,
+                    "function": "Exterior",
+                    "fire_rating": "2 HR",
+                    "structural_material": "Concrete Masonry Units",
+                    "thermal_resistance": "R-15.0",
+                    "layers": [
+                        {"name": "Core", "thickness": 8.0 / 12.0, "material": "Concrete Masonry Units", "function": "Structure"},
+                    ],
+                },
+            },
+            {
+                "id": "wall-type-partition-478",
+                "name": 'Basic Wall : Interior - 4 7/8" Partition',
+                "ifc_class": "IfcWallType",
+                "parameters": {
+                    "thickness": 4.875 / 12.0,
+                    "function": "Interior",
+                    "fire_rating": "1 HR",
+                    "structural_material": "Gypsum Wall Board on Metal Stud",
+                    "thermal_resistance": "R-11.0",
+                    "layers": [
+                        {"name": "Finish 1", "thickness": 0.625 / 12.0, "material": "Gypsum Wall Board", "function": "Finish 1"},
+                        {"name": "Core", "thickness": 3.625 / 12.0, "material": "Metal Stud Layer", "function": "Structure"},
+                        {"name": "Finish 2", "thickness": 0.625 / 12.0, "material": "Gypsum Wall Board", "function": "Finish 2"},
+                    ],
+                },
+            },
+            {
+                "id": "wall-type-partition-6",
+                "name": 'Basic Wall : Interior - 6" Partition',
+                "ifc_class": "IfcWallType",
+                "parameters": {
+                    "thickness": 6.0 / 12.0,
+                    "function": "Interior",
+                    "fire_rating": "1 HR",
+                    "structural_material": "Metal Stud",
+                    "thermal_resistance": "R-13.0",
+                    "layers": [
+                        {"name": "Core", "thickness": 6.0 / 12.0, "material": "Metal Stud", "function": "Structure"},
+                    ],
+                },
+            },
+            {
+                "id": "door-type-single-flush-36",
+                "name": 'Single-Flush : 36" x 84"',
+                "ifc_class": "IfcDoorType",
+                "parameters": {
+                    "width": 3.0,
+                    "height": 7.0,
+                    "fire_rating": "20 MIN",
+                    "material": "Wood Flush Panel",
+                    "function": "Interior",
+                },
+            },
+            {
+                "id": "door-type-single-flush-30",
+                "name": 'Single-Flush : 30" x 84"',
+                "ifc_class": "IfcDoorType",
+                "parameters": {
+                    "width": 2.5,
+                    "height": 7.0,
+                    "fire_rating": "20 MIN",
+                    "material": "Wood Flush Panel",
+                    "function": "Interior",
+                },
+            },
+            {
+                "id": "window-type-fixed-36x48",
+                "name": 'Fixed : 36" x 48"',
+                "ifc_class": "IfcWindowType",
+                "parameters": {
+                    "width": 3.0,
+                    "height": 4.0,
+                    "sill_height": 3.0,
+                    "thermal_resistance": "U-0.28",
+                    "material": "Double Glazed Low-E Aluminum",
+                    "function": "Exterior",
+                },
+            },
+            {
+                "id": "window-type-fixed-48x48",
+                "name": 'Fixed : 48" x 48"',
+                "ifc_class": "IfcWindowType",
+                "parameters": {
+                    "width": 4.0,
+                    "height": 4.0,
+                    "sill_height": 3.0,
+                    "thermal_resistance": "U-0.28",
+                    "material": "Double Glazed Low-E Aluminum",
+                    "function": "Exterior",
+                },
+            },
+        ]
+        for d in defaults:
+            self._register_type_entity(d["id"], d["name"], d["ifc_class"], d["parameters"])
+
+    def _register_type_entity(
+        self, type_id: str, name: str, ifc_class: str, parameters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        entity = None
+        try:
+            entity = ifcopenshell.api.run("root.create_entity", self.model, ifc_class=ifc_class, name=name)
+            pset_name = "Pset_WallCommon" if "Wall" in ifc_class else ("Pset_DoorCommon" if "Door" in ifc_class else "Pset_WindowCommon")
+            pset = ifcopenshell.api.run("pset.add_pset", self.model, product=entity, name=pset_name)
+            props = {}
+            if "fire_rating" in parameters:
+                props["FireRating"] = str(parameters["fire_rating"])
+            if "thermal_resistance" in parameters:
+                props["ThermalTransmittance"] = str(parameters["thermal_resistance"])
+            if props:
+                ifcopenshell.api.run("pset.edit_pset", self.model, pset=pset, properties=props)
+        except Exception:
+            pass
+
+        rec = {
+            "id": type_id,
+            "name": name,
+            "ifc_class": ifc_class,
+            "parameters": copy.deepcopy(parameters),
+            "entity": entity,
+        }
+        self.type_registry[type_id] = rec
+        self.types_rev += 1
+        return rec
+
+    def get_types(self) -> List[Dict[str, Any]]:
+        out = []
+        for tid, t in sorted(self.type_registry.items(), key=lambda x: x[0]):
+            out.append({
+                "id": t["id"],
+                "name": t["name"],
+                "ifc_class": t["ifc_class"],
+                "parameters": self._jsonable(t["parameters"]),
+            })
+        return out
+
+    def create_type(
+        self, type_id: str, name: str, ifc_class: str = "IfcWallType", parameters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        if parameters is None:
+            parameters = {}
+        rec = self._register_type_entity(type_id, name, ifc_class, parameters)
+        self.project_rev += 1
+        return {"status": "created", "type_id": type_id, "name": name}
+
+    def duplicate_type(self, source_type_id: str, new_type_id: str, new_name: str) -> Dict[str, Any]:
+        if source_type_id not in self.type_registry:
+            raise KeyError(f"Source type '{source_type_id}' not found in registry")
+        source = self.type_registry[source_type_id]
+        rec = self._register_type_entity(new_type_id, new_name, source["ifc_class"], source["parameters"])
+        self.project_rev += 1
+        return {"status": "duplicated", "type_id": new_type_id, "name": new_name}
+
+    def update_type(self, type_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        if type_id not in self.type_registry:
+            raise KeyError(f"Type '{type_id}' not found in registry")
+        t = self.type_registry[type_id]
+        t["parameters"].update(copy.deepcopy(parameters))
+
+        # Propagate to all instances referencing this type
+        affected_walls = []
+        for guid, meta in self.element_meta.items():
+            if meta.get("type_id") == type_id:
+                if meta.get("ifc_class") in ("IfcWallStandardCase", "IfcWall"):
+                    if "thickness" in parameters:
+                        meta["thickness"] = float(parameters["thickness"])
+                        meta["footprint"] = None
+                        self._rebuild_wall_representation(guid)
+                        self._invalidate_geometry_cache(guid)
+                        self.mark_mesh_dirty(guid)
+                        affected_walls.append(guid)
+                elif meta.get("ifc_class") == "IfcDoor":
+                    if "width" in parameters:
+                        meta["width"] = float(parameters["width"])
+                    if "height" in parameters:
+                        meta["height"] = float(parameters["height"])
+                    self._invalidate_geometry_cache(guid)
+                    self.mark_mesh_dirty(guid)
+                elif meta.get("ifc_class") == "IfcWindow":
+                    if "width" in parameters:
+                        meta["width"] = float(parameters["width"])
+                    if "height" in parameters:
+                        meta["height"] = float(parameters["height"])
+                    self._invalidate_geometry_cache(guid)
+                    self.mark_mesh_dirty(guid)
+
+        if affected_walls:
+            self.recompute_wall_joins(only=affected_walls)
+
+        self.types_rev += 1
+        self.project_rev += 1
+        return {"status": "updated", "type_id": type_id, "parameters": t["parameters"]}
+
+    def delete_type(self, type_id: str) -> bool:
+        if type_id in self.type_registry:
+            del self.type_registry[type_id]
+            self.types_rev += 1
+            return True
+        return False
+
+    def set_element_type(self, guid: str, type_id: str) -> Dict[str, Any]:
+        if guid not in self.element_meta:
+            raise KeyError(f"Element '{guid}' not found")
+        if type_id not in self.type_registry:
+            raise KeyError(f"Type '{type_id}' not found in registry")
+
+        meta = self.element_meta[guid]
+        t = self.type_registry[type_id]
+        meta["type_id"] = type_id
+        meta["name"] = t["name"]
+
+        # Re-link IfcRelDefinesByType
+        entity = meta.get("entity")
+        type_ent = t.get("entity")
+        if entity and type_ent:
+            try:
+                for rel in self.model.by_type("IfcRelDefinesByType"):
+                    if entity in rel.RelatedObjects:
+                        rel_objs = [o for o in rel.RelatedObjects if o != entity]
+                        if rel_objs:
+                            rel.RelatedObjects = rel_objs
+                        else:
+                            self.model.remove(rel)
+                        break
+                ifcopenshell.api.run("type.assign_type", self.model, related_objects=[entity], relating_type=type_ent)
+            except Exception:
+                pass
+
+        if meta.get("ifc_class") in ("IfcWallStandardCase", "IfcWall"):
+            if "thickness" in t["parameters"]:
+                meta["thickness"] = float(t["parameters"]["thickness"])
+            meta["footprint"] = None
+            self._rebuild_wall_representation(guid)
+            self._invalidate_geometry_cache(guid)
+            self.mark_mesh_dirty(guid)
+            self.recompute_wall_joins(only=[guid])
+        elif meta.get("ifc_class") == "IfcDoor":
+            if "width" in t["parameters"]:
+                meta["width"] = float(t["parameters"]["width"])
+            if "height" in t["parameters"]:
+                meta["height"] = float(t["parameters"]["height"])
+            self._invalidate_geometry_cache(guid)
+            self.mark_mesh_dirty(guid)
+        elif meta.get("ifc_class") == "IfcWindow":
+            if "width" in t["parameters"]:
+                meta["width"] = float(t["parameters"]["width"])
+            if "height" in t["parameters"]:
+                meta["height"] = float(t["parameters"]["height"])
+            self._invalidate_geometry_cache(guid)
+            self.mark_mesh_dirty(guid)
+
+        self.project_rev += 1
+        return {"status": "updated", "guid": guid, "type_id": type_id, "name": t["name"]}
     # Transactional state snapshots (GLM Master Spec v2.3 §3.2)
     # A snapshot captures the complete IFC STEP text plus all in-memory
     # tracking state. Entity references are excluded (they are re-resolved
@@ -426,8 +714,14 @@ class BimModelManager:
             "join_policies": copy.deepcopy(self.join_policies),
             "sheets": copy.deepcopy(self.sheets),
             "views": copy.deepcopy(self.views),
+            "dimensions": copy.deepcopy(getattr(self, "dimensions", {})),
             "georeference_data": copy.deepcopy(self.georeference_data),
             "project_name": self.project_name,
+            "type_registry": {
+                tid: {k: copy.deepcopy(v) for k, v in trec.items() if k != "entity"}
+                for tid, trec in getattr(self, "type_registry", {}).items()
+            },
+            "types_rev": getattr(self, "types_rev", 0),
             "mesh_revs": copy.deepcopy(self.mesh_revs),
             "dirty_mesh_guids": copy.copy(self.dirty_mesh_guids),
             "removed_guids_by_rev": copy.deepcopy(self.removed_guids_by_rev),
@@ -442,6 +736,7 @@ class BimModelManager:
             "constraints_rev": self.constraints_rev,
             "wall_joins_rev": self.wall_joins_rev,
             "project_rev": self.project_rev,
+            "dimensions_rev": getattr(self, "dimensions_rev", 0),
         }
 
     def restore_state(self, snap: Dict[str, Any]) -> None:
@@ -525,6 +820,7 @@ class BimModelManager:
         self.join_policies = copy.deepcopy(snap["join_policies"])
         self.sheets = copy.deepcopy(snap.get("sheets", {}))
         self.views = copy.deepcopy(snap.get("views", {}))
+        self.dimensions = copy.deepcopy(snap.get("dimensions", {}))
         self.georeference_data = copy.deepcopy(snap["georeference_data"])
         self.project_name = snap["project_name"]
         self.mesh_revs = copy.deepcopy(snap.get("mesh_revs", {}))
@@ -541,6 +837,13 @@ class BimModelManager:
         self.constraints_rev = snap.get("constraints_rev", 0)
         self.wall_joins_rev = snap.get("wall_joins_rev", 0)
         self.project_rev = snap.get("project_rev", 0)
+        self.dimensions_rev = snap.get("dimensions_rev", 0)
+        self.types_rev = snap.get("types_rev", 0)
+        self.type_registry = copy.deepcopy(snap.get("type_registry", {}))
+        for trec in self.type_registry.values():
+            if trec.get("ifc_class") and trec.get("name"):
+                ents = [e for e in self.model.by_type(trec["ifc_class"]) if getattr(e, "Name", None) == trec["name"]]
+                trec["entity"] = ents[0] if ents else None
 
     def mark_mesh_dirty(self, *guids: str, clear_cache: bool = True) -> None:
         """Marks elements as having modified geometry/placement."""
@@ -554,6 +857,7 @@ class BimModelManager:
                     meta.pop("cached_verts", None)
                     meta.pop("cached_faces", None)
                     meta.pop("bbox", None)
+                    meta["geom_rev"] = meta.get("geom_rev", 0) + 1
 
     def mark_element_removed(self, guid: str) -> None:
         """Records an element deletion so delta queries report remove_guids."""
@@ -564,6 +868,12 @@ class BimModelManager:
         self._pending_removed_items.append({"guid": guid, "level_id": lid})
         self.dirty_mesh_guids.discard(guid)
         self.mesh_revs.pop(guid, None)
+        if hasattr(self, "_prepared_mesh_cache"):
+            for k in [k for k in self._prepared_mesh_cache if k[0] == guid]:
+                self._prepared_mesh_cache.pop(k, None)
+        if hasattr(self, "_cut_mesh_cache"):
+            for k in [k for k in self._cut_mesh_cache if k[0] == guid]:
+                self._cut_mesh_cache.pop(k, None)
 
     def commit_revision(self, rev: int) -> None:
         """Advances dirty elements and removed elements to rev."""
@@ -1016,21 +1326,91 @@ class BimModelManager:
         sp, ep = meta["start"], meta["end"]
         return (sp[0], sp[1]), (ep[0] - sp[0], ep[1] - sp[1])
 
-    def trim_extend_wall(self, guid: str, end_index: int, target_guid: str) -> Dict[str, Any]:
+    def trim_extend_wall(
+        self,
+        guid: str,
+        end_index: int,
+        target_guid: str,
+        corner_mode: bool = True,
+        target_end_index: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
-        Moves one wall endpoint onto its intersection with another wall's baseline.
-
-        `end_index` 0 = start, 1 = end. Trims when the intersection is between the
-        endpoints, extends when it is beyond them — the same operation Revit calls
-        Trim/Extend to corner.
+        Moves wall endpoints onto their intersection with another wall or datum.
+        - corner_mode=True (TR): moves BOTH guid and target_guid endpoints to the intersection.
+        - corner_mode=False: moves guid's endpoint clamped to target's body.
+        - Datum trimming: supports trimming/extending to IfcGrid and Level datums.
+        Uses scoped join recomputes.
         """
-        if guid not in self.element_meta or target_guid not in self.element_meta:
-            raise KeyError("Wall or target wall not found")
+        if guid not in self.element_meta:
+            raise KeyError(f"Wall {guid} not found")
         meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcWallStandardCase", "IfcWall"):
+            raise ValueError("Trim/Extend source must be a wall")
+
+        # 1. Datum trimming to Level
+        level_record = self.levels.get(target_guid)
+        if not level_record:
+            for lid, lv in self.levels.items():
+                if lv.get("name") == target_guid:
+                    level_record = lv
+                    break
+        if level_record is not None:
+            target_elev = float(level_record["elevation"])
+            old_base = meta["start"][2]
+            old_height = float(meta.get("height", FEET_10))
+            if int(end_index) == 1:
+                # Trim / extend top of wall to level
+                new_height = max(0.1, target_elev - old_base)
+                meta["height"] = new_height
+            else:
+                # Trim / extend base of wall to level
+                new_base = target_elev
+                meta["start"][2] = new_base
+                meta["end"][2] = new_base
+                meta["height"] = max(0.1, old_height - (new_base - old_base))
+            meta["footprint"] = None
+            self._rebuild_wall_representation(guid)
+            self.mark_mesh_dirty(guid)
+            return {
+                "status": "datum_trimmed",
+                "guid": guid,
+                "level_id": level_record.get("id", target_guid),
+                "height": meta["height"],
+            }
+
+        if target_guid not in self.element_meta:
+            raise KeyError(f"Target {target_guid} not found")
         target = self.element_meta[target_guid]
-        for m in (meta, target):
-            if m.get("ifc_class") not in ("IfcWallStandardCase", "IfcWall"):
-                raise ValueError("Trim/Extend needs two walls")
+
+        # 2. Datum trimming to IfcGrid
+        if target.get("ifc_class") == "IfcGrid":
+            p1, d1 = self._wall_baseline_line(meta)
+            p2, d2 = self._wall_baseline_line(target)
+            hit = self._line_intersect(p1, d1, p2, d2)
+            if hit is None:
+                raise ValueError("Wall and grid line are parallel")
+            key = "start" if int(end_index) == 0 else "end"
+            old = list(meta[key])
+            meta[key] = [float(hit[0]), float(hit[1]), old[2]]
+            sp, ep = meta["start"], meta["end"]
+            meta["length"] = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
+            meta["angle"] = math.atan2(ep[1] - sp[1], ep[0] - sp[0])
+            meta["footprint"] = None
+            self._rebuild_wall_representation(guid)
+            self.mark_mesh_dirty(guid)
+            self.recompute_wall_joins(only=[guid])
+            return {
+                "status": "datum_trimmed",
+                "guid": guid,
+                "end_index": int(end_index),
+                "target_guid": target_guid,
+                "new_point": [float(hit[0]), float(hit[1])],
+                "length": meta["length"],
+            }
+
+        # 3. Wall to Wall trimming
+        if target.get("ifc_class") not in ("IfcWallStandardCase", "IfcWall"):
+            raise ValueError("Trim/Extend target must be a wall, grid, or level")
 
         p1, d1 = self._wall_baseline_line(meta)
         p2, d2 = self._wall_baseline_line(target)
@@ -1038,29 +1418,86 @@ class BimModelManager:
         if hit is None:
             raise ValueError("Walls are parallel; there is no corner to trim to")
 
-        key = "start" if int(end_index) == 0 else "end"
-        old = list(meta[key])
-        meta[key] = [float(hit[0]), float(hit[1]), old[2]]
-        sp, ep = meta["start"], meta["end"]
-        meta["length"] = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
-        meta["angle"] = math.atan2(ep[1] - sp[1], ep[0] - sp[0])
-        self._rebuild_wall_representation(guid)
-        self.mark_mesh_dirty(guid)
-        self.recompute_wall_joins()
-        return {
-            "status": "trimmed",
-            "guid": guid,
-            "end_index": int(end_index),
-            "new_point": [float(hit[0]), float(hit[1])],
-            "length": meta["length"],
-        }
+        if corner_mode:
+            # Wall 1 endpoint
+            key1 = "start" if int(end_index) == 0 else "end"
+            old1 = list(meta[key1])
+            meta[key1] = [float(hit[0]), float(hit[1]), old1[2]]
+            sp1, ep1 = meta["start"], meta["end"]
+            meta["length"] = math.hypot(ep1[0] - sp1[0], ep1[1] - sp1[1])
+            meta["angle"] = math.atan2(ep1[1] - sp1[1], ep1[0] - sp1[0])
+            meta["footprint"] = None
+            self._rebuild_wall_representation(guid)
+            self.mark_mesh_dirty(guid)
 
-    def split_wall(self, guid: str, at_offset: float) -> Dict[str, Any]:
+            # Target wall endpoint
+            if target_end_index is not None:
+                t_idx = int(target_end_index)
+            else:
+                d_start = math.hypot(target["start"][0] - hit[0], target["start"][1] - hit[1])
+                d_end = math.hypot(target["end"][0] - hit[0], target["end"][1] - hit[1])
+                t_idx = 0 if d_start <= d_end else 1
+
+            key2 = "start" if t_idx == 0 else "end"
+            old2 = list(target[key2])
+            target[key2] = [float(hit[0]), float(hit[1]), old2[2]]
+            sp2, ep2 = target["start"], target["end"]
+            target["length"] = math.hypot(ep2[0] - sp2[0], ep2[1] - sp2[1])
+            target["angle"] = math.atan2(ep2[1] - sp2[1], ep2[0] - sp2[0])
+            target["footprint"] = None
+            self._rebuild_wall_representation(target_guid)
+            self.mark_mesh_dirty(target_guid)
+
+            self.recompute_wall_joins(only=[guid, target_guid])
+            return {
+                "status": "corner_trimmed",
+                "guid": guid,
+                "end_index": int(end_index),
+                "target_guid": target_guid,
+                "target_end_index": t_idx,
+                "new_point": [float(hit[0]), float(hit[1])],
+                "length": meta["length"],
+                "target_length": target["length"],
+            }
+        else:
+            # Single trim / extend: clamp hit to target wall body [target["start"], target["end"]]
+            A = target["start"]
+            B = target["end"]
+            ab_x = B[0] - A[0]
+            ab_y = B[1] - A[1]
+            ab_len_sq = ab_x * ab_x + ab_y * ab_y
+            if ab_len_sq > 1e-12:
+                t = ((hit[0] - A[0]) * ab_x + (hit[1] - A[1]) * ab_y) / ab_len_sq
+                t_clamped = max(0.0, min(1.0, t))
+                clamped_hit = (A[0] + t_clamped * ab_x, A[1] + t_clamped * ab_y)
+            else:
+                clamped_hit = (A[0], A[1])
+
+            key = "start" if int(end_index) == 0 else "end"
+            old = list(meta[key])
+            meta[key] = [float(clamped_hit[0]), float(clamped_hit[1]), old[2]]
+            sp, ep = meta["start"], meta["end"]
+            meta["length"] = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
+            meta["angle"] = math.atan2(ep[1] - sp[1], ep[0] - sp[0])
+            meta["footprint"] = None
+            self._rebuild_wall_representation(guid)
+            self.mark_mesh_dirty(guid)
+            self.recompute_wall_joins(only=[guid, target_guid])
+            return {
+                "status": "trimmed",
+                "guid": guid,
+                "end_index": int(end_index),
+                "new_point": [float(clamped_hit[0]), float(clamped_hit[1])],
+                "length": meta["length"],
+            }
+
+    def split_wall(self, guid: str, at_offset: float, gap: float = 0.0) -> Dict[str, Any]:
         """
-        Splits a wall at `at_offset` along its baseline into two walls.
-
-        The original keeps the first segment (so its GUID and any hosted openings
-        that fall in that range survive); a new wall takes the second.
+        Splits a wall at `at_offset` along its baseline into two walls, optionally with a `gap`.
+        - Re-hosts openings beyond the cut onto the new wall with updated offset and IFC rel.
+        - Strictly refuses if an opening straddles the cut point or gap.
+        - Carries join policy to the second segment.
+        - Uses scoped join recomputation.
         """
         if guid not in self.element_meta:
             raise KeyError(f"Wall {guid} not found")
@@ -1069,36 +1506,118 @@ class BimModelManager:
             raise ValueError("Split is currently supported for walls")
         length = float(meta.get("length", 0.0))
         offset = float(at_offset)
-        if not (0.0 < offset < length):
-            raise ValueError(f"Split offset {offset} must be inside the wall (0..{length:.3f})")
+        gap = float(gap)
+        if gap < 0.0:
+            raise ValueError(f"Split gap {gap} cannot be negative")
+
+        half_gap = gap / 2.0
+        cut_start = offset - half_gap
+        cut_end = offset + half_gap
+
+        if gap > 0.0:
+            if cut_start <= 0.0 or cut_end >= length:
+                raise ValueError(
+                    f"Split-with-gap {gap} at offset {offset} must fit within wall (0..{length:.3f})"
+                )
+        else:
+            if not (0.0 < offset < length):
+                raise ValueError(f"Split offset {offset} must be inside the wall (0..{length:.3f})")
+
+        # Check hosted openings for straddle refusal
+        hosted_openings = list(meta.get("hosted_openings") or [])
+        for op_guid in hosted_openings:
+            op_meta = self.element_meta.get(op_guid)
+            if not op_meta:
+                continue
+            op_offset = float(op_meta.get("offset_along_wall", 0.0))
+            op_width = float(op_meta.get("width", 0.0))
+            op_start = op_offset
+            op_end = op_offset + op_width
+            # Straddle condition: cut intersects opening interior
+            if (op_start < cut_end and cut_start < op_end) or (op_start < offset < op_end):
+                raise ValueError(
+                    f"Cannot split wall across hosted opening '{op_meta.get('name', op_guid)}' "
+                    f"at offset {op_start:.2f}..{op_end:.2f} (cut at {offset:.2f})"
+                )
 
         sp, ep = meta["start"], meta["end"]
         ang = float(meta.get("angle", 0.0))
-        mid = (sp[0] + math.cos(ang) * offset, sp[1] + math.sin(ang) * offset)
-        older_end = list(ep)
+        ux, uy = math.cos(ang), math.sin(ang)
 
-        # New wall for the second half.
+        p1_end = [sp[0] + ux * cut_start, sp[1] + uy * cut_start, sp[2]]
+        p2_start = [sp[0] + ux * cut_end, sp[1] + uy * cut_end, sp[2]]
+        p2_end = [ep[0], ep[1], ep[2]]
+
+        # New wall for the second half
         second = self.add_wall(
-            (mid[0], mid[1], sp[2]), (older_end[0], older_end[1], older_end[2]),
+            (p2_start[0], p2_start[1], p2_start[2]),
+            (p2_end[0], p2_end[1], p2_end[2]),
             height=meta.get("height", FEET_10),
             thickness=meta.get("thickness", INCHES_8),
             level_id=meta.get("level_id"),
             name=f"{meta.get('name')} (2)",
         )
+        second_guid = second["guid"]
+        second_meta = self.element_meta[second_guid]
 
-        # Shorten the original in place, keeping its identity.
-        meta["end"] = [mid[0], mid[1], sp[2]]
-        meta["length"] = offset
+        # Transfer join policy if present
+        if guid in self.join_policies:
+            self.join_policies[second_guid] = copy.deepcopy(self.join_policies[guid])
+
+        # Shorten the original in place, keeping its identity
+        meta["end"] = p1_end
+        meta["length"] = cut_start
+        meta["footprint"] = None
         self._rebuild_wall_representation(guid)
-        self.mark_mesh_dirty(guid)
-        self.recompute_wall_joins()
+
+        # Re-host openings whose offset is beyond cut_end
+        openings_to_rehost = []
+        for op_guid in list(meta.get("hosted_openings") or []):
+            op_meta = self.element_meta.get(op_guid)
+            if not op_meta:
+                continue
+            op_offset = float(op_meta.get("offset_along_wall", 0.0))
+            if op_offset >= cut_end:
+                openings_to_rehost.append(op_guid)
+
+        for op_guid in openings_to_rehost:
+            op_meta = self.element_meta[op_guid]
+            old_offset = float(op_meta.get("offset_along_wall", 0.0))
+            new_offset = old_offset - cut_end
+            op_meta["host_wall_guid"] = second_guid
+            op_meta["offset_along_wall"] = new_offset
+            if "hosted_openings" not in second_meta:
+                second_meta["hosted_openings"] = []
+            second_meta["hosted_openings"].append(op_guid)
+            if "hosted_openings" in meta and op_guid in meta["hosted_openings"]:
+                meta["hosted_openings"].remove(op_guid)
+
+            # Relink IfcRelVoidsElement in IFC model
+            opening_ent = op_meta.get("opening_entity")
+            if opening_ent is not None:
+                try:
+                    for rel in self.model.by_type("IfcRelVoidsElement"):
+                        if rel.RelatedOpeningElement == opening_ent:
+                            rel.RelatingBuildingElement = second_meta["entity"]
+                            break
+                except Exception:
+                    pass
+
+            self.mark_mesh_dirty(op_guid)
+
+        self._invalidate_geometry_cache(guid)
+        self._invalidate_geometry_cache(second_guid)
+        self.mark_mesh_dirty(guid, second_guid)
+        self.recompute_wall_joins(only=[guid, second_guid])
+
         return {
             "status": "split",
             "guid": guid,
-            "new_guid": second["guid"],
+            "new_guid": second_guid,
             "at_offset": offset,
-            "original_length": offset,
-            "new_length": length - offset,
+            "gap": gap,
+            "original_length": meta["length"],
+            "new_length": second_meta["length"],
         }
 
     # =========================================================================
@@ -1240,7 +1759,7 @@ class BimModelManager:
 
     @staticmethod
     def _jsonable(value: Any) -> Any:
-        """Converts numpy arrays/scalars to plain JSON types."""
+        """Converts numpy arrays/scalars to plain JSON types, stripping entity references."""
         if isinstance(value, np.ndarray):
             return value.tolist()
         if isinstance(value, (np.floating, np.integer)):
@@ -1248,7 +1767,13 @@ class BimModelManager:
         if isinstance(value, (list, tuple)):
             return [BimModelManager._jsonable(v) for v in value]
         if isinstance(value, dict):
-            return {k: BimModelManager._jsonable(v) for k, v in value.items()}
+            return {
+                k: BimModelManager._jsonable(v)
+                for k, v in value.items()
+                if k != "entity" and not k.endswith("_entity") and not hasattr(v, "is_a") and "entity_instance" not in str(type(v))
+            }
+        if hasattr(value, "is_a") or "entity_instance" in str(type(value)):
+            return None
         return value
 
     def _build_overlay_element(self, guid: str, meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -1341,6 +1866,181 @@ class BimModelManager:
         converted[2, 3] = feet_to_metres(float(matrix[2, 3]))
         return converted
 
+    #: Vertical placement of a hosted child's own product, in feet of local Z, when
+    #: the record does not carry an explicit `sill_height`. Doors are made at floor
+    #: level and windows carry their sill explicitly, so 0.0 is the correct default
+    #: for both -- and it must match what `add_door` actually used at creation, or a
+    #: reseat would silently move every door.
+    _HOSTED_LOCAL_Z_DEFAULT = 0.0
+
+    def _reseat_hosted_openings(self, host_guid: str) -> int:
+        """
+        Re-asserts every door/window hosted on a wall from its wall-relative offset.
+
+        Why this exists
+        ---------------
+        A hosted child is a placed product whose position is defined relative to its
+        host, so it follows the host *provided the host's own placement is current*.
+        Nothing refreshed the host's placement on every edit path, and the child's
+        local offsets were written as world coordinates at creation, so in practice
+        the two frames disagreed and the opening stayed where it was made.
+
+        Measured before the fix: a wall moved +30 ft reported the wall solid at
+        9.144..15.240 m while its opening was still at 1.524..2.438 m -- the hole did
+        not move with the wall, because `IfcRelVoidsElement` kept cutting the wall with
+        a void that now floated in mid-air.
+
+        Idempotent: placement is recomputed from `offset_along_wall` alone, never
+        composed onto the previous position, so re-running it -- or running it on an
+        unmoved wall -- changes nothing.
+
+        Returns the number of children reseated, so tests and callers can assert on it.
+        """
+        host_meta = self.element_meta.get(host_guid)
+        if not host_meta:
+            return 0
+        reseated = 0
+        for child_guid in list(host_meta.get("hosted_openings") or []):
+            child = self.element_meta.get(child_guid)
+            if not child:
+                continue
+            offset = float(child.get("offset_along_wall", 0.0))
+            local_z = float(child.get("sill_height", self._HOSTED_LOCAL_Z_DEFAULT))
+            # Desired WORLD transform for each part, from the wall's current baseline.
+            # The opening box is nudged out of the wall face so the boolean cut is
+            # clean; the door/panel sits on the baseline. These two must match what
+            # creation used or the void drifts relative to its own door.
+            jobs = (
+                (child.get("opening_entity"), -INCHES_0_625, local_z),
+                (child.get("entity"), 0.0, local_z),
+            )
+            wrote = False
+            for entity, local_y, lz in jobs:
+                if entity is None:
+                    continue
+                desired = self._hosted_placement_matrix(
+                    host_meta, offset, local_y=local_y, local_z=lz
+                )
+                # The frame is read from the entity itself, never assumed: an opening
+                # is parented to its wall, but a door's placement is top-level even
+                # though it fills that opening (measured). Using the wrong frame puts
+                # the part out by exactly the parent's offset.
+                parent = self._placement_parent_entity(entity)
+                if self._write_relative_placement(entity, parent, desired):
+                    wrote = True
+            if wrote:
+                reseated += 1
+                # The child moved, so its own tessellation is stale. This is not a user
+                # edit, so it must not start a constraint solve (`_propagate=False`
+                # semantics); `mark_mesh_dirty` only flags geometry.
+                self.mark_mesh_dirty(child_guid)
+        return reseated
+
+    @staticmethod
+    def _placement_parent_entity(product):
+        """
+        The element that `product`'s ObjectPlacement is expressed relative to, or None
+        when the placement is top-level (i.e. the frame is the world).
+
+        This is read from `PlacementRelTo.PlacesObject`, NOT assumed. The assumption is
+        what makes this area treacherous: a door IS a filling of its opening, so
+        `edit_object_placement` parents it to the opening's placement, but only while
+        that call happens -- and `add_door` writes the door's placement with that call,
+        then `feature.add_filling` runs. Measured, a door's `PlacementRelTo` is None and
+        its placement is top-level, while its opening's IS the wall. So the door's
+        offset must be expressed in WORLD terms while the opening's is expressed in the
+        WALL's frame, and treating them the same is wrong in one direction or the other.
+
+        Reading the link also survives ifcopenshell re-parenting a product later.
+        """
+        placement = getattr(product, "ObjectPlacement", None)
+        if placement is None:
+            return None
+        rel_to = getattr(placement, "PlacementRelTo", None)
+        if rel_to is None:
+            return None
+        owners = getattr(rel_to, "PlacesObject", None)
+        if owners is None:
+            return None
+        if isinstance(owners, (tuple, list)):
+            owners = owners[0] if owners else None
+        return owners
+
+    @staticmethod
+    def _write_relative_placement(product, parent_entity, matrix_feet) -> bool:
+        """
+        Sets a product's local placement so its WORLD transform equals `matrix_feet`,
+        given that its `IfcLocalPlacement` hangs off `parent_entity`'s.
+
+        Why not `ifcopenshell.api.geometry.edit_object_placement`
+        --------------------------------------------------------
+        That usecase is unusable for a hosted child. It rewrites the product's OWN
+        children as a side effect: at the default `should_transform_children=False` it
+        rewrites them to hold their *world* position (documented), and at `True` it
+        treats their current local values as world positions and adds the parent's
+        motion. Both were measured on a +30 ft wall move -- the opening ended at local
+        x = -7.62, exactly `1.524 - 9.144`, the correct local value (5 ft) minus the
+        wall's displacement (30 ft). It also replaces the placement entity, so children
+        get re-parented to the new one.
+
+        This helper does only the `get_relative_placement` arithmetic, then writes the
+        existing placement entity in place. Children are never consulted, so nothing is
+        compensated or double-applied, and `ReferencedByPlacements` is preserved.
+
+        `matrix_feet` is the desired WORLD transform in decimal feet. The stored value
+        is relative to the parent, which is what `PlacementRelTo` means:
+
+            local = inverse(parent_world) @ desired_world
+
+        BOTH SIDES MUST BE IN THE SAME UNIT before that product. The parent's matrix
+        comes back from ifcopenshell in METRES (the IFC's unit) while `matrix_feet` is
+        in feet, so the feet translation is converted to metres FIRST. Composing
+        `inverse(metres) @ feet` is a silently plausible-looking bug: on a door slide it
+        produced `4.5 - 1.3716 = 3.1284` ft of local offset where the answer was
+        `1.3716 - 1.3716 = 0`, i.e. a 0.95 m error in the door's position.
+
+        The frame matters too, and getting it wrong is not cosmetic. A door is parented
+        to its OPENING, and that opening already carries the wall's rotation, so on a
+        90-degree wall the door's correct local offset is `(0, 1.524)` -- not
+        `(1.524, 0)`. Writing the wall-frame value straight through bends the model;
+        measured as test_hosted_openings.py "90 deg door slide" off by 1.293 ft.
+        """
+        placement = getattr(product, "ObjectPlacement", None)
+        if placement is None or not placement.is_a("IfcLocalPlacement"):
+            return False
+        axis = getattr(placement, "RelativePlacement", None)
+        if axis is None or not hasattr(axis, "Location") or axis.Location is None:
+            return False
+
+        # Bring the desired transform into the IFC's unit (metres). Only the translation
+        # is unit-bearing; the rotation is dimensionless, exactly as `_placement_for_ifc`
+        # assumes.
+        desired = np.array(matrix_feet, dtype=float)
+        desired[0, 3] = feet_to_metres(float(desired[0, 3]))
+        desired[1, 3] = feet_to_metres(float(desired[1, 3]))
+        desired[2, 3] = feet_to_metres(float(desired[2, 3]))
+
+        parent_world = np.identity(4)
+        if parent_entity is not None:
+            parent_placement = getattr(parent_entity, "ObjectPlacement", None)
+            if parent_placement is not None:
+                parent_world = np.array(
+                    plc.get_local_placement(parent_placement), dtype=float
+                )
+        # Both operands are now metres; the result is metres and is stored as-is.
+        local = np.linalg.inv(parent_world) @ desired
+
+        # Translation only: this module authors no rotation for a hosted child, so the
+        # existing axis directions are already right and are left alone. A caller needing
+        # a ROTATED child would have to rewrite RefDirection/Axis here too -- flagging it
+        # because silently omitting that is this helper's obvious future failure mode.
+        axis.Location.Coordinates = (
+            float(local[0, 3]),
+            float(local[1, 3]),
+            float(local[2, 3]),
+        )
+        return True
+
     def add_wall(
         self,
         start_pt: Tuple[float, float, float],
@@ -1351,6 +2051,7 @@ class BimModelManager:
         name: str = "Basic Wall : Exterior - 8\" CMU",
         wall_id: Optional[str] = None,
         guid: Optional[str] = None,
+        type_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Creates an IfcWallStandardCase defined by 2D baseline, height, and thickness.
@@ -1359,6 +2060,23 @@ class BimModelManager:
         `guid` re-uses the caller's GUID (overlay replay); `wall_id` is the legacy
         alias kept for callers that predate it.
         """
+        if not type_id:
+            if name == "Basic Wall : Exterior - 8\" CMU":
+                if thickness == INCHES_8:
+                    type_id = "wall-type-cmu-8"
+            else:
+                for tid, trec in getattr(self, "type_registry", {}).items():
+                    if trec["name"] == name:
+                        type_id = tid
+                        break
+
+        type_rec = getattr(self, "type_registry", {}).get(type_id) if type_id else None
+        if type_rec:
+            if "thickness" in type_rec.get("parameters", {}) and (thickness == INCHES_8 or thickness is None):
+                thickness = float(type_rec["parameters"]["thickness"])
+            if name == "Basic Wall : Exterior - 8\" CMU":
+                name = type_rec.get("name", name)
+
         dx = end_pt[0] - start_pt[0]
         dy = end_pt[1] - start_pt[1]
         length = math.hypot(dx, dy)
@@ -1373,6 +2091,14 @@ class BimModelManager:
             "root.create_entity", self.model, ifc_class="IfcWallStandardCase", name=name
         )
         guid = self._apply_guid(wall, guid or wall_id)
+
+        if type_rec and type_rec.get("entity") is not None:
+            try:
+                ifcopenshell.api.run(
+                    "type.assign_type", self.model, related_objects=[wall], relating_type=type_rec["entity"]
+                )
+            except Exception:
+                pass
 
         ifcopenshell.api.run(
             "spatial.assign_container", self.model, relating_structure=storey, products=[wall]
@@ -1417,6 +2143,7 @@ class BimModelManager:
             "guid": guid,
             "ifc_class": "IfcWallStandardCase",
             "name": name,
+            "type_id": type_id,
             "start": list(start_pt),
             "end": list(end_pt),
             "length": length,
@@ -1463,6 +2190,7 @@ class BimModelManager:
         name: str = "Single Flush : 36\" x 84\"",
         swing_flipped: bool = False,
         guid: Optional[str] = None,
+        type_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Creates an IfcDoor hosted inside host wall.
@@ -1470,6 +2198,25 @@ class BimModelManager:
         """
         if host_wall_guid not in self.element_meta:
             raise ValueError(f"Host wall {host_wall_guid} not found.")
+
+        if not type_id:
+            if name == 'Single-Flush : 36" x 84"':
+                if width == DOOR_WIDTH_36 and height == DOOR_HEIGHT_84:
+                    type_id = "door-type-single-flush-36"
+            else:
+                for tid, trec in getattr(self, "type_registry", {}).items():
+                    if trec["name"] == name:
+                        type_id = tid
+                        break
+
+        type_rec = getattr(self, "type_registry", {}).get(type_id) if type_id else None
+        if type_rec:
+            if "width" in type_rec.get("parameters", {}) and (width == DOOR_WIDTH_36 or width is None):
+                width = float(type_rec["parameters"]["width"])
+            if "height" in type_rec.get("parameters", {}) and (height == DOOR_HEIGHT_84 or height is None):
+                height = float(type_rec["parameters"]["height"])
+            if name == 'Single-Flush : 36" x 84"':
+                name = type_rec.get("name", name)
 
         wall_meta = self.element_meta[host_wall_guid]
         wall = wall_meta["entity"]
@@ -1509,6 +2256,15 @@ class BimModelManager:
             "root.create_entity", self.model, ifc_class="IfcDoor", name=name
         )
         door_guid = self._apply_guid(door, guid)
+
+        if type_rec and type_rec.get("entity") is not None:
+            try:
+                ifcopenshell.api.run(
+                    "type.assign_type", self.model, related_objects=[door], relating_type=type_rec["entity"]
+                )
+            except Exception:
+                pass
+
         storey = self.get_storey_by_id(wall_meta["level_id"])
         ifcopenshell.api.run(
             "spatial.assign_container", self.model, relating_structure=storey, products=[door]
@@ -1540,6 +2296,7 @@ class BimModelManager:
             "opening_guid": opening_guid,
             "ifc_class": "IfcDoor",
             "name": name,
+            "type_id": type_id,
             "host_wall_guid": host_wall_guid,
             "offset_along_wall": offset_along_wall,
             "width": width,
@@ -1575,10 +2332,32 @@ class BimModelManager:
         sill_height: float = WINDOW_SILL_36,
         name: str = "Fixed Window : 48\" x 48\"",
         guid: Optional[str] = None,
+        type_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Creates an IfcWindow hosted in wall with automated IfcOpeningElement."""
         if host_wall_guid not in self.element_meta:
             raise ValueError(f"Host wall {host_wall_guid} not found.")
+
+        if not type_id:
+            if name == 'Fixed Window : 48" x 48"':
+                if width == WINDOW_WIDTH_48 and height == WINDOW_HEIGHT_48 and sill_height == WINDOW_SILL_36:
+                    type_id = "window-type-fixed-48x48"
+            else:
+                for tid, trec in getattr(self, "type_registry", {}).items():
+                    if trec["name"] == name:
+                        type_id = tid
+                        break
+
+        type_rec = getattr(self, "type_registry", {}).get(type_id) if type_id else None
+        if type_rec:
+            if "width" in type_rec.get("parameters", {}) and (width == WINDOW_WIDTH_48 or width is None):
+                width = float(type_rec["parameters"]["width"])
+            if "height" in type_rec.get("parameters", {}) and (height == WINDOW_HEIGHT_48 or height is None):
+                height = float(type_rec["parameters"]["height"])
+            if "sill_height" in type_rec.get("parameters", {}) and (sill_height == WINDOW_SILL_36 or sill_height is None):
+                sill_height = float(type_rec["parameters"]["sill_height"])
+            if name == 'Fixed Window : 48" x 48"':
+                name = type_rec.get("name", name)
 
         wall_meta = self.element_meta[host_wall_guid]
         wall = wall_meta["entity"]
@@ -1617,6 +2396,15 @@ class BimModelManager:
             "root.create_entity", self.model, ifc_class="IfcWindow", name=name
         )
         win_guid = self._apply_guid(window, guid)
+
+        if type_rec and type_rec.get("entity") is not None:
+            try:
+                ifcopenshell.api.run(
+                    "type.assign_type", self.model, related_objects=[window], relating_type=type_rec["entity"]
+                )
+            except Exception:
+                pass
+
         storey = self.get_storey_by_id(wall_meta["level_id"])
         ifcopenshell.api.run(
             "spatial.assign_container", self.model, relating_structure=storey, products=[window]
@@ -1648,6 +2436,7 @@ class BimModelManager:
             "opening_guid": opening_guid,
             "ifc_class": "IfcWindow",
             "name": name,
+            "type_id": type_id,
             "host_wall_guid": host_wall_guid,
             "offset_along_wall": offset_along_wall,
             "width": width,
@@ -1914,6 +2703,14 @@ class BimModelManager:
         if guid not in self.element_meta:
             return False
 
+        if hasattr(self, "dimensions") and self.dimensions:
+            dead_dims = [
+                did for did, d in self.dimensions.items()
+                if (d.get("ref_a", {}).get("guid") == guid or d.get("ref_b", {}).get("guid") == guid)
+            ]
+            for did in dead_dims:
+                self.delete_dimension(did)
+
         meta = self.element_meta[guid]
         ifc_class = meta.get("ifc_class")
         if ifc_class == "IfcGrid":
@@ -2026,6 +2823,7 @@ class BimModelManager:
                     cv[i] + _dx if i % 3 == 0 else (cv[i] + _dy if i % 3 == 1 else cv[i] + _dz)
                     for i in range(len(cv))
                 ]
+                meta["geom_rev"] = meta.get("geom_rev", 0) + 1
             if "bbox" in meta and "min" in meta["bbox"]:
                 meta["bbox"]["min"][0] += dx
                 meta["bbox"]["min"][1] += dy
@@ -2034,6 +2832,15 @@ class BimModelManager:
                 meta["bbox"]["max"][1] += dy
                 meta["bbox"]["max"][2] += dz
             translated = True
+            # Order matters, and it is the whole fix:
+            #   1. refresh the WALL's own ObjectPlacement from its new baseline. The
+            #      wall's body profile is authored in wall-local XY, so this placement
+            #      is what positions it in the world.
+            #   2. re-assert each hosted child in that same (now current) local frame.
+            # Doing 2 before 1 was measured to put an opening at 19.8 m instead of
+            # 10.67 m on a +30 ft wall move.
+            self._refresh_wall_placement(guid)
+            self._reseat_hosted_openings(guid)
             # Rebuild join-trimmed geometry and placement from the new baseline, scoped
             # to this wall and the walls it joined before or joins now.
             _new_pts = [
@@ -2057,25 +2864,10 @@ class BimModelManager:
             host_angle = float(host_meta.get("angle", 0.0))
             ux, uy = math.cos(host_angle), math.sin(host_angle)
             meta["offset_along_wall"] += dx * ux + dy * uy
-            opening = meta["opening_entity"]
-            door_win = meta["entity"]
-            sill = float(meta.get("sill_height", 0.0))
-
-            op_matrix = self._hosted_placement_matrix(
-                host_meta, meta["offset_along_wall"], local_y=-INCHES_0_625, local_z=sill
-            )
-            ifcopenshell.api.run(
-                "geometry.edit_object_placement", self.model, product=opening,
-            matrix=self._placement_for_ifc(op_matrix), is_si=False
-            )
-
-            dw_matrix = self._hosted_placement_matrix(
-                host_meta, meta["offset_along_wall"], local_y=0.0, local_z=sill
-            )
-            ifcopenshell.api.run(
-                "geometry.edit_object_placement", self.model, product=door_win,
-            matrix=self._placement_for_ifc(dw_matrix), is_si=False
-            )
+            # One placement implementation for the opening/product pair, shared with
+            # the host-move path above. Duplicating the matrix maths here is how the
+            # two paths drifted apart in the first place.
+            self._reseat_hosted_openings(meta["host_wall_guid"])
             translated = True
 
         elif ifc_class == "IfcGrid":
@@ -2098,6 +2890,7 @@ class BimModelManager:
                     cv[i] + _dx if i % 3 == 0 else (cv[i] + _dy if i % 3 == 1 else cv[i] + _dz)
                     for i in range(len(cv))
                 ]
+                meta["geom_rev"] = meta.get("geom_rev", 0) + 1
             if "bbox" in meta and "min" in meta["bbox"]:
                 meta["bbox"]["min"][0] += dx
                 meta["bbox"]["min"][1] += dy
@@ -2121,7 +2914,15 @@ class BimModelManager:
         # it, so it is truthy on the first call and the hook never ran.)
         if translated:
             self.mark_mesh_dirty(guid)
-            if ifc_class in ("IfcDoor", "IfcWindow"):
+            if ifc_class in ("IfcWall", "IfcWallStandardCase"):
+                # The wall's own mesh changed AND its hosted children moved with it
+                # (`_reseat_hosted_openings`, which dirties each child itself).
+                for child_guid in list(meta.get("hosted_openings") or []):
+                    self.mark_mesh_dirty(child_guid)
+            elif ifc_class in ("IfcDoor", "IfcWindow"):
+                # The host wall's solid is unchanged by a slide, but its cached
+                # tessellation and the plan slice derived from it are still keyed to
+                # the opening's old position, so re-send it.
                 self.mark_mesh_dirty(meta.get("host_wall_guid"))
         if translated and _propagate:
             try:
@@ -2138,27 +2939,31 @@ class BimModelManager:
         Runs on both axes because a constraint may pin an element on the axis the
         user did not drag.
         """
-        from constraint_solver import ConstraintSolver
+        try:
+            from constraint_solver import ConstraintSolver, SolverUnavailable
 
-        solver = ConstraintSolver(self)
-        scope = solver.affected_guids([moved_guid])
-        if len(scope) <= 1:
-            return
-        for axis in ("x", "y"):
-            pins = {
-                g: self.get_element_coord(g, axis)
-                for g in (moved_guid,)
-                if g in self.element_meta
-            }
-            result = solver.solve(axis=axis, pins=pins, scope=scope)
-            if result.ok:
-                solver.apply_solve(result)
-            elif result.status == "conflict":
-                self.last_constraint_conflict = {
-                    "axis": axis,
-                    "constraints": result.conflicting,
-                    "triggered_by": moved_guid,
+            solver = ConstraintSolver(self)
+            scope = solver.affected_guids([moved_guid])
+            if len(scope) <= 1:
+                return
+            for axis in ("x", "y"):
+                pins = {
+                    g: self.get_element_coord(g, axis)
+                    for g in (moved_guid,)
+                    if g in self.element_meta
                 }
+                result = solver.solve(axis=axis, pins=pins, scope=scope)
+                if result.ok:
+                    solver.apply_solve(result)
+                elif result.status == "conflict":
+                    self.last_constraint_conflict = {
+                        "axis": axis,
+                        "constraints": result.conflicting,
+                        "triggered_by": moved_guid,
+                    }
+        except Exception as e:
+            # Solver unavailable (e.g. planegcs not installed) or conflict: keep model intact
+            return
 
         # EQ is a relation over the whole span, so it is re-asserted last: if the
         # user moved an interior element of an equalized span, the constraint wins
@@ -2175,12 +2980,18 @@ class BimModelManager:
                 continue
             axis = c.get("axis", "x")
             try:
-                eq = solver.equalize(
-                    c.get("span_start_guid"), c.get("span_end_guid"),
-                    list(c.get("interior_guids") or []), axis,
-                )
-                if eq.ok:
-                    solver.apply_solve(eq)
+                if c.get("span_start_guid") == c.get("span_end_guid"):
+                    self.equalize_span(
+                        c.get("span_start_guid"), c.get("span_end_guid"),
+                        list(c.get("interior_guids") or []), axis,
+                    )
+                else:
+                    eq = solver.equalize(
+                        c.get("span_start_guid"), c.get("span_end_guid"),
+                        list(c.get("interior_guids") or []), axis,
+                    )
+                    if eq.ok:
+                        solver.apply_solve(eq)
             except Exception as e:
                 print(f"Notice: re-equalizing span {c.get('id')} failed: {e}")
 
@@ -2385,6 +3196,11 @@ class BimModelManager:
             _new_ends = [
                 (float(p[0]), float(p[1])) for p in (sp, ep) if p
             ]
+            # A changed start/end moves the baseline, so refresh the wall's own
+            # placement and then re-assert its hosted openings in that frame. Without
+            # this, resizing a wall orphans its doors exactly as translating one did.
+            self._refresh_wall_placement(guid)
+            self._reseat_hosted_openings(guid)
             self._recompute_after_joined_edit(guid, old_points=_old_ends, new_points=_new_ends)
 
         # Case 3: Door / Window
@@ -2397,6 +3213,8 @@ class BimModelManager:
                 meta["height"] = float(updates["height"])
             if "swing_flipped" in updates and updates["swing_flipped"] is not None:
                 meta["swing_flipped"] = bool(updates["swing_flipped"])
+            # Any of these changes where the opening/product pair must sit.
+            self._reseat_hosted_openings(meta.get("host_wall_guid"))
 
         self.mark_mesh_dirty(guid, clear_cache=False)
         return {
@@ -2530,12 +3348,20 @@ class BimModelManager:
         if not interior_guids:
             raise ValueError("At least one interior element required to equalize.")
 
-        pos_start = self.get_element_coord(span_start_guid, axis)
-        pos_end = self.get_element_coord(span_end_guid, axis)
-        total_span = pos_end - pos_start
+        is_same_host = (span_start_guid == span_end_guid)
+        host_meta = self.element_meta.get(span_start_guid) if is_same_host else None
+
+        if is_same_host and host_meta and host_meta.get("ifc_class") in ("IfcWall", "IfcWallStandardCase"):
+            pos_start = 0.0
+            total_span = float(host_meta.get("length", 0.0))
+            pos_end = total_span
+        else:
+            pos_start = self.get_element_coord(span_start_guid, axis)
+            pos_end = self.get_element_coord(span_end_guid, axis)
+            total_span = pos_end - pos_start
 
         num_segments = len(interior_guids) + 1
-        spacing = total_span / num_segments
+        spacing = total_span / num_segments if num_segments > 0 else 0.0
 
         # Reposition each interior element to equalized position
         for i, int_guid in enumerate(interior_guids):
@@ -2545,11 +3371,13 @@ class BimModelManager:
             target_pos = pos_start + (i + 1) * spacing
 
             if meta.get("ifc_class") in ("IfcDoor", "IfcWindow"):
-                # If hosted on a wall starting at (0,0), offset corresponds directly to spacing
+                h_meta = self.element_meta.get(meta.get("host_wall_guid"))
+                h_angle = float(h_meta.get("angle", 0.0)) if h_meta else 0.0
+                ux, uy = math.cos(h_angle), math.sin(h_angle)
                 current_off = meta.get("offset_along_wall", 0.0)
                 desired_off = (i + 1) * spacing - (meta.get("width", 1.0) / 2.0)
                 delta_off = desired_off - current_off
-                self.translate_element(int_guid, delta_off, 0.0, 0.0)
+                self.translate_element(int_guid, delta_off * ux, delta_off * uy, 0.0)
             else:
                 curr_pos = self.get_element_coord(int_guid, axis)
                 d = target_pos - curr_pos
@@ -2594,6 +3422,283 @@ class BimModelManager:
             self.save_constraints_to_ifc()
             return True
         return False
+
+    # =========================================================================
+    # PARAMETRIC OVERLAY DIMENSIONS & DIMENSION-DRIVEN EDITING (Phase 2)
+    # =========================================================================
+
+    def _resolve_ref_coords(self, ref: Dict[str, Any]) -> Tuple[float, float]:
+        """Resolves 2D coordinates [x, y] in decimal feet for a dimension witness reference."""
+        if not isinstance(ref, dict):
+            return (0.0, 0.0)
+        guid = ref.get("guid") or ref.get("level_id")
+        if guid and hasattr(self, "levels"):
+            if guid in self.levels:
+                elev = float(self.levels[guid].get("elevation", 0.0))
+                return (0.0, elev)
+            for lid, lv in self.levels.items():
+                if lv.get("name", "").lower() == str(guid).lower() or lid.lower() == str(guid).lower():
+                    return (0.0, float(lv.get("elevation", 0.0)))
+        if not guid or guid not in self.element_meta:
+            if "point" in ref and len(ref["point"]) >= 2:
+                return (float(ref["point"][0]), float(ref["point"][1]))
+            return (0.0, 0.0)
+
+        meta = self.element_meta[guid]
+        target_ref = ref.get("ref", "center")
+        if target_ref == "start" and "start" in meta and meta["start"]:
+            return (float(meta["start"][0]), float(meta["start"][1]))
+        if target_ref == "end" and "end" in meta and meta["end"]:
+            return (float(meta["end"][0]), float(meta["end"][1]))
+        if target_ref in ("center", "midpoint"):
+            if "start" in meta and "end" in meta and meta["start"] and meta["end"]:
+                sp, ep = meta["start"], meta["end"]
+                return ((float(sp[0]) + float(ep[0])) / 2.0, (float(sp[1]) + float(ep[1])) / 2.0)
+            if "bbox" in meta and "min" in meta["bbox"] and "max" in meta["bbox"]:
+                b = meta["bbox"]
+                return ((float(b["min"][0]) + float(b["max"][0])) / 2.0, (float(b["min"][1]) + float(b["max"][1])) / 2.0)
+        if "start" in meta and meta["start"]:
+            return (float(meta["start"][0]), float(meta["start"][1]))
+        return (0.0, 0.0)
+
+    def create_dimension(
+        self,
+        ref_a: Dict[str, Any],
+        ref_b: Dict[str, Any],
+        kind: str = "aligned",
+        axis: str = "aligned",
+        offset: float = 1.0,
+        value: Optional[float] = None,
+        is_locked: bool = False,
+        eq_group: Optional[str] = None,
+        dimension_id: Optional[str] = None,
+        refs: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Creates a persistent parametric dimension object in the overlay (A4).
+        If `is_locked` is True, registers an active distance constraint lock.
+        """
+        dim_id = dimension_id or f"dim_{uuid.uuid4().hex[:8]}"
+
+        # Derive initial value if not explicitly passed
+        if value is None:
+            if ref_a.get("guid") == ref_b.get("guid") and ref_a.get("guid") in self.element_meta:
+                meta = self.element_meta[ref_a["guid"]]
+                if "start" in meta and "end" in meta and meta["start"] and meta["end"]:
+                    sp, ep = meta["start"], meta["end"]
+                    value = float(math.hypot(ep[0] - sp[0], ep[1] - sp[1]))
+            if value is None:
+                pa = self._resolve_ref_coords(ref_a)
+                pb = self._resolve_ref_coords(ref_b)
+                if axis == "x":
+                    value = abs(pb[0] - pa[0])
+                elif axis == "y":
+                    value = abs(pb[1] - pa[1])
+                else:
+                    value = float(math.hypot(pb[0] - pa[0], pb[1] - pa[1]))
+
+        val_float = float(value if value is not None else 10.0)
+
+        constraint_id = None
+        if is_locked:
+            guid_a = ref_a.get("guid")
+            guid_b = ref_b.get("guid")
+            if guid_a and guid_b and guid_a != guid_b and guid_a in self.element_meta and guid_b in self.element_meta:
+                c = self.add_dimension_lock(
+                    guid_a=guid_a,
+                    guid_b=guid_b,
+                    locked_distance=val_float,
+                    is_locked=True,
+                    axis=axis if axis in ("x", "y") else "x",
+                )
+                constraint_id = c.get("id")
+
+        dim = {
+            "id": dim_id,
+            "kind": kind,
+            "ref_a": copy.deepcopy(ref_a),
+            "ref_b": copy.deepcopy(ref_b),
+            "axis": axis,
+            "offset": float(offset),
+            "value": val_float,
+            "is_locked": bool(is_locked),
+            "constraint_id": constraint_id,
+            "eq_group": eq_group,
+            "refs": copy.deepcopy(refs) if refs else None,
+        }
+        self.dimensions[dim_id] = dim
+        self.dimensions_rev += 1
+        self.constraints_rev += 1
+        self.project_rev += 1
+        return dim
+
+    def delete_dimension(self, dimension_id: str) -> bool:
+        """Deletes a dimension object and releases any associated constraint lock."""
+        if dimension_id not in self.dimensions:
+            return False
+        dim = self.dimensions.pop(dimension_id)
+        cid = dim.get("constraint_id")
+        if cid and cid in self.constraints:
+            self.delete_constraint(cid)
+        self.dimensions_rev += 1
+        self.constraints_rev += 1
+        self.project_rev += 1
+        return True
+
+    def set_dimension_value(
+        self,
+        dimension_id: str,
+        value: float,
+        anchor: str = "start",
+    ) -> Dict[str, Any]:
+        """
+        Sets the value of a dimension and re-solves the geometry (Phase 2.5).
+        Carries the TARGET VALUE (not a delta).
+        - For a single-wall dimension (start <-> end), resizes the wall along its baseline.
+        - For a two-element dimension, translates the unanchored element and solves constraints.
+        """
+        if value <= 0:
+            raise ValueError(f"Dimension value must be positive, got {value}")
+
+        val_float = float(value)
+
+        # Helper to find level ID by ID or Name
+        def _lookup_level(ident):
+            if not ident or not hasattr(self, "levels"):
+                return None
+            if ident in self.levels:
+                return ident
+            for lid, lv in self.levels.items():
+                if lv.get("name", "").lower() == str(ident).lower() or lid.lower() == str(ident).lower():
+                    return lid
+            return None
+
+        # Case 0: dimension_id is directly a level_id in self.levels (Task 2.7)
+        lvl_target = _lookup_level(dimension_id)
+        if lvl_target:
+            self.move_level(lvl_target, val_float)
+            self.dimensions_rev += 1
+            self.constraints_rev += 1
+            self.project_rev += 1
+            return {"status": "updated", "level_id": lvl_target, "elevation": val_float}
+
+        # Case 1: dimension_id exists in self.dimensions
+        if dimension_id in self.dimensions:
+            dim = self.dimensions[dimension_id]
+            ref_a = dim.get("ref_a", {})
+            ref_b = dim.get("ref_b", {})
+            guid_a = ref_a.get("guid") or ref_a.get("level_id")
+            guid_b = ref_b.get("guid") or ref_b.get("level_id")
+
+            # Check if this dimension targets a level
+            lvl_b = _lookup_level(guid_b)
+            if lvl_b:
+                lvl_a = _lookup_level(guid_a)
+                if lvl_a:
+                    elev_a = float(self.levels[lvl_a].get("elevation", 0.0))
+                    elev_b = float(self.levels[lvl_b].get("elevation", 0.0))
+                    sign = 1.0 if elev_b >= elev_a else -1.0
+                    target_elev = elev_a + sign * val_float
+                else:
+                    target_elev = val_float
+                self.move_level(lvl_b, target_elev)
+                dim["value"] = val_float
+                self.dimensions_rev += 1
+                self.constraints_rev += 1
+                self.project_rev += 1
+                return {"status": "updated", "dimension_id": dimension_id, "value": val_float}
+
+            if guid_a and (guid_a == guid_b or not guid_b):
+                self._resize_wall_length(guid_a, val_float, anchor=anchor)
+                dim["value"] = val_float
+                self._solve_constraints_after_move(guid_a)
+            elif guid_a and guid_b:
+                pa = self._resolve_ref_coords(ref_a)
+                pb = self._resolve_ref_coords(ref_b)
+                axis = dim.get("axis", "aligned")
+                if axis == "x":
+                    cur_diff = pb[0] - pa[0]
+                    sign = 1.0 if cur_diff >= 0 else -1.0
+                    target_x = pa[0] + sign * val_float
+                    dx = target_x - pb[0]
+                    dy = 0.0
+                elif axis == "y":
+                    cur_diff = pb[1] - pa[1]
+                    sign = 1.0 if cur_diff >= 0 else -1.0
+                    target_y = pa[1] + sign * val_float
+                    dx = 0.0
+                    dy = target_y - pb[1]
+                else:
+                    dist = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
+                    if dist > 1e-6:
+                        ux = (pb[0] - pa[0]) / dist
+                        uy = (pb[1] - pa[1]) / dist
+                        target_x = pa[0] + ux * val_float
+                        target_y = pa[1] + uy * val_float
+                        dx = target_x - pb[0]
+                        dy = target_y - pb[1]
+                    else:
+                        dx = val_float
+                        dy = 0.0
+
+                self.translate_element(guid_b, dx, dy, 0.0)
+                dim["value"] = val_float
+                cid = dim.get("constraint_id")
+                if cid and cid in self.constraints:
+                    self.constraints[cid]["locked_distance"] = val_float
+                try:
+                    self._solve_constraints_after_move(guid_b)
+                except Exception:
+                    pass
+
+        # Case 2: dimension_id is an element GUID directly in self.element_meta
+        elif dimension_id in self.element_meta:
+            self._resize_wall_length(dimension_id, val_float, anchor=anchor)
+            # Synchronize any single-wall dimensions monitoring this element
+            for d in self.dimensions.values():
+                if d.get("ref_a", {}).get("guid") == dimension_id and d.get("ref_b", {}).get("guid") == dimension_id:
+                    d["value"] = val_float
+            try:
+                self._solve_constraints_after_move(dimension_id)
+            except Exception:
+                pass
+        else:
+            raise KeyError(f"Dimension or element '{dimension_id}' not found")
+
+        self.dimensions_rev += 1
+        self.constraints_rev += 1
+        self.project_rev += 1
+        return {"status": "updated", "dimension_id": dimension_id, "value": val_float}
+
+    def _resize_wall_length(self, guid: str, new_length: float, anchor: str = "start") -> None:
+        """Resizes a wall along its existing baseline to `new_length` in decimal feet."""
+        if guid not in self.element_meta:
+            raise KeyError(f"Wall {guid} not found")
+        meta = self.element_meta[guid]
+        if meta.get("ifc_class") not in ("IfcWall", "IfcWallStandardCase"):
+            raise ValueError(f"Length resize only supported for walls, got {meta.get('ifc_class')}")
+
+        sp = list(meta["start"])
+        ep = list(meta["end"])
+        cur_len = math.hypot(ep[0] - sp[0], ep[1] - sp[1])
+        if cur_len < 1e-6:
+            ux, uy = 1.0, 0.0
+        else:
+            ux = (ep[0] - sp[0]) / cur_len
+            uy = (ep[1] - sp[1]) / cur_len
+
+        if anchor == "end":
+            new_sp = [ep[0] - ux * new_length, ep[1] - uy * new_length, sp[2] if len(sp) > 2 else 0.0]
+            self.update_element(guid, {"start": new_sp})
+        elif anchor == "center":
+            mx, my = (sp[0] + ep[0]) / 2.0, (sp[1] + ep[1]) / 2.0
+            hl = new_length / 2.0
+            new_sp = [mx - ux * hl, my - uy * hl, sp[2] if len(sp) > 2 else 0.0]
+            new_ep = [mx + ux * hl, my + uy * hl, ep[2] if len(ep) > 2 else 0.0]
+            self.update_element(guid, {"start": new_sp, "end": new_ep})
+        else:  # default "start" (end moves along baseline)
+            new_ep = [sp[0] + ux * new_length, sp[1] + uy * new_length, ep[2] if len(ep) > 2 else 0.0]
+            self.update_element(guid, {"end": new_ep})
 
     def set_wall_join(
         self,
@@ -3099,6 +4204,21 @@ class BimModelManager:
         return (p1[0] + d1[0] * t, p1[1] + d1[1] * t)
 
     def _refresh_wall_placement(self, guid):
+        """
+        Writes the wall's own ObjectPlacement from its baseline.
+
+        Children are deliberately NOT transformed here (`should_transform_children`
+        stays at its default). `_reseat_hosted_openings` is the single authority for
+        where a hosted opening sits: it writes each child's placement in the wall's
+        LOCAL frame, which is the frame ifcopenshell already parents them in (the
+        opening's `PlacementRelTo` is the wall's placement).
+
+        Passing `should_transform_children=True` here was tried and is WRONG: that flag
+        treats the children's current local values as world positions and adds the
+        wall's motion to them, so it double-applies the move. Measured on a +30 ft wall
+        move, the opening ended at local x = -7.62 -- exactly `1.524 - 9.144`, the
+        reseat's correct local value (5 ft) minus the wall's displacement (30 ft).
+        """
         meta = self.element_meta[guid]
         wall = meta.get("entity")
         if wall is None:
@@ -3118,7 +4238,7 @@ class BimModelManager:
         matrix[2, 3] = float(sp[2]) if len(sp) > 2 else 0.0
         ifcopenshell.api.run(
             "geometry.edit_object_placement", self.model, product=wall,
-            matrix=self._placement_for_ifc(matrix), is_si=False
+            matrix=self._placement_for_ifc(matrix), is_si=False,
         )
 
     def _invalidate_geometry_cache(self, *guids: str) -> None:
@@ -3178,6 +4298,9 @@ class BimModelManager:
             "geometry.assign_representation", self.model, product=wall, representation=rep
         )
         meta["representation_entity"] = rep
+        # Re-assert the placement from the (unchanged) baseline. Children are not
+        # transformed here -- `_reseat_hosted_openings` owns them, in the wall's local
+        # frame. See `_refresh_wall_placement` for why transforming them here is wrong.
         self._refresh_wall_placement(guid)
 
     def _detach_representations(self, product) -> int:
@@ -3265,6 +4388,7 @@ class BimModelManager:
     ELEMENT_PARAM_FIELDS = (
         "ifc_class",
         "name",
+        "type_id",
         "start",
         "end",
         "length",
@@ -3308,6 +4432,7 @@ class BimModelManager:
         ifc_class = rec.get("ifc_class")
         name = rec.get("name") or ifc_class or "Element"
         level_id = rec.get("level_id")
+        type_id = rec.get("type_id")
 
         try:
             if ifc_class in ("IfcWallStandardCase", "IfcWall"):
@@ -3320,6 +4445,7 @@ class BimModelManager:
                     height=float(rec.get("height", FEET_10)),
                     thickness=float(rec.get("thickness", 0.2)),
                     level_id=level_id, name=name, guid=guid,
+                    type_id=type_id,
                 )
 
             elif ifc_class in ("IfcDoor", "IfcWindow"):
@@ -3336,6 +4462,7 @@ class BimModelManager:
                         name=name,
                         swing_flipped=bool(rec.get("swing_flipped", False)),
                         guid=guid,
+                        type_id=type_id,
                     )
                 else:
                     meta = self.add_window(
@@ -3345,6 +4472,7 @@ class BimModelManager:
                         height=float(rec.get("height", WINDOW_HEIGHT_48)),
                         sill_height=float(rec.get("sill_height", WINDOW_SILL_36)),
                         name=name, guid=guid,
+                        type_id=type_id,
                     )
 
             elif ifc_class == "IfcSlab":
@@ -3430,6 +4558,13 @@ class BimModelManager:
         self.join_policies = {}
         self.constraints = self._jsonable(overlay.get("constraints", {}) or {})
 
+        # Restore types from overlay if present
+        if overlay.get("types"):
+            for t in overlay["types"]:
+                tid = t.get("id")
+                if tid:
+                    self._register_type_entity(tid, t.get("name", tid), t.get("ifc_class", "IfcWallType"), t.get("parameters", {}))
+
         # Levels: keep whatever the IFC import produced (storeys are structural)
         # but adopt overlay names/elevations where they exist.
         for lv in overlay.get("levels", []) or []:
@@ -3508,6 +4643,16 @@ class BimModelManager:
                     self.views[vid] = copy.deepcopy(v)
             elif isinstance(raw_views, dict):
                 self.views = copy.deepcopy(raw_views)
+
+        if "dimensions" in overlay and isinstance(overlay["dimensions"], (list, dict)):
+            raw_dims = overlay["dimensions"]
+            self.dimensions = {}
+            if isinstance(raw_dims, list):
+                for d in raw_dims:
+                    did = d.get("id") or f"dim_{uuid.uuid4().hex[:8]}"
+                    self.dimensions[did] = copy.deepcopy(d)
+            elif isinstance(raw_dims, dict):
+                self.dimensions = copy.deepcopy(raw_dims)
 
         if reported_ifc_guids:
             overlay_guids = set(elements.keys())
@@ -3639,6 +4784,7 @@ class BimModelManager:
         meta["cached_verts"] = verts
         meta["cached_faces"] = faces
         meta["cached_verts_is_feet"] = False
+        meta["geom_rev"] = meta.get("geom_rev", 0) + 1
 
     def _meshes_for_projection(self) -> List[Dict[str, Any]]:
         """
@@ -3687,6 +4833,7 @@ class BimModelManager:
                 "name": meta.get("name"),
                 "vertices": verts,
                 "indices": faces,
+                "geom_rev": meta.get("geom_rev", 0),
             })
         return meshes
 
@@ -4272,7 +5419,11 @@ class BimModelManager:
                     "renderer": "mesh-hlr", "view_type": view_type,
                     "error": "no geometry"}
 
-        projector = MeshHlrProjector(meshes)
+        projector = MeshHlrProjector(
+            meshes,
+            prepared_cache=getattr(self, "_prepared_mesh_cache", None),
+            cut_cache=getattr(self, "_cut_mesh_cache", None),
+        )
         # A plan cuts; an elevation does not; a section does.
         cut_z = None
         if view_type in ("floor_plan", "plan", "section"):
@@ -4482,7 +5633,11 @@ class BimModelManager:
             # handing out the cached object would corrupt it for the next caller.
             return copy.deepcopy(cached[1])
 
-        projector = MeshHlrProjector(meshes)
+        projector = MeshHlrProjector(
+            meshes,
+            prepared_cache=getattr(self, "_prepared_mesh_cache", None),
+            cut_cache=getattr(self, "_cut_mesh_cache", None),
+        )
         # The lineweight table is applied here too, so the plan entry point and
         # `render_2d_view` produce identically styled output. Applying it on only one
         # of the two paths is the kind of inconsistency that makes the same drawing
@@ -4824,6 +5979,35 @@ class BimModelManager:
         contract.setdefault("dimensions", [])
         contract["cut_elevation"] = float(cut_elevation)
 
+        levels_svg = []
+        is_vert_view = view_type in ("elevation", "section")
+        if is_vert_view and hasattr(self, "levels") and self.levels:
+            import re as _re
+            xs: List[float] = []
+            for pkey in ("cut_paths", "projection_paths"):
+                for entry in contract.get(pkey, []) or []:
+                    nums = [float(v) for v in _re.findall(r"-?\d+\.?\d*", entry.get("d", ""))]
+                    xs.extend(nums[0::2])
+            min_x = min(xs) if xs else -20.0
+            max_x = max(xs) if xs else 20.0
+            tail_x = min_x - FEET_4
+            bubble_x = max_x + FEET_6
+
+            for lid, lv in sorted(self.levels.items(), key=lambda item: float(item[1].get("elevation", 0.0))):
+                elev = float(lv.get("elevation", 0.0))
+                name = lv.get("name", f"Level {lid}")
+                levels_svg.append({
+                    "id": lid,
+                    "name": name,
+                    "elevation": elev,
+                    "text": f"{name}  {format_feet_inches(elev)}",
+                    "elevation_text": format_feet_inches(elev),
+                    "d": f"M {tail_x:.3f} {elev:.3f} L {bubble_x:.3f} {elev:.3f}",
+                    "circle_center": [bubble_x, elev],
+                    "class": "level-line",
+                })
+        contract["levels"] = levels_svg
+
         # Apply the drafting rule that hidden-line removal alone cannot know: a wall
         # shorter than 6 ft is DRAWN IN PROJECTION even when the cut plane passes
         # through it, because a 4 ft wall is not sectioned in a plan. This lives here,
@@ -4848,8 +6032,37 @@ class BimModelManager:
         # `_mesh_hlr_plan_contract` silently stopped rotating plans for a rotated model
         # (`plan_rotation` is -17.1 deg on the reference building).
         contract = self._orient_plan(contract, self._plan_rotation())
-        if not contract.get("dimensions"):
-            contract["dimensions"] = self._overall_dimensions(contract)
+        dims_out = []
+        if hasattr(self, "dimensions") and self.dimensions:
+            for did, d in self.dimensions.items():
+                ref_a = d.get("ref_a", {})
+                ref_b = d.get("ref_b", {})
+                pa = self._resolve_ref_coords(ref_a)
+                pb = self._resolve_ref_coords(ref_b)
+                dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+                dist = _math.hypot(dx, dy)
+                if dist > 1e-6:
+                    nx, ny = -dy / dist, dx / dist
+                else:
+                    nx, ny = 0.0, 1.0
+                val = float(d.get("value", dist))
+                dims_out.append({
+                    "id": did,
+                    "guid": ref_a.get("guid"),
+                    "kind": d.get("kind", "aligned"),
+                    "start": [float(pa[0]), float(pa[1])],
+                    "end": [float(pb[0]), float(pb[1])],
+                    "length": val,
+                    "text": format_feet_inches(val),
+                    "offset_norm": [float(nx), float(ny)],
+                    "is_locked": bool(d.get("is_locked", False)),
+                    "ref_a": ref_a,
+                    "ref_b": ref_b,
+                    "axis": d.get("axis", "aligned"),
+                })
+        if not dims_out:
+            dims_out = self._overall_dimensions(contract)
+        contract["dimensions"] = dims_out
         return contract
 
     # =========================================================================
@@ -4910,6 +6123,38 @@ class BimModelManager:
         del self.sheets[sheet_id]
         self.sheets_rev += 1
         return True
+
+    def update_sheet(self, sheet_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Updates metadata of an existing sheet (e.g. sheet_title, sheet_number, drawn_by, date).
+        """
+        if sheet_id not in self.sheets:
+            raise ValueError(f"Sheet '{sheet_id}' not found")
+        s = self.sheets[sheet_id]
+        if "sheet_number" in updates or "sheetNumber" in updates:
+            raw_num = updates.get("sheet_number") if "sheet_number" in updates else updates.get("sheetNumber")
+            if raw_num:
+                num_clean = str(raw_num).strip()
+                for other_id, other_s in self.sheets.items():
+                    if other_id != sheet_id and other_s.get("sheet_number", "").strip().lower() == num_clean.lower():
+                        raise ValueError(f"Sheet Number is already in use: '{num_clean}'")
+                s["sheet_number"] = num_clean
+        if "sheet_title" in updates or "sheetTitle" in updates:
+            val = updates.get("sheet_title") if "sheet_title" in updates else updates.get("sheetTitle")
+            if val is not None:
+                s["sheet_title"] = str(val).strip()
+        if "drawn_by" in updates or "drawnBy" in updates:
+            val = updates.get("drawn_by") if "drawn_by" in updates else updates.get("drawnBy")
+            if val is not None:
+                s["drawn_by"] = str(val).strip()
+        if "date" in updates and updates["date"] is not None:
+            s["date"] = str(updates["date"]).strip()
+        if "paper_size" in updates or "paperSize" in updates:
+            val = updates.get("paper_size") if "paper_size" in updates else updates.get("paperSize")
+            if val is not None:
+                s["paper_size"] = str(val).strip()
+        self.sheets_rev += 1
+        return s
 
     def convert_placeholder_sheet(self, sheet_id: str) -> Dict[str, Any]:
         """Converts a placeholder sheet into a real printable sheet (SPEC §13.2)."""
@@ -5143,6 +6388,11 @@ class BimModelManager:
             "internal_units": INTERNAL_UNIT,
             "constraints": self._jsonable(self.constraints),
             "join_policies": self._jsonable(self.join_policies),
+            "dimensions": self._jsonable(list(self.dimensions.values())),
+            "types": self._jsonable([
+                {k: v for k, v in trec.items() if k != "entity"}
+                for trec in self.type_registry.values()
+            ]),
             "sheets": self._jsonable(sorted(list(self.sheets.values()), key=lambda s: s["id"])),
             "views": self._jsonable(sorted(list(self.views.values()), key=lambda v: v["id"])),
             "levels": [
@@ -5279,6 +6529,7 @@ class BimModelManager:
             # tessellation import and only re-attach metadata that is GUID-gated.
             self.constraints = self._jsonable(overlay.get("constraints", {}) or {})
             self.join_policies = self._jsonable(overlay.get("join_policies", {}) or {})
+            self.dimensions = self._jsonable(overlay.get("dimensions", {}) or {})
             elements_overlay = overlay.get("elements", {}) or {}
             applied, stale = [], []
             for g, o_meta in elements_overlay.items():

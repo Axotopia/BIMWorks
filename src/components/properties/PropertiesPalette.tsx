@@ -51,6 +51,9 @@ export const PropertiesPalette: React.FC = () => {
     updateSketchLine,
     deleteSelectedSketchLine,
     setSketchParam,
+    types,
+    elements,
+    setElementType,
   } = useBimStore();
 
   const selectedMesh = meshes.find((m) => m.guid === selectedGuid);
@@ -69,6 +72,16 @@ export const PropertiesPalette: React.FC = () => {
   const isSlab = selectedMesh?.ifc_class === 'IfcSlab' && !isRoof;
   const isDoor = selectedMesh?.ifc_class === 'IfcDoor';
   const isWindow = selectedMesh?.ifc_class === 'IfcWindow';
+
+  const currentElement = selectedGuid ? elements[selectedGuid] : null;
+  const currentTypeId = currentElement?.type_id || (selectedMesh?.params as any)?.type_id || '';
+
+  const matchingTypes = types.filter((t) => {
+    if (isWall) return t.ifc_class === 'IfcWallType' || t.ifc_class.toLowerCase().includes('wall');
+    if (isDoor) return t.ifc_class === 'IfcDoorType' || t.ifc_class.toLowerCase().includes('door');
+    if (isWindow) return t.ifc_class === 'IfcWindowType' || t.ifc_class.toLowerCase().includes('window');
+    return false;
+  });
 
   // Live element metadata fetched from backend
   const [elementData, setElementData] = useState<any>(null);
@@ -243,14 +256,35 @@ export const PropertiesPalette: React.FC = () => {
                 ? '3D View'
                 : 'Floor Plan'}
             </div>
-            <div className="flex items-center justify-between mt-1 px-1.5 py-0.5 bg-[#ffffff] border border-[#cccccc] hover:border-[#007acc] rounded cursor-pointer text-[11px] text-[#333333]">
-              <span className="truncate">
-                {isElementSelected
-                  ? `${selectedMesh?.ifc_class}: ${selectedMesh?.name}`
-                  : `${activeView?.name || '3D View: Cover Sheet View'}`}
-              </span>
-              <ChevronDown size={12} className="text-[#666666] ml-1 shrink-0" />
-            </div>
+            {isElementSelected && matchingTypes.length > 0 ? (
+              <div className="relative mt-1">
+                <select
+                  value={currentTypeId}
+                  onChange={(e) => {
+                    if (selectedGuid && e.target.value) {
+                      setElementType(selectedGuid, e.target.value);
+                    }
+                  }}
+                  className="w-full appearance-none px-1.5 py-0.5 bg-[#ffffff] border border-[#cccccc] hover:border-[#007acc] focus:border-[#007acc] rounded text-[11px] text-[#333333] pr-5 truncate cursor-pointer font-medium"
+                >
+                  {matchingTypes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={12} className="text-[#666666] absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              </div>
+            ) : (
+              <div className="flex items-center justify-between mt-1 px-1.5 py-0.5 bg-[#ffffff] border border-[#cccccc] hover:border-[#007acc] rounded cursor-pointer text-[11px] text-[#333333]">
+                <span className="truncate">
+                  {isElementSelected
+                    ? `${selectedMesh?.ifc_class}: ${selectedMesh?.name}`
+                    : `${activeView?.name || '3D View: Cover Sheet View'}`}
+                </span>
+                <ChevronDown size={12} className="text-[#666666] ml-1 shrink-0" />
+              </div>
+            )}
           </div>
 
           {/* Edit Type Button */}

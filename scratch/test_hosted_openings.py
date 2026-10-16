@@ -118,6 +118,119 @@ def check_case(label, start, end, insert_offset, drag_dx, drag_dy):
     )
 
 
+def wall_cut_axis(guid, axis):
+    """
+    Distinct values of one axis of the HOST WALL's own tessellation, in metres.
+
+    A void cut into the wall shows up as interior values clustered on the opening's
+    two jambs; a solid (or un-voided) box has only its two end values. That makes the
+    question "is the hole where it should be?" answerable without guessing.
+
+    `axis` must be the wall's OWN direction: a 20 ft wall along Y has a void that varies
+    in Y and only its thickness in X, so checking X there would find the wall's faces and
+    call them jambs.
+    """
+    import ifcopenshell.geom
+
+    settings = ifcopenshell.geom.settings()
+    settings.set(settings.USE_WORLD_COORDS, True)
+    entity = bim_manager.element_meta[guid]["entity"]
+    verts = list(ifcopenshell.geom.create_shape(settings, entity).geometry.verts)
+    return sorted({round(v, 4) for v in verts[axis::3]})
+
+
+def interior_of(values, tol=0.05):
+    """The non-endpoint values: the hole's jambs."""
+    if len(values) < 3:
+        return []
+    return [v for v in values if v > values[0] + tol and v < values[-1] - tol]
+
+
+def test_host_move_carries_openings():
+    """
+    Moving/editing the HOST WALL must carry its openings and doors with it.
+
+    This is the invariant that was missing. `translate_element` mutated the wall's
+    baseline metadata and rebuilt the wall's own body, but nothing refreshed the wall's
+    `ObjectPlacement`, and nothing re-derived its children -- and because a hosted
+    product is a PLACED product, the opening stayed at its creation coordinates. The
+    wall kept rendering correctly and stayed "cut" by `IfcRelVoidsElement`, but the void
+    no longer coincided with the wall body: the hole floated in mid-air.
+
+    Measured before the fix (a 20 ft wall, door at 5 ft, wall moved +30 ft):
+
+        wall solid  9.144 .. 15.240 m      (moved, correct)
+        opening     1.524 ..  2.438 m      (did NOT move)
+
+    Every assertion here is on the assembled world transform, so it would also catch a
+    regression in the parent/child frame handling or in the feet/metres boundary.
+    """
+    print("7. Moving the HOST WALL carries its openings and doors ...")
+    for label, end in (("0 deg (X axis)", (20, 0)), ("90 deg (Y axis)", (0, 20))):
+        bim_manager.reset_model()
+        wall = bim_manager.add_wall((0, 0, 0), (end[0], end[1], 0), height=10.0,
+                                    thickness=0.8333, name=f"HostMove ({label})")
+        door = bim_manager.add_door(wall["guid"], offset_along_wall=5.0,
+                                    width=3.0, height=7.0)
+        opening = door["opening_entity"]
+        door_entity = door["entity"]
+
+        # Capture the child's position relative to the wall BEFORE the move, as a
+        # distance along the wall. After the move it must be unchanged.
+        wall_start = list(bim_manager.element_meta[wall["guid"]]["start"])
+        axis = 0 if end[1] == 0 else 1
+        before_rel = (float(placement_util.get_local_placement(opening.ObjectPlacement)[axis][3])
+                      - feet_to_metres(wall_start[axis]))
+
+        # Move the wall 30 ft along its own axis; the door keeps its 5 ft offset.
+        dx = 30.0 if axis == 0 else 0.0
+        dy = 0.0 if axis == 0 else 30.0
+        assert bim_manager.translate_element(wall["guid"], dx, dy, 0.0, _propagate=False)
+
+        new_start = list(bim_manager.element_meta[wall["guid"]]["start"])
+        op_xy = world_xy(opening)
+        door_xy = world_xy(door_entity)
+        after_rel = op_xy[axis] - feet_to_metres(new_start[axis])
+
+        assert abs(after_rel - before_rel) < 1e-6, (
+            f"{label}: the opening's offset along the wall changed with the wall move: "
+            f"{before_rel:.6f} m -> {after_rel:.6f} m (it must be invariant)"
+        )
+
+        wall_xy = world_xy(bim_manager.element_meta[wall["guid"]]["entity"])
+        assert abs(op_xy[axis] - wall_xy[axis]) < 30.0 + 1.0, f"{label}: opening left the wall"
+        assert abs(op_xy[axis] - door_xy[axis]) < 1e-9, (
+            f"{label}: opening and door diverged: {op_xy} vs {door_xy}"
+        )
+
+        # And the void must still be cut into the wall body, at the opening's position.
+        # Check along the wall's OWN direction, not always X.
+        values = wall_cut_axis(wall["guid"], axis)
+        jambs = interior_of(values)
+        assert jambs, (
+            f"{label}: the wall solid has no interior vertices along its axis, so the void "
+            f"is no longer cutting it (values: {values})"
+        )
+        assert abs(jambs[0] - op_xy[axis]) < 0.05, (
+            f"{label}: the void sits at {jambs} but the opening is at {op_xy[axis]}"
+        )
+
+        moved_ft = 30.0
+        print(
+            f"   -> {label}: wall moved {moved_ft:.0f} ft; opening held its "
+            f"{after_rel / feet_to_metres(1.0):.3f} ft offset, void still cut at "
+            f"{[round(j, 3) for j in jambs]} m [OK]"
+        )
+
+    # Deleting the door afterwards must heal the wall back to a solid box.
+    bim_manager.delete_element(door["guid"])
+    values = wall_cut_axis(wall["guid"], axis)
+    assert not interior_of(values), (
+        f"deleting the door left a void behind: wall values {values}"
+    )
+    print("   -> deleting the door healed the wall to a solid box [OK]")
+
+
 def test_hosted_openings():
     print("1. Axis-aligned wall (0 deg) ...")
     check_case("0 deg", (0, 0, 0), (10, 0, 0), insert_offset=4.0, drag_dx=1.5, drag_dy=0.0)
@@ -195,5 +308,11 @@ def test_hosted_openings():
     print("\nALL HOSTED-OPENING PLACEMENT/SLIDE TESTS PASSED")
 
 
-if __name__ == "__main__":
+def main():
     test_hosted_openings()
+    test_host_move_carries_openings()
+    print("\nALL HOSTED-OPENING TESTS PASSED")
+
+
+if __name__ == "__main__":
+    main()

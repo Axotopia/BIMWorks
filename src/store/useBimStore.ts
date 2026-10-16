@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   ActiveTool,
   BimElement,
+  BimType,
   LevelData,
   GridData,
   MeshBufferData,
@@ -29,6 +30,7 @@ const API_BASE = '/api';
  * and only the 3D viewport listened, so `ZE` silently did nothing in a plan view.
  */
 export const ZOOM_EXTENTS_EVENT = 'bimworks-zoom-extents';
+export const TILE_WINDOWS_EVENT = 'bimworks-tile-windows';
 
 /**
  * UI-P0-10/UI-P0-11: interaction state that lives inside a viewport component
@@ -126,9 +128,18 @@ export const UI_ACTION_COMMANDS = {
   // P6 sheet & viewport commands (bus-backed, journaled, undoable)
   createSheet: 'SheetCreate',
   deleteSheet: 'SheetDelete',
+  updateSheet: 'SheetUpdate',
   addViewportToSheet: 'ViewportAdd',
   removeViewportFromSheet: 'ViewportRemove',
   moveViewport: 'ViewportMove',
+  // Phase 2 dimension-driven editing commands
+  createDimension: 'DimensionCreate',
+  setDimensionValue: 'DimensionValueSet',
+  deleteDimension: 'DimensionDelete',
+  // Phase 5 type commands
+  setElementType: 'ElementSetType',
+  updateType: 'TypeUpdate',
+  duplicateType: 'TypeDuplicate',
 } as const;
 
 export type UiAction = keyof typeof UI_ACTION_COMMANDS;
@@ -174,6 +185,7 @@ function geometryPatch(
       pitch: params.pitch,
       tag: params.tag,
       type_properties: params.type_properties,
+      type_id: params.type_id,
     };
   }
   return {
@@ -255,6 +267,7 @@ async function refreshIndividually(
     getState().fetchWallJoins(),
     getState().fetch2DSlice(cutElevation),
     getState().fetchTransactionJournal(),
+    getState().fetchTypes(),
   ]);
 }
 
@@ -477,10 +490,14 @@ interface BimStoreState {
   // 1D/2D Parametric Constraints
   constraints: ParametricConstraint[];
   alignPickState: { step: 'pick_ref' | 'pick_target' | null; refGuid: string | null };
+  trimPickState: { step: 'pick_second' | null; firstGuid: string | null; firstPoint: [number, number] | null };
 
   // Selection & Properties
   selectedGuid: string | null;
+  selectedGuids: string[];
   hoveredGuid: string | null;
+  hoverCandidates: string[];
+  snapsEnabled: boolean;
 
   // Revit Spatial & Visibility Controls
   sectionBox: {
@@ -532,7 +549,11 @@ interface BimStoreState {
   setViewCut: (viewId: string, cutAboveLevel: number) => void;
   setActiveSheetId: (id: string) => void;
   setSelectedGuid: (guid: string | null) => void;
+  setSelectedGuids: (guids: string[]) => void;
   setHoveredGuid: (guid: string | null) => void;
+  setHoverCandidates: (guids: string[]) => void;
+  cycleTabSelection: () => void;
+  toggleSnaps: () => void;
 
   toggleSectionBox: () => void;
   setSectionBoxBounds: (min: [number, number, number], max: [number, number, number]) => void;
@@ -560,8 +581,32 @@ interface BimStoreState {
   lockDimension: (guidA: string, guidB: string, distance?: number, axis?: 'x' | 'y') => Promise<void>;
   equalizeSpan: (spanStartGuid: string, spanEndGuid: string, interiorGuids: string[], axis?: 'x' | 'y') => Promise<void>;
   setAlignPickState: (state: { step: 'pick_ref' | 'pick_target' | null; refGuid: string | null }) => void;
+  setTrimPickState: (state: { step: 'pick_second' | null; firstGuid: string | null; firstPoint: [number, number] | null }) => void;
+  trimExtendWall: (guid: string, endIndex: number, targetGuid: string, cornerMode?: boolean, targetEndIndex?: number) => Promise<void>;
+  splitWall: (guid: string, atOffset: number, gap?: number) => Promise<void>;
   deleteConstraint: (constraintId: string) => Promise<void>;
   equalizeSouthWallWindows: () => Promise<void>;
+  setDimensionValue: (dimensionId: string, value: number, anchor?: 'start' | 'end' | 'center') => Promise<void>;
+  createDimension: (params: {
+    ref_a: { guid: string; ref?: string; point?: [number, number] };
+    ref_b: { guid: string; ref?: string; point?: [number, number] };
+    kind?: 'aligned' | 'linear' | 'angular' | 'radial';
+    axis?: 'x' | 'y' | 'aligned';
+    offset?: number;
+    value?: number;
+    is_locked?: boolean;
+    eq_group?: string;
+  }) => Promise<void>;
+  deleteDimension: (dimensionId: string) => Promise<void>;
+  undo: () => Promise<void>;
+  redo: () => Promise<void>;
+
+  // Phase 5 type management
+  types: BimType[];
+  fetchTypes: () => Promise<void>;
+  setElementType: (guid: string, typeId: string) => Promise<void>;
+  updateType: (typeId: string, parameters: Record<string, any>) => Promise<void>;
+  duplicateType: (sourceTypeId: string, newTypeId: string, newName: string) => Promise<void>;
 
   // API Async Actions
   fetchProjectState: () => Promise<void>;
@@ -581,12 +626,27 @@ interface BimStoreState {
   updateGeoreferencing: (data: BimStoreState['georeference']) => Promise<void>;
   createSheet: (sheetNumber: string, sheetTitle: string, paperSize?: 'ARCH_D' | 'ARCH_C' | 'ISO_A1') => Promise<void>;
   deleteSheet: (sheetId: string) => Promise<void>;
+  updateSheet: (sheetId: string, updates: Partial<SheetDefinition>) => Promise<void>;
   addViewportToSheet: (sheetId: string, viewId: string, x: number, y: number) => Promise<void>;
   removeViewportFromSheet: (viewportId: string, sheetId?: string) => Promise<void>;
   moveViewport: (viewportId: string, x: number, y: number, sheetId?: string) => Promise<void>;
   exportSheetPdf: (sheetId: string, svgContent: string) => Promise<void>;
   exportBatchPdf: (sheetsData: Array<{ sheetName: string; svgContent: string }>, filename?: string) => Promise<void>;
   exportIfc: () => Promise<void>;
+
+  // Wall & Modeling Tool Options (Options Bar)
+  wallHeight: number;
+  wallLocationLine: 'centerline' | 'core_centerline' | 'exterior' | 'interior';
+  wallOffset: number;
+  wallLevelId: string | null;
+  setWallHeight: (height: number) => void;
+  setWallLocationLine: (loc: 'centerline' | 'core_centerline' | 'exterior' | 'interior') => void;
+  setWallOffset: (offset: number) => void;
+  setWallLevelId: (levelId: string | null) => void;
+
+  createSimilar: () => void;
+  flipElementOrientation: (guid: string) => Promise<void>;
+  selectAllInstances: (categoryOrClass: string, onlyInActiveView?: boolean) => void;
 
   // GLM Spec v2 Additions
   displayUnit: UnitSystem;
@@ -610,8 +670,6 @@ interface BimStoreState {
   copyElement: (guid: string, dx: number, dy: number, dz?: number) => Promise<void>;
   rotateElement: (guid: string, angleDegrees: number, center?: [number, number]) => Promise<void>;
   offsetElement: (guid: string, distance: number, side?: 1 | -1) => Promise<void>;
-  trimExtendWall: (guid: string, endIndex: 0 | 1, targetGuid: string) => Promise<void>;
-  splitWall: (guid: string, atOffset: number) => Promise<void>;
   moveLevel: (levelId: string, elevation: number) => Promise<void>;
 
   executeTransaction: (commands: CommandPayload[], origin?: 'ui' | 'ai' | 'script' | 'cli', description?: string) => Promise<any>;
@@ -774,6 +832,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   rev: undefined,
   docId: undefined,
   elements: {},
+  types: [],
   meshes: [],
   grids: [],
   sliced2D: null,
@@ -781,9 +840,18 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   // 1D/2D Parametric Constraints
   constraints: [],
   alignPickState: { step: null, refGuid: null },
+  trimPickState: { step: null, firstGuid: null, firstPoint: null },
 
   selectedGuid: null,
+  selectedGuids: [],
   hoveredGuid: null,
+  hoverCandidates: [],
+  snapsEnabled: true,
+
+  wallHeight: 10.0,
+  wallLocationLine: 'centerline',
+  wallOffset: 0.0,
+  wallLevelId: null,
 
   sectionBox: {
     enabled: false,
@@ -840,9 +908,11 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     const previous = get().activeTool;
     const base = ribbonTab ? { activeRibbonTab: ribbonTab } : {};
     if (tool === 'AL') {
-      set({ ...base, activeTool: 'AL', alignPickState: { step: 'pick_ref', refGuid: null } });
+      set({ ...base, activeTool: 'AL', alignPickState: { step: 'pick_ref', refGuid: null }, trimPickState: { step: null, firstGuid: null, firstPoint: null } });
+    } else if (tool === 'TR') {
+      set({ ...base, activeTool: 'TR', trimPickState: { step: 'pick_second', firstGuid: null, firstPoint: null }, alignPickState: { step: null, refGuid: null } });
     } else {
-      set({ ...base, activeTool: tool, alignPickState: { step: null, refGuid: null } });
+      set({ ...base, activeTool: tool, alignPickState: { step: null, refGuid: null }, trimPickState: { step: null, firstGuid: null, firstPoint: null } });
     }
     // UI-P0-11: switching tools discards any half-finished pick from the previous
     // tool. Without this, `boxStartPoint` was shared by Roof and Floor, so clicking
@@ -875,8 +945,10 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       set({
         activeTool: 'select',
         selectedGuid: null,
+        selectedGuids: [],
         tempDimension: null,
         alignPickState: { step: null, refGuid: null },
+        trimPickState: { step: null, firstGuid: null, firstPoint: null },
       });
       // UI-P0-10: this is the *only* Escape path now. It must also discard
       // in-progress viewport state (a first wall point, a first box corner, a
@@ -921,12 +993,27 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         // Routed through setActiveTool so the previous tool's in-progress pick is
         // discarded (UI-P0-11) — the raw `set` this used to do skipped that.
         get().setActiveTool('AL'),
+      TR: () => get().setActiveTool('TR', 'Modify'),
+      SL: () => get().setActiveTool('SL', 'Modify'),
+      SO: () => get().setActiveTool('SO', 'Modify'),
       EQ: () => get().equalizeSouthWallWindows(),
       HH: () => get().tempHideSelected(),
       HR: () => get().resetTempVisibility(),
       HI: () => get().tempIsolateSelected(),
       ZE: () => {
         window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT));
+      },
+      ZA: () => {
+        window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT));
+      },
+      CS: () => {
+        get().createSimilar();
+      },
+      WT: () => {
+        window.dispatchEvent(new CustomEvent(TILE_WINDOWS_EVENT));
+      },
+      MD: () => {
+        get().setActiveTool('select');
       },
     };
 
@@ -971,7 +1058,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   setActiveSheetId: (id) => set({ activeSheetId: id }),
 
   setSelectedGuid: (guid) => {
-    set({ selectedGuid: guid });
+    set({ selectedGuid: guid, selectedGuids: guid ? [guid] : [] });
     if (!guid) {
       set({ tempDimension: null });
       return;
@@ -987,6 +1074,33 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     // inventing a 12'-0" reading.
     const mesh = get().meshes.find((m) => m.guid === guid);
     if (mesh) {
+      // Phase 2: For walls, measure their baseline length directly so selecting a wall
+      // displays its actual length (and editing resizes it, rather than moving it).
+      if (mesh.params?.start && mesh.params?.end) {
+        const sp = mesh.params.start;
+        const ep = mesh.params.end;
+        const wallLen = Math.hypot(ep[0] - sp[0], ep[1] - sp[1]);
+        if (wallLen > 0.05) {
+          set({
+            tempDimension: {
+              elementGuid: guid,
+              distance: wallLen,
+              displayValue: formatLength(wallLen, get().displayUnit),
+              witnessP1: sp,
+              witnessP2: ep,
+              center: [
+                (sp[0] + ep[0]) / 2,
+                (sp[1] + ep[1]) / 2,
+                ((sp[2] ?? 0) + (ep[2] ?? 0)) / 2,
+              ],
+              axis: 'x',
+              kind: 'length',
+            } as any,
+          });
+          return;
+        }
+      }
+
       const center: [number, number, number] = [
         (mesh.bbox.min[0] + mesh.bbox.max[0]) / 2,
         (mesh.bbox.min[1] + mesh.bbox.max[1]) / 2,
@@ -1049,6 +1163,33 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   setHoveredGuid: (guid) => set({ hoveredGuid: guid }),
 
+  setSelectedGuids: (guids) => {
+    const primary = guids.length > 0 ? guids[guids.length - 1] : null;
+    get().setSelectedGuid(primary);
+    set({ selectedGuids: guids });
+  },
+
+  setHoverCandidates: (guids) => set({ hoverCandidates: guids }),
+
+  cycleTabSelection: () => {
+    const { hoverCandidates, hoveredGuid, elements, setHoveredGuid, setStatusMessage } = get();
+    if (!hoverCandidates || hoverCandidates.length === 0) return;
+    const currentIdx = hoveredGuid ? hoverCandidates.indexOf(hoveredGuid) : -1;
+    const nextIdx = (currentIdx + 1) % hoverCandidates.length;
+    const nextGuid = hoverCandidates[nextIdx];
+    setHoveredGuid(nextGuid);
+    const el = elements[nextGuid];
+    if (el) {
+      setStatusMessage(`${el.name || el.ifc_class} (${nextIdx + 1}/${hoverCandidates.length} - Tab to cycle)`);
+    }
+  },
+
+  toggleSnaps: () => {
+    const next = !get().snapsEnabled;
+    set({ snapsEnabled: next });
+    get().setStatusMessage(`Snaps ${next ? 'enabled' : 'disabled (F3)'}`);
+  },
+
   toggleSectionBox: () =>
     set((state) => ({
       sectionBox: {
@@ -1085,8 +1226,15 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   setTempDimension: (dim) => set({ tempDimension: dim }),
 
   applyTemporaryDimensionChange: async (newValue: number) => {
-    const { tempDimension, translateElement } = get();
+    const { tempDimension, translateElement, setDimensionValue } = get();
     if (!tempDimension) return;
+
+    // Phase 2.5: If dimension measures element length, resize the element's baseline
+    if ((tempDimension as any).kind === 'length') {
+      await setDimensionValue(tempDimension.elementGuid, newValue, 'start');
+      get().setSelectedGuid(tempDimension.elementGuid);
+      return;
+    }
 
     // Move along the axis the dimension actually measures (set when the
     // dimension was created) instead of always translating world X.
@@ -1162,6 +1310,47 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     }
   },
 
+  setTrimPickState: (state) => set({ trimPickState: state }),
+
+  trimExtendWall: async (guid, endIndex, targetGuid, cornerMode = true, targetEndIndex) => {
+    try {
+      await get().dispatchTransaction(
+        'trimExtendWall',
+        {
+          guid,
+          end_index: endIndex,
+          target_guid: targetGuid,
+          corner_mode: cornerMode,
+          target_end_index: targetEndIndex,
+        },
+        cornerMode ? 'Trim / extend to corner' : 'Trim / extend wall'
+      );
+      set({ trimPickState: { step: null, firstGuid: null, firstPoint: null } });
+      if (!get().chainTools) {
+        set({ activeTool: 'select' });
+      }
+    } catch (e) {
+      set({ statusMessage: `Trim/Extend failed: ${failureMessage(e)}` });
+      console.error('Failed to trim/extend wall', e);
+    }
+  },
+
+  splitWall: async (guid, atOffset, gap = 0.0) => {
+    try {
+      await get().dispatchTransaction(
+        'splitWall',
+        { guid, at_offset: atOffset, gap },
+        gap > 0 ? 'Split wall with gap' : 'Split wall'
+      );
+      if (!get().chainTools) {
+        set({ activeTool: 'select' });
+      }
+    } catch (e) {
+      set({ statusMessage: `Split wall failed: ${failureMessage(e)}` });
+      console.error('Failed to split wall', e);
+    }
+  },
+
   toggleConstraintLock: async (constraintId: string, isLocked: boolean) => {
     try {
       await get().dispatchTransaction(
@@ -1227,6 +1416,74 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     } catch (e) {
       set({ statusMessage: `Delete constraint failed: ${failureMessage(e)}` });
       console.error('Failed to delete constraint', e);
+    }
+  },
+
+  setDimensionValue: async (dimensionId: string, value: number, anchor: 'start' | 'end' | 'center' = 'start') => {
+    try {
+      await get().dispatchTransaction(
+        'setDimensionValue',
+        {
+          dimension_id: dimensionId,
+          value,
+          anchor,
+        },
+        `Set dimension to ${value} ft`
+      );
+    } catch (e) {
+      set({ statusMessage: `Set dimension failed: ${failureMessage(e)}` });
+      console.error('Failed to set dimension value', e);
+      throw e;
+    }
+  },
+
+  createDimension: async (params) => {
+    try {
+      await get().dispatchTransaction(
+        'createDimension',
+        params,
+        'Create dimension'
+      );
+    } catch (e) {
+      set({ statusMessage: `Create dimension failed: ${failureMessage(e)}` });
+      console.error('Failed to create dimension', e);
+      throw e;
+    }
+  },
+
+  deleteDimension: async (dimensionId: string) => {
+    try {
+      await get().dispatchTransaction(
+        'deleteDimension',
+        { dimension_id: dimensionId },
+        'Delete dimension'
+      );
+    } catch (e) {
+      set({ statusMessage: `Delete dimension failed: ${failureMessage(e)}` });
+      console.error('Failed to delete dimension', e);
+      throw e;
+    }
+  },
+
+  undo: async () => {
+    try {
+      const res = await fetch('/api/transaction/undo', { method: 'POST' });
+      if (res.ok) {
+        await get().fetchStateBundle();
+      }
+    } catch (e) {
+      console.error('Undo failed', e);
+    }
+  },
+
+  redo: async () => {
+    try {
+      const res = await fetch('/api/transaction/redo', { method: 'POST' });
+      if (res.ok) {
+        await get().fetchStateBundle();
+      }
+    } catch (e) {
+      console.error('Redo failed', e);
     }
   },
 
@@ -1379,6 +1636,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
             pitch: params.pitch,
             tag: params.tag,
             type_properties: params.type_properties,
+            type_id: params.type_id,
           };
         }
 
@@ -1406,6 +1664,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           ...(data.grids ? { grids: data.grids } : {}),
           ...(data.sheets ? { sheets: data.sheets } : {}),
           ...(data.views ? { views: (data.views as any[]).map(normalizeView) } : {}),
+          ...(data.types ? { types: data.types } : {}),
           ...(data.constraints ? { constraints: data.constraints } : {}),
           ...(data.wall_joins ? { wallJoins: data.wall_joins } : {}),
           ...(data.project
@@ -1437,6 +1696,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         ...(data.journal ? { transactionJournal: data.journal.slice(-50) } : {}),
         ...(data.sheets ? { sheets: data.sheets } : {}),
         ...(data.views ? { views: (data.views as any[]).map(normalizeView) } : {}),
+        ...(data.types ? { types: data.types } : {}),
       });
 
       if (data.errors) {
@@ -1505,6 +1765,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
             pitch: params.pitch,
             tag: params.tag,
             type_properties: params.type_properties,
+            type_id: params.type_id,
           };
         }
         set({
@@ -1685,14 +1946,29 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       }));
       return;
     }
-    if (state.selectedGuid) get().deleteElement(state.selectedGuid);
+    if (state.selectedGuids && state.selectedGuids.length > 0) {
+      for (const g of state.selectedGuids) {
+        get().deleteElement(g);
+      }
+      set({ selectedGuids: [], selectedGuid: null });
+    } else if (state.selectedGuid) {
+      get().deleteElement(state.selectedGuid);
+    }
   },
 
   createWall: async (start, end, name = 'Basic Wall : Exterior - 10" CMU') => {
     try {
+      const state = get();
       await get().dispatchTransaction(
         'createWall',
-        { start, end, height: 10.0, thickness: 0.8333, name },
+        {
+          start,
+          end,
+          height: state.wallHeight || 10.0,
+          thickness: 0.8333,
+          name,
+          level_id: state.wallLevelId || undefined,
+        },
         `Create wall "${name}"`
       );
       get().completePlacement();
@@ -1797,6 +2073,120 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     }
   },
 
+  setWallHeight: (height) => set({ wallHeight: height }),
+  setWallLocationLine: (loc) => set({ wallLocationLine: loc }),
+  setWallOffset: (offset) => set({ wallOffset: offset }),
+  setWallLevelId: (levelId) => set({ wallLevelId: levelId }),
+
+  createSimilar: () => {
+    const { selectedGuid, elements, meshes, setActiveTool, startSketchMode, setStatusMessage } = get();
+    if (!selectedGuid) {
+      setStatusMessage('Select an element to Create Similar (CS)');
+      return;
+    }
+    const elem = elements[selectedGuid];
+    const mesh = meshes.find((m) => m.guid === selectedGuid);
+    const ifcClass = elem?.ifc_class || mesh?.ifc_class || '';
+    const name = elem?.name || mesh?.name || ifcClass;
+
+    if (WALL_CLASSES.includes(ifcClass) || ifcClass === 'IfcWall') {
+      setActiveTool('WA', 'Architecture');
+      setStatusMessage(`Create Similar: Wall (${name})`);
+    } else if (ifcClass === 'IfcDoor') {
+      setActiveTool('DR', 'Architecture');
+      setStatusMessage(`Create Similar: Door (${name})`);
+    } else if (ifcClass === 'IfcWindow') {
+      setActiveTool('WN', 'Architecture');
+      setStatusMessage(`Create Similar: Window (${name})`);
+    } else if (ifcClass === 'IfcSlab') {
+      startSketchMode('floor');
+      setStatusMessage(`Create Similar: Floor (${name})`);
+    } else if (ifcClass === 'IfcRoof') {
+      startSketchMode('roof');
+      setStatusMessage(`Create Similar: Roof (${name})`);
+    } else {
+      setStatusMessage(`Create Similar not supported for ${ifcClass || 'this element'}`);
+    }
+  },
+
+  flipElementOrientation: async (guid: string) => {
+    const { elements, updateElement, setStatusMessage } = get();
+    const elem = elements[guid];
+    if (!elem) return;
+
+    if (elem.start && elem.end) {
+      try {
+        await updateElement(guid, {
+          start: elem.end,
+          end: elem.start,
+        });
+        setStatusMessage(`Flipped orientation of wall "${elem.name || guid}"`);
+      } catch (e) {
+        setStatusMessage(`Flip failed: ${failureMessage(e)}`);
+      }
+    } else if (elem.ifc_class === 'IfcDoor' || elem.swing_flipped !== undefined) {
+      try {
+        const flipped = !elem.swing_flipped;
+        await updateElement(guid, {
+          swing_flipped: flipped,
+        });
+        setStatusMessage(`Flipped door swing direction (${flipped ? 'flipped' : 'normal'})`);
+      } catch (e) {
+        setStatusMessage(`Flip failed: ${failureMessage(e)}`);
+      }
+    }
+  },
+
+  selectAllInstances: (categoryOrClass: string, onlyInActiveView = false) => {
+    const { elements, meshes, sliced2D } = get();
+    const isWall = categoryOrClass === 'IfcWall' || categoryOrClass.toLowerCase().includes('wall');
+    const isDoor = categoryOrClass === 'IfcDoor' || categoryOrClass.toLowerCase().includes('door');
+    const isWindow = categoryOrClass === 'IfcWindow' || categoryOrClass.toLowerCase().includes('window');
+    const isSlab = categoryOrClass === 'IfcSlab' || categoryOrClass.toLowerCase().includes('slab') || categoryOrClass.toLowerCase().includes('floor');
+    const isRoof = categoryOrClass === 'IfcRoof' || categoryOrClass.toLowerCase().includes('roof');
+
+    const matchesClass = (cls: string) => {
+      if (isWall) return WALL_CLASSES.includes(cls) || cls === 'IfcWall';
+      if (isDoor) return cls === 'IfcDoor';
+      if (isWindow) return cls === 'IfcWindow';
+      if (isSlab) return cls === 'IfcSlab';
+      if (isRoof) return cls === 'IfcRoof';
+      return cls.toLowerCase() === categoryOrClass.toLowerCase();
+    };
+
+    let targetGuids: string[] = [];
+    if (onlyInActiveView && sliced2D) {
+      const inViewGuids = new Set<string>();
+      sliced2D.cut_paths?.forEach((cp) => inViewGuids.add(cp.guid));
+      sliced2D.slabs?.forEach((s) => inViewGuids.add(s.guid));
+      sliced2D.roofs?.forEach((r) => inViewGuids.add(r.guid));
+      targetGuids = Array.from(inViewGuids).filter((g) => {
+        const el = elements[g];
+        const m = meshes.find((mesh) => mesh.guid === g);
+        const cls = el?.ifc_class || m?.ifc_class || '';
+        return matchesClass(cls);
+      });
+    } else {
+      const allGuids = Object.keys(elements);
+      for (const m of meshes) {
+        if (!allGuids.includes(m.guid)) allGuids.push(m.guid);
+      }
+      targetGuids = allGuids.filter((g) => {
+        const el = elements[g];
+        const m = meshes.find((mesh) => mesh.guid === g);
+        const cls = el?.ifc_class || m?.ifc_class || '';
+        return matchesClass(cls);
+      });
+    }
+
+    if (targetGuids.length > 0) {
+      get().setSelectedGuids(targetGuids);
+      get().setStatusMessage(`Selected ${targetGuids.length} instances of ${categoryOrClass} (${onlyInActiveView ? 'in active view' : 'in entire project'})`);
+    } else {
+      get().setStatusMessage(`No instances found for ${categoryOrClass}`);
+    }
+  },
+
   updateGeoreferencing: async (data) => {
     try {
       const res = await fetch(`${API_BASE}/georeference`, {
@@ -1833,6 +2223,16 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     } catch (e) {
       set({ statusMessage: `Failed to delete sheet: ${failureMessage(e)}` });
       console.error('Failed to delete sheet', e);
+      throw e;
+    }
+  },
+
+  updateSheet: async (sheetId, updates) => {
+    try {
+      await get().dispatchTransaction('updateSheet', { sheet_id: sheetId, updates }, `Update Sheet`);
+    } catch (e) {
+      set({ statusMessage: `Failed to update sheet: ${failureMessage(e)}` });
+      console.error('Failed to update sheet', e);
       throw e;
     }
   },
@@ -1962,6 +2362,60 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     } catch (e) {
       set({ statusMessage: `Export IFC failed: ${failureMessage(e)}` });
       console.error('Failed to export IFC', e);
+    }
+  },
+
+  fetchTypes: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/types`);
+      if (res.ok) {
+        const types = await res.json();
+        set({ types });
+      }
+    } catch (e) {
+      console.error('Failed to fetch types', e);
+    }
+  },
+
+  setElementType: async (guid: string, typeId: string) => {
+    try {
+      await get().dispatchTransaction(
+        'setElementType',
+        { guid, type_id: typeId },
+        `Set element type to ${typeId}`
+      );
+    } catch (e) {
+      set({ statusMessage: `Set element type failed: ${failureMessage(e)}` });
+      console.error('Failed to set element type', e);
+      throw e;
+    }
+  },
+
+  updateType: async (typeId: string, parameters: Record<string, any>) => {
+    try {
+      await get().dispatchTransaction(
+        'updateType',
+        { type_id: typeId, parameters },
+        `Update type ${typeId}`
+      );
+    } catch (e) {
+      set({ statusMessage: `Update type failed: ${failureMessage(e)}` });
+      console.error('Failed to update type', e);
+      throw e;
+    }
+  },
+
+  duplicateType: async (sourceTypeId: string, newTypeId: string, newName: string) => {
+    try {
+      await get().dispatchTransaction(
+        'duplicateType',
+        { source_type_id: sourceTypeId, new_type_id: newTypeId, new_name: newName },
+        `Duplicate type ${sourceTypeId}`
+      );
+    } catch (e) {
+      set({ statusMessage: `Duplicate type failed: ${failureMessage(e)}` });
+      console.error('Failed to duplicate type', e);
+      throw e;
     }
   },
 
@@ -2138,28 +2592,6 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     } catch (e) {
       set({ statusMessage: `Offset element failed: ${failureMessage(e)}` });
       console.error('Failed to offset element', e);
-    }
-  },
-
-  trimExtendWall: async (guid, endIndex, targetGuid) => {
-    try {
-      await get().dispatchTransaction(
-        'trimExtendWall',
-        { guid, end_index: endIndex, target_guid: targetGuid },
-        'Trim/Extend wall'
-      );
-    } catch (e) {
-      set({ statusMessage: `Trim/extend wall failed: ${failureMessage(e)}` });
-      console.error('Failed to trim/extend wall', e);
-    }
-  },
-
-  splitWall: async (guid, atOffset) => {
-    try {
-      await get().dispatchTransaction('splitWall', { guid, at_offset: atOffset }, 'Split wall');
-    } catch (e) {
-      set({ statusMessage: `Split wall failed: ${failureMessage(e)}` });
-      console.error('Failed to split wall', e);
     }
   },
 

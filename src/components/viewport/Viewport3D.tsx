@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { useBimStore, ZOOM_EXTENTS_EVENT } from '../../store/useBimStore';
 import { formatLength, tryParseLength } from '../../utils/units';
 import { Scissors, Maximize, RotateCw, Move, Lock } from 'lucide-react';
+import { ContextMenu } from '../common/ContextMenu';
 
 /**
  * UI-P0-13: pointer capture over a React synthetic mouse event.
@@ -100,6 +101,7 @@ export const Viewport3D: React.FC = () => {
     grids,
     levels,
     selectedGuid,
+    selectedGuids,
     setSelectedGuid,
     hoveredGuid,
     setHoveredGuid,
@@ -137,6 +139,7 @@ export const Viewport3D: React.FC = () => {
   // Set when WebGL is unavailable, so the panel can explain itself instead of taking
   // the whole application down with it.
   const [webglError, setWebglError] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; guid: string | null } | null>(null);
   const threeMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map());
   const clippingPlanesRef = useRef<THREE.Plane[]>([]);
   const sectionBoxMeshRef = useRef<THREE.LineSegments | null>(null);
@@ -858,6 +861,37 @@ export const Viewport3D: React.FC = () => {
     }
   };
 
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!canvasRef.current || !cameraRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, cameraRef.current);
+    const interactiveMeshes = Array.from(threeMeshesRef.current.values());
+    const intersects = raycaster.intersectObjects(interactiveMeshes, false);
+
+    let hitGuid: string | null = null;
+    if (intersects.length > 0) {
+      hitGuid = (intersects[0].object as THREE.Mesh).userData?.guid || null;
+      if (hitGuid && !selectedGuids.includes(hitGuid)) {
+        setSelectedGuid(hitGuid);
+      }
+    } else {
+      hitGuid = selectedGuids.length > 0 ? selectedGuids[selectedGuids.length - 1] : selectedGuid;
+    }
+
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      guid: hitGuid,
+    });
+  };
+
   return (
     <div
       ref={containerRef}
@@ -867,7 +901,7 @@ export const Viewport3D: React.FC = () => {
       onMouseUp={handleMouseUp}
       onMouseLeave={handlePointerLeave}
       onDoubleClick={handleDoubleClick}
-      onContextMenu={(e) => e.preventDefault()}
+      onContextMenu={handleContextMenu}
     >
       <canvas ref={canvasRef} className="w-full h-full block" />
 
@@ -1080,6 +1114,16 @@ export const Viewport3D: React.FC = () => {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Right-Click Context Menu */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          targetGuid={contextMenu.guid}
+          onClose={() => setContextMenu(null)}
+        />
       )}
     </div>
   );

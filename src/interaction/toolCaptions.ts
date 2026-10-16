@@ -31,6 +31,9 @@ export const TOOL_CAPTIONS: Record<ActiveTool, ToolCaption> = {
   RF: { caption: 'Roof', shortcut: 'RF', implemented: true },
   AL: { caption: 'Align & Lock', shortcut: 'AL', implemented: true },
   EQ: { caption: 'Equalize', shortcut: 'EQ', implemented: true },
+  TR: { caption: 'Trim / Extend to Corner', shortcut: 'TR', implemented: true },
+  SL: { caption: 'Split Element', shortcut: 'SL', implemented: true },
+  SO: { caption: 'Split with Gap', shortcut: 'SO', implemented: true },
   BX: { caption: 'Section Box', shortcut: 'BX', implemented: true },
   sketch: { caption: 'Sketch Mode', shortcut: null, implemented: true },
   // No viewport branch yet. They come back with the command registry (UI-P2) and
@@ -64,6 +67,12 @@ export function toolPrompt(tool: ActiveTool): string {
       return 'Click a wall to place a window on it.';
     case 'AL':
       return 'Pick the reference element, then the element to align and lock.';
+    case 'TR':
+      return 'Pick the first element to keep, then pick the second element to form a corner.';
+    case 'SL':
+      return 'Click a wall at the cut location to split it into two segments.';
+    case 'SO':
+      return 'Click a wall to split with a 6" joint gap.';
     case 'select':
       return '';
     default:

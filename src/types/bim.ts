@@ -8,10 +8,34 @@ export type IfcClass =
   | 'IfcGrid'
   | 'IfcBuildingStorey';
 
+export interface BimTypeLayer {
+  function: string;
+  material: string;
+  thickness: number;
+}
+
+export interface BimType {
+  id: string;
+  name: string;
+  ifc_class: string;
+  family_name?: string;
+  parameters: {
+    thickness?: number;
+    height?: number;
+    width?: number;
+    sill_height?: number;
+    fire_rating?: string;
+    function?: string;
+    layers?: BimTypeLayer[];
+    [key: string]: any;
+  };
+}
+
 export interface BimElement {
   guid: string;
   ifc_class: IfcClass;
   name: string;
+  type_id?: string;
   start?: [number, number, number];
   end?: [number, number, number];
   length?: number;
@@ -57,6 +81,7 @@ export interface ElementParams {
   guid: string;
   ifc_class: string;
   name?: string;
+  type_id?: string;
   start?: [number, number, number];
   end?: [number, number, number];
   length?: number;
@@ -125,14 +150,43 @@ export interface Sliced2DData {
     is_overhead?: boolean;
   }>;
   grids: Array<{ guid: string; tag: string; d: string; circle_center: [number, number] }>;
+  levels?: Array<{
+    id: string;
+    name: string;
+    elevation: number;
+    text: string;
+    elevation_text?: string;
+    d: string;
+    circle_center: [number, number];
+    class?: string;
+  }>;
   dimensions: Array<{
-    guid: string;
+    id?: string;
+    guid?: string | null;
+    kind?: string;
     start: [number, number];
     end: [number, number];
     length: number;
     text: string;
     offset_norm: [number, number];
+    is_locked?: boolean;
+    ref_a?: { guid: string; ref?: string };
+    ref_b?: { guid: string; ref?: string };
+    axis?: string;
   }>;
+}
+
+export interface OverlayDimension {
+  id: string;
+  kind: 'aligned' | 'linear' | 'angular' | 'radial';
+  ref_a: { guid: string; ref?: string; point?: [number, number] };
+  ref_b: { guid: string; ref?: string; point?: [number, number] };
+  axis: 'x' | 'y' | 'aligned';
+  offset: number;
+  value: number;
+  is_locked: boolean;
+  constraint_id?: string | null;
+  eq_group?: string | null;
 }
 
 export type ViewType = 'floor_plan' | '3d' | 'section' | 'elevation' | 'sheet';
@@ -225,6 +279,9 @@ export type ActiveTool =
   | 'BX' // Section Box
   | 'AL' // Align & Lock
   | 'EQ' // Equalize
+  | 'TR' // Trim / Extend to Corner
+  | 'SL' // Split Element
+  | 'SO' // Split with Gap
   | 'sketch'; // Revit Sketch Mode (Edit Boundary / Edit Footprint / Create)
 
 export interface SketchLine {
