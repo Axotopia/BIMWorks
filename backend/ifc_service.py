@@ -264,6 +264,20 @@ class BimModelManager:
         # Wall Join Policies (Butt / Miter / Square-off and per-endpoint allowJoin)
         self.join_policies: Dict[str, Dict[str, Any]] = {}
 
+        # Drag-time join deferral (direct-manipulation plan decision §3.4).
+        #
+        # A wall-end drag moves the baseline, so every frame would otherwise pay
+        # `_recompute_after_joined_edit` over the join-partner radius — measured at
+        # ~24 ms p95 on a 250-wall fixture, 3x the 8 ms frame budget. §3.4 accepts a
+        # stale miter during the gesture and recomputes once at commit. While
+        # `_defer_join_recompute` is set, `update_element` records the wall's
+        # PRE-drag endpoint pair (from the first frame that touches it, so the
+        # commit-time radius still sees joins the drag removed) and skips the
+        # recompute. `flush_deferred_join_edits` runs it once; `cancel_deferred_join_edits`
+        # drops it on a cancelled gesture.
+        self._defer_join_recompute: bool = False
+        self._deferred_join_edits: Dict[str, List[Tuple[float, float]]] = {}
+
         # Bulk-rebuild guard. While replaying the overlay we create elements in
         # dependency order, and per-element join recomputation is both wrong
         # (partners do not exist yet) and dangerous: `_rebuild_wall_representation`
@@ -3407,7 +3421,14 @@ class BimModelManager:
                 self._refresh_wall_placement(guid)
                 self._reseat_hosted_openings(guid)
             if "start" in updates or "end" in updates or "thickness" in updates:
-                self._recompute_after_joined_edit(guid, old_points=_old_ends, new_points=_new_ends)
+                if self._defer_join_recompute:
+                    # Drag session: defer to commit (plan decision §3.4). Keep the OLD
+                    # points from the FIRST frame that touched this wall — by commit the
+                    # metadata holds the final endpoints, and a radius built only from
+                    # those cannot see a join the drag removed.
+                    self._deferred_join_edits.setdefault(guid, _old_ends)
+                else:
+                    self._recompute_after_joined_edit(guid, old_points=_old_ends, new_points=_new_ends)
 
         # Case 3: Door / Window
         elif ifc_class in ("IfcDoor", "IfcWindow"):
@@ -5981,6 +6002,42 @@ class BimModelManager:
     #: Must exceed the largest join tolerance, which is `_JOIN_TOL + thickness/2` for a
     #: tee (0.05 + ~0.35 for an 8" CMU wall), so 1 ft is comfortably conservative.
     _JOIN_EDIT_RADIUS = 1.0
+
+    # -- drag-time join deferral (plan decision §3.4) ------------------------
+
+    def begin_join_deferral(self) -> None:
+        """Start deferring join recomputation for the duration of a drag gesture."""
+        self._defer_join_recompute = True
+        self._deferred_join_edits = {}
+
+    def cancel_deferred_join_edits(self) -> None:
+        """Drop pending join work without applying it (cancelled gesture)."""
+        self._defer_join_recompute = False
+        self._deferred_join_edits = {}
+
+    def flush_deferred_join_edits(self) -> List[str]:
+        """
+        Apply the deferred join recompute once, at commit.
+
+        One pass, using each wall's pre-drag endpoints and its final endpoints. That is
+        equivalent to the per-frame recompute for the joins that matter: a partner the
+        drag merely passed near was never joined mid-gesture, so it needs no cleanup,
+        while every partner of the pre-drag or final position is inside the radius.
+        Returns the guids recomputed, for the caller to report or assert on.
+        """
+        pending = self._deferred_join_edits
+        self._defer_join_recompute = False
+        self._deferred_join_edits = {}
+        flushed: List[str] = []
+        for guid, old_pts in pending.items():
+            meta = self.element_meta.get(guid)
+            if not meta:
+                continue
+            sp, ep = meta.get("start"), meta.get("end")
+            new_pts = [(float(p[0]), float(p[1])) for p in (sp, ep) if p]
+            self._recompute_after_joined_edit(guid, old_points=old_pts, new_points=new_pts)
+            flushed.append(guid)
+        return flushed
 
     def _recompute_after_joined_edit(self, guid: Optional[str] = None,
                                      old_points: Optional[List[Tuple[float, float]]] = None,

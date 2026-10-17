@@ -553,6 +553,55 @@ class TransactionRequest(BaseModel):
 # TRANSACTION & REPLAY JOURNAL ENGINE (Command-Scoped Mementos)
 # ============================================================================
 
+def restorable_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Deep-copy the *restorable* subset of an `element_meta` entry.
+
+    An entry carries `entity`, a SWIG IFC handle that raises
+    `TypeError: cannot pickle 'SwigPyObject' object` under `deepcopy`. A geometry edit
+    never changes that handle, so restoring it is neither possible nor wanted — but a
+    memento that deep-copies the whole entry cannot even be constructed, which aborts
+    the very command it was meant to make reversible.
+
+    Regression this fixes: `ConstraintEqualize` executed before W8 (`71aa5ec`) and
+    aborted from it onward, because its new memento captured whole entries. Probe check
+    G did not catch it — that check only asserts the command *name* appears in the
+    memento region. `scratch/test_memento_reversibility.py` now executes it.
+    """
+    out: Dict[str, Any] = {}
+    for key, value in meta.items():
+        try:
+            out[key] = copy.deepcopy(value)
+        except Exception:
+            continue
+    return out
+
+
+# `_mutate_sketch` derives these from the sketch. `pitch` is the dangerous one: it is
+# only ever ASSIGNED when the sketch has a slope curve and never cleared, so removing the
+# last slope leaves the previous pitch behind. A memento that restores only `sketch`
+# therefore leaves the roof claiming a slope that no curve defines — `SketchCurveSetSlope`
+# undid to pitch 30 where it started at 15. Capture and re-apply these with the sketch.
+SKETCH_DERIVED_KEYS = ("polygon", "thickness", "pitch")
+
+
+def capture_sketch_derived(meta: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: copy.deepcopy(meta[k]) for k in SKETCH_DERIVED_KEYS if k in meta}
+
+
+def restore_sketch_derived(mgr: Any, guid: str, captured: Dict[str, Any]) -> None:
+    """
+    Re-assert the derived scalars. Called BEFORE re-applying the sketch, because
+    `set_roof_sketch` regenerates geometry from the sketch and that regeneration must see
+    the pre-command pitch rather than the one the command just wrote.
+    """
+    meta = mgr.element_meta.get(guid)
+    if not meta:
+        return
+    for key, value in captured.items():
+        meta[key] = copy.deepcopy(value)
+
+
 class CommandMemento:
     """
     Tier-0 Command-Scoped Memento.
@@ -1832,7 +1881,7 @@ class CommandBusEngine:
         elif cmd_name == "ConstraintEqualize":
             p: ConstraintEqualizeParams = validated
             prev_meta = {
-                g: copy.deepcopy(self.manager.element_meta[g])
+                g: restorable_meta(self.manager.element_meta[g])
                 for g in p.interior_guids if g in self.manager.element_meta
             }
             prev_c_id = None
@@ -1870,16 +1919,19 @@ class CommandBusEngine:
         elif cmd_name == "SketchCurveAdd":
             p: SketchCurveAddParams = validated
             prev_sketch_dict = copy.deepcopy(self.manager.element_meta.get(p.guid, {}).get("sketch"))
+            prev_derived = capture_sketch_derived(self.manager.element_meta.get(p.guid, {}))
             res = self.manager.add_sketch_curve(
                 p.guid, p.curve_id, (p.start[0], p.start[1]), (p.end[0], p.end[1]),
                 p.defines_slope, p.slope_angle,
             )
             def undo_fn(mgr):
+                restore_sketch_derived(mgr, p.guid, prev_derived)
                 if prev_sketch_dict:
                     from sketch_model import Sketch
                     mgr.set_roof_sketch(p.guid, Sketch.from_dict(prev_sketch_dict))
                 else:
                     mgr.remove_sketch_curve(p.guid, p.curve_id)
+                mgr.mark_mesh_dirty(p.guid)
             def redo_fn(mgr):
                 mgr.add_sketch_curve(
                     p.guid, p.curve_id, (p.start[0], p.start[1]), (p.end[0], p.end[1]),
@@ -1890,13 +1942,16 @@ class CommandBusEngine:
         elif cmd_name == "SketchCurveMoveVertex":
             p: SketchCurveMoveVertexParams = validated
             prev_sketch_dict = copy.deepcopy(self.manager.element_meta.get(p.guid, {}).get("sketch"))
+            prev_derived = capture_sketch_derived(self.manager.element_meta.get(p.guid, {}))
             res = self.manager.move_sketch_vertex(
                 p.guid, p.curve_id, p.end_index, (p.to[0], p.to[1])
             )
             def undo_fn(mgr):
+                restore_sketch_derived(mgr, p.guid, prev_derived)
                 if prev_sketch_dict:
                     from sketch_model import Sketch
                     mgr.set_roof_sketch(p.guid, Sketch.from_dict(prev_sketch_dict))
+                mgr.mark_mesh_dirty(p.guid)
             def redo_fn(mgr):
                 mgr.move_sketch_vertex(p.guid, p.curve_id, p.end_index, (p.to[0], p.to[1]))
             return CommandMemento(cmd_name, undo_fn, redo_fn), res
@@ -1913,13 +1968,18 @@ class CommandBusEngine:
         elif cmd_name == "SketchCurveSetSlope":
             p: SketchCurveSlopeParams = validated
             prev_sketch_dict = copy.deepcopy(self.manager.element_meta.get(p.guid, {}).get("sketch"))
+            # `pitch` is written from the slope curve and never cleared when the slope is
+            # removed, so restoring the sketch alone left the roof at the new pitch.
+            prev_derived = capture_sketch_derived(self.manager.element_meta.get(p.guid, {}))
             res = self.manager.set_sketch_slope(
                 p.guid, p.curve_id, p.defines_slope, p.slope_angle
             )
             def undo_fn(mgr):
+                restore_sketch_derived(mgr, p.guid, prev_derived)
                 if prev_sketch_dict:
                     from sketch_model import Sketch
                     mgr.set_roof_sketch(p.guid, Sketch.from_dict(prev_sketch_dict))
+                mgr.mark_mesh_dirty(p.guid)
             def redo_fn(mgr):
                 mgr.set_sketch_slope(p.guid, p.curve_id, p.defines_slope, p.slope_angle)
             return CommandMemento(cmd_name, undo_fn, redo_fn), res
@@ -2133,6 +2193,12 @@ class CommandBusEngine:
         with self._lock:
             session_id = f"drag_{uuid.uuid4().hex[:8]}"
             snapshot = self.manager.snapshot_state()
+            # Plan decision §3.4: during a wall-end drag the miter is stale until commit.
+            # Frames therefore skip the join recompute (~24 ms p95 at N=250, 3x the 8 ms
+            # frame budget) and it runs once in end_drag. Prior to this, every frame paid
+            # it; the participant walls keep their pre-drag footprints during the gesture.
+            if hasattr(self.manager, "begin_join_deferral"):
+                self.manager.begin_join_deferral()
             self.drag_sessions[session_id] = {
                 "session_id": session_id,
                 "origin": origin,
@@ -2220,6 +2286,8 @@ class CommandBusEngine:
             session = self.drag_sessions.pop(session_id)
 
             if not commit:
+                if hasattr(self.manager, "cancel_deferred_join_edits"):
+                    self.manager.cancel_deferred_join_edits()
                 self.manager.restore_state(session["snapshot"])
                 return {
                     "status": "cancelled",
@@ -2227,6 +2295,13 @@ class CommandBusEngine:
                     "rev": self.rev,
                     "committed": False,
                 }
+
+            # Plan decision §3.4: apply the deferred join recompute once, before the rev
+            # bump and journal entry, so the committed geometry is mitred and the undo
+            # snapshot (captured at begin_drag) still restores the pre-drag joins.
+            flushed_joins: List[str] = []
+            if hasattr(self.manager, "flush_deferred_join_edits"):
+                flushed_joins = self.manager.flush_deferred_join_edits()
 
             self.rev += 1
             if hasattr(self.manager, "commit_revision"):
@@ -2273,6 +2348,7 @@ class CommandBusEngine:
                 "committed": True,
                 "commands_executed": len(session["commands"]),
                 "dirty_guids": list(session["dirty_guids"]),
+                "flushed_join_guids": flushed_joins,
             }
 
 

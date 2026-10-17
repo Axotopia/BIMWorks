@@ -137,7 +137,12 @@ for i in range(250):
 check("250-wall fixture created", len(wall_250_guids) == 250)
 
 def bench_drag(command, params_fn, frames=60):
-    """One begin/60-frame/end gesture on the 250-wall fixture. Returns (p50, p95, mx, slice_suppressed)."""
+    """One begin/60-frame/end gesture on the 250-wall fixture.
+
+    Returns (p50, p95, max, slice_suppressed) over the frames only — end_drag is the
+    commit, not a frame. The last commit payload is left on `bench_drag.last_end_result`
+    so the caller can assert that the deferred join recompute actually ran there.
+    """
     sess = command_bus.begin_drag(origin="ui", description=f"{command} benchmark")
     sid = sess["session_id"]
     lats = []
@@ -149,9 +154,12 @@ def bench_drag(command, params_fn, frames=60):
         lats.append((time.perf_counter() - t0) * 1000.0)
         if res.get("slice2d") is not None:
             suppressed = False
-    command_bus.end_drag(sid, commit=False)
+    bench_drag.last_end_result = command_bus.end_drag(sid, commit=True)
     s = sorted(lats)
     return s[int(len(s) * 0.50)], s[int(len(s) * 0.95)], max(s), suppressed
+
+
+bench_drag.last_end_result = {}
 
 
 # The plan's §8 budget is 8 ms for "a drag". It is met by the height path and NOT by
@@ -173,19 +181,20 @@ check(
     f"p50={h_p50:.3f}ms, p95={h_p95:.3f}ms, max={h_max:.3f}ms (budget: 8.0ms)",
 )
 
-# The wall-end path does move the baseline, so it pays the join recompute + hosted-opening
-# reseat. It is ~19x over the §8 budget. This is an anti-regression guard, NOT a passing
-# budget: it is deliberately loose so it does not flake, and the honest figure is recorded
-# in docs/DELTA-MEASUREMENT.md §2.3 for follow-up.
+# The wall-end path moves the baseline, so before decision §3.4 was implemented it paid the
+# join recompute on EVERY frame: p95 24.053 ms, ~3x over the §8 budget. The recompute is now
+# deferred to commit (WallSetEnd p95 ~0.6 ms), so both paths meet the budget and both are
+# asserted against it. Equivalence of the deferred commit is gated separately by
+# scratch/test_drag_join_deferral.py.
 check(
-    "WallSetEnd drag p95 measured and within the 600 ms anti-regression guard (OVER the 8 ms budget)",
-    e_p95 < 600.0,
-    f"p50={e_p50:.3f}ms, p95={e_p95:.3f}ms, max={e_max:.3f}ms — 8.0ms budget NOT met on this path",
+    "WallSetEnd drag p95 under the 8.0 ms §8 budget (join recompute deferred to commit)",
+    e_p95 < 8.0,
+    f"p50={e_p50:.3f}ms, p95={e_p95:.3f}ms, max={e_max:.3f}ms (budget: 8.0ms)",
 )
 check(
-    "the wall-end path is the expensive one (documents which figure is which)",
-    e_p95 > h_p95 * 10,
-    f"end p95 {e_p95:.3f}ms vs height p95 {h_p95:.3f}ms",
+    "the wall-end commit ran the deferred join flush (deferral armed for the gesture)",
+    bool(bench_drag.last_end_result.get("flushed_join_guids")),
+    f"flushed={bench_drag.last_end_result.get('flushed_join_guids')}",
 )
 
 # Negative control: budgets made 10x stricter than each measured value must fail.

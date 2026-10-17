@@ -9,13 +9,15 @@
 
 ---
 
-## 0. Executive Status & Reconciliation at HEAD (`3dd3e80`)
+## 0. Executive Status & Reconciliation at HEAD
 
 All 13 rework items (`W1`–`W13`) of [`review/archive/REWORK-ORDER-direct-manipulation-2026-10-16.md`](archive/REWORK-ORDER-direct-manipulation-2026-10-16.md) were executed at `71aa5ec` and independently re-verified at `49b7c63` and `3dd3e80`. This section is the authoritative record of landed work and supersedes all intermediate audit notes.
 
+**Corrections in the pass following the `3dd3e80` reconciliation** (this is the third time an over-claim has been found at a gate boundary, so the pattern is worth naming): the gate inventory was missing `check:fit` and miscounted the suites; §0.3.3's probe-G bullet claimed behavioural verification that no test performed; and closing that gap surfaced two real defects that the declaration-only check had been hiding — `ConstraintEqualize` could not execute at all, and `SketchCurveSetSlope`'s undo left `pitch` stale. All four are fixed, and both new gates are asserted to fail when the fix is reverted. The lesson is narrow and repeatable: **a gate that reads source text or declares intent cannot find a command that runs and then does the wrong thing.**
+
 ### 0.1 Full Gate Suite Status
 
-`npm run check` exits 0 with **all 8 check suites** and TypeScript compilation clean:
+`npm run check` exits 0 with **all 9 gate suites** and TypeScript compilation clean (`npm run check` in `package.json` chains 9 `npm run` gates plus `tsc --noEmit`):
 
 | Gate | Script | Assertions | Status |
 |---|---|---|---|
@@ -26,7 +28,8 @@ All 13 rework items (`W1`–`W13`) of [`review/archive/REWORK-ORDER-direct-manip
 | **Snap Engine** | `scripts/check-snap-engine.mjs` | 34 checks | ✅ **PASSED** — 12 candidate kinds, priority hierarchy, negative controls |
 | **Interaction Session** | `scripts/check-interaction-session.mjs` | 37 checks | ✅ **PASSED** — Viewport `useState` retired, Esc/wobble guards (W6, W7) |
 | **PushPull Engine** | `scripts/check-pushpull-engine.mjs` | 17 checks | ✅ **PASSED** — Shipped `pushpull.ts` directly verified with negative controls (W11) |
-| **Python Suites** | `scripts/check-python-suites.mjs` | 15 suites (694+ checks) | ✅ **PASSED** — All backend unit & parity suites, including `test_validity_predicates.py` (63), `test_face_pushpull.py` (50), and `scratch/_probe_engine_smoke.py` (7/7 passed) |
+| **Fit Extents** | `scripts/check-fit-extents.mjs` | 28 checks | ✅ **PASSED** — A5's gate: imports the shipped `fitExtents.ts`, 60–90% occupancy + centring, identity negative control |
+| **Python Suites** | `scripts/check-python-suites.mjs` | 17 suites | ✅ **PASSED** — All backend unit & parity suites, including `test_validity_predicates.py` (63), `test_face_pushpull.py` (50), `test_memento_reversibility.py` (35), `test_drag_join_deferral.py` (11), and `scratch/_probe_engine_smoke.py` (7/7) |
 | **TypeScript** | `npx tsc --noEmit` | Clean | ✅ **PASSED** (0 errors) |
 
 ### 0.2 Unified Status Table: Track A & Track B
@@ -53,11 +56,13 @@ All 13 rework items (`W1`–`W13`) of [`review/archive/REWORK-ORDER-direct-manip
 ### 0.3 Independent Verification Insights & Cautions
 
 1. **Gate A5 (Fit to Extents):** Shipped in `src/interaction/fitExtents.ts` and asserted by `scripts/check-fit-extents.mjs` (`check:fit`) across plan, section, and elevation fixtures. Negative control verifies identity transform fails.
-2. **Gate W10 (Drag Latencies):** Measured on the 250-wall fixture in `docs/DELTA-MEASUREMENT.md` §2.3:
-   - Parameter-only drag (`WallSetHeight`): `p50 = 0.141 ms`, `p95 = 0.158 ms` (well inside the 8.0 ms budget).
-   - Baseline-moving drag (`WallSetEnd`): `p50 = 21.652 ms`, `p95 = 24.053 ms` (**≈3× over** the 8.0 ms budget). Baseline edits regenerate joins and HLR occluders; this is an open performance item.
-3. **Probe Check G:** Asserted behaviourally across an execute/undo/redo cycle with state fingerprinting: all 50 registered commands declare valid mementos (0 snapshot fallback).
-4. **Engine API Form:** Hand probes must use `execute_single_command(cmd, params)` or `execute_transaction([CommandRequest(...)], origin, description)` (not `execute`); envelopes carry `"status": "updated"` or `"committed"`, never `"success"`.
+2. **Gate W10 (Drag Latencies):** both drag paths now meet the 8 ms §8 budget, measured on the 250-wall fixture in `docs/DELTA-MEASUREMENT.md` §2.3:
+   - Parameter-only drag (`WallSetHeight`): `p50 = 0.133 ms`, `p95 = 0.157 ms`.
+   - Baseline-moving drag (`WallSetEnd`): `p50 = 0.544 ms`, `p95 = 0.599 ms` — after decision §3.4 was implemented. Every frame previously paid `_recompute_after_joined_edit` (`p95 24.053 ms`, ≈3× over budget) for a result only observable at gesture end; it is now deferred to commit (`8.487 ms`, once). Equivalence is gated: a deferred drag must commit geometry identical to the equivalent single edit (`scratch/test_drag_join_deferral.py`).
+3. **Probe Check G is a DECLARATION check, not a behaviour check.** It slices `command_bus.py` as text and asserts each registered command name appears in the memento region; a comment satisfies it, and it does not execute anything. Behavioural undo coverage is separate: `scratch/test_memento_reversibility.py` executes all ten W8 commands (execute → fingerprint → undo → fingerprint) and covers **10 of 50** registered commands; `scratch/test_session_undo_memento.py` round-trips five more. The remaining ~35 commands are covered by declaration only. Two real defects this gap hid, both now fixed and gated:
+   - **`ConstraintEqualize` could not execute at all** from W8 (`71aa5ec`) onward — its new memento deep-copied a whole `element_meta` entry including the `entity` SWIG handle (`TypeError: cannot pickle 'SwigPyObject' object`), aborting every call. It worked at `b550f14` via the snapshot fallback. Fixed with `restorable_meta()`.
+   - **`SketchCurveSetSlope`'s undo left `pitch` stale** — `_mutate_sketch` writes `pitch` only when a slope curve exists and never clears it, so undoing a slope change reverted the sketch but left the roof claiming a slope no curve defined (15° → 30°, stuck at 30°). Fixed by capturing and restoring the derived scalars.
+4. **Engine API Form:** hand probes must use `execute_single_command(cmd, params)` or `execute_transaction([CommandRequest(...)], origin, description)` (not `execute`); envelopes carry `"status": "updated"` or `"committed"`, never `"success"`.
 
 ### 0.4 Remaining Open Scope (Direct Manipulation & Performance)
 
@@ -68,7 +73,9 @@ Carried deliberately into live backlogs:
 4. **2.7 (Grid Spacing Control):** In-place text editing driving grid line placement.
 5. **Phase 4 Deferred:** Interactive SVG snap glyph overlays in 3D (4.1) and non-wall real-reference temporary dimensions (4.6).
 6. **Phase 7 Deferred:** Element-specific contextual ribbon tool panels and interactive endpoint dragging across joined walls.
-7. **Wall-End Drag Optimization:** Bringing baseline-moving drag (`WallSetEnd`) down toward the 8 ms budget.
+7. ~~**Wall-End Drag Optimization:**~~ **CLOSED** — the baseline-moving path now meets the 8 ms budget (`p95 0.599 ms`) by deferring the join recompute to commit per decision §3.4; gated by `scratch/test_drag_join_deferral.py`. See §0.3.2.
+
+**Not carried here, found while closing the above and fixed immediately:** `ConstraintEqualize` was aborting on every call from W8 onward, and `SketchCurveSetSlope`'s undo left `pitch` stale. Details and gates in §0.3.3.
 
 ---
 
@@ -250,7 +257,7 @@ Track A is ✅ **complete**. All seven items (`A1`–`A7`) landed and are verifi
 
 Each phase is independently verifiable and ends with a gate that can fail (§8).
 
-**Status at HEAD (`3dd3e80`):** P0 ✅ · P1 ✅ · P2 ✅ · P3 ✅ · P4 ✅ · P5 ✅ · P6 ✅ · P7 ✅ (latency open) · P8 ✅. All nine Track B phases have landed, with rework order W1–W13 closing the audit gaps. Open items are recorded in §0.4.
+**Status at HEAD:** P0 ✅ · P1 ✅ · P2 ✅ · P3 ✅ · P4 ✅ · P5 ✅ · P6 ✅ · P7 ✅ · P8 ✅. All nine Track B phases have landed, with rework order W1–W13 closing the audit gaps and decision §3.4 closing the last open item (baseline-drag latency — §0.3.2). Open items are recorded in §0.4.
 
 ### Phase 0 — The SnapEngine · **S** · ✅ **DONE**
 `src/interaction/snapEngine.ts` exists with 12 typed kinds, source provenance, screen-space pixel radii, and selection helpers. Imported by both `PlanViewport2D.tsx` and `Viewport3D.tsx` (0 inline quantizations remaining). Gate: `scripts/check-snap-engine.mjs` (`check:snap`) passes 34 checks with inverted-priority negative control.
@@ -283,8 +290,8 @@ Openings (`offset_along_wall`, `width`, `sill_height`, `swing_flipped`), levels 
 
 ### Phase 7 — Face-based push/pull as a parameter gesture · **L** · ✅ **DONE (W9–W11)**
 Hover a wall face → push/pull changes thickness; hover the top face → height. Numeric entry bound to session.
-**Rework closures:** W9a raycasts all scene meshes before classification (no occluded wall capture); W9b enforces >5px drag threshold to prevent click stranding; W10 measured drag updates (0.158 ms for height, 24.053 ms for wall end); W11 verifies push/pull imports shipped `pushpull.ts` directly and tests `MIN_THICKNESS_FT = 1/12 ft` floor.
-**Gate:** `check:pushpull` (`scripts/check-pushpull-engine.mjs`) 17 passed, 0 failed; `scratch/test_face_pushpull.py` 50 passed, 0 failed.
+**Rework closures:** W9a raycasts all scene meshes before classification (no occluded wall capture); W9b enforces >5px drag threshold to prevent click stranding; W10 measured both drag paths, and §3.4 then brought the baseline-moving one inside budget (height p95 0.157 ms; wall end p95 0.599 ms, was 24.053 ms); W11 verifies push/pull imports shipped `pushpull.ts` directly and tests `MIN_THICKNESS_FT = 1/12 ft` floor.
+**Gate:** `check:pushpull` (`scripts/check-pushpull-engine.mjs`) 17 passed, 0 failed; `scratch/test_face_pushpull.py` 50 passed, 0 failed; drag latency `scratch/test_drag_session.py` §7 and equivalence `scratch/test_drag_join_deferral.py`.
 
 ### Phase 8 — Validity predicates and clamping · **M** · ✅ **DONE (W1–W3)**
 `backend/validity.py` provides validation for both create and edit paths: thickness floor, opening host containment, wall length vs openings, footprint area > 0, finite coordinates.
@@ -341,7 +348,7 @@ Hover a wall face → push/pull changes thickness; hover the top face → height
 | B7 | Push/pull thickness & height gestures with exact floor | Round floor to 0.083 | `scratch/test_face_pushpull.py` (50), `check:pushpull` (17) | ✅ **PASSED** |
 | B8 | Wall end past opening clamps to valid limit and explains | Commit unvalidated | `scratch/test_validity_predicates.py` (63 checks) | ✅ **PASSED** |
 
-Performance gate: during a drag, parameter-only `WallSetHeight` update p95 is **0.158 ms** (inside the 8 ms budget); baseline-moving `WallSetEnd` is **24.053 ms** (recorded in `docs/DELTA-MEASUREMENT.md` §2.3; open optimization item).
+Performance gate: during a drag, **both** paths are inside the 8 ms budget — parameter-only `WallSetHeight` p95 **0.157 ms**, baseline-moving `WallSetEnd` p95 **0.599 ms** (was 24.053 ms before §3.4's deferral; commit flush 8.487 ms once). Recorded in `docs/DELTA-MEASUREMENT.md` §2.3; equivalence gated by `scratch/test_drag_join_deferral.py`.
 
 **The probe.** `scratch/_probe_engine_smoke.py` is Track A's executable form: 7 checks, **7 passed / 0 failed, exit 0**. It is wired into `scripts/check-python-suites.mjs` and verified on every `npm run check`.
 

@@ -31,6 +31,8 @@ const SUITES = [
   'scratch/test_reference_move.py',
   'scratch/test_dependency_graph.py',
   'scratch/test_drag_session.py',
+  'scratch/test_drag_join_deferral.py',
+  'scratch/test_memento_reversibility.py',
   'scratch/test_wall_grips.py',
   'scratch/test_value_entry_hot_retype.py',
   'scratch/test_snap_engine.py',

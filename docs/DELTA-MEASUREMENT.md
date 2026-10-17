@@ -62,19 +62,21 @@ Payload measurements demonstrate sustained ~72% to 77% payload compression acros
 
 ### 2.3 Drag Session Latency & Direct Manipulation Gesture Budget (Phase 7 / W10)
 
-During an active drag gesture (`/drag/update`), revision incrementation and 2D HLR plan slicing are suppressed (`slice2d: null`), and only modified element meshes are returned. **The 8 ms §8 budget is met by the parameter-only path and NOT by the baseline-moving path**, so both are recorded. The distinction matters because the two paths do different work, and only one of them carries the budget assertion.
+During an active drag gesture (`/drag/update`), revision incrementation and 2D HLR plan slicing are suppressed (`slice2d: null`), and only modified element meshes are returned. **Both drag paths now meet the 8 ms §8 budget**, after plan decision §3.4 was implemented for the baseline-moving path.
 
 **Corpus:** 250-wall fixture (25 × 10 grid, 250 elements, `height=10.0 ft`, `thickness=0.67 ft`).
-**State:** `slice2d` suppressed on both paths. 60 frames each, in-process `update_drag`.
+**State:** `slice2d` suppressed on both paths. 60 frames each, in-process `update_drag`. Frame figures exclude `end_drag`, which is the commit, not a frame.
 
 | Gesture | What it does | p50 | p95 | max | §8 budget (8 ms) |
 | :--- | :--- | ---: | ---: | ---: | :--- |
-| `WallSetHeight` — top-face push/pull (W10) | parameter only: height does not change the 2D footprint, so the join recompute is skipped by design (`ifc_service.py:3409`) | `0.133 ms` | **`0.158 ms`** | `0.279 ms` | **met** (≈51× inside) |
-| `WallSetEnd` — end grips (Phases 3/6) | moves the baseline: pays `_recompute_after_joined_edit` plus `_refresh_wall_placement` / `_reseat_hosted_openings` | `8.475 ms` | **`24.053 ms`** | `24.438 ms` | **not met — ≈3× over** |
+| `WallSetHeight` — top-face push/pull (W10) | parameter only: height does not change the 2D footprint, so the join recompute is skipped by design (`ifc_service.py:3409`) | `0.133 ms` | **`0.157 ms`** | `0.280 ms` | **met** (≈51× inside) |
+| `WallSetEnd` — end grips (Phases 3/6) | moves the baseline: placement/opening reseat runs per frame; the join recompute is deferred to commit | `0.544 ms` | **`0.599 ms`** | `0.628 ms` | **met** (≈13× inside) |
 
-- **Gate:** `scratch/test_drag_session.py` section 7 measures both. It asserts `p95 < 8.0 ms` for `WallSetHeight` and a deliberately loose **600 ms anti-regression guard** for `WallSetEnd` (loose so it does not flake; a regression tripwire, not a passing budget), and it asserts the wall-end path is the more expensive one so the two figures cannot be confused. Negative controls: a 10× stricter budget fails for each.
-- **Open item.** §8's gate reads "during a drag … `engine.p95` stays under 8 ms". On the wall-end path it is ≈3× over at N=250, and the rework order's W10 recorded only the height figure. Whoever owns Phase 7's performance claim should either scope the budget to the parameter path in the plan's own words, or bring the baseline path inside it.
+**What changed for the wall-end path (§3.4).** Every frame used to call `_recompute_after_joined_edit`, measured at **`p95 24.053 ms`** — ≈3× over budget — for a recompute whose result is only observable when the gesture ends. §3.4 already accepted "the far end's miter is stale until commit", so the recompute is now deferred: `begin_drag` arms `BimModelManager.begin_join_deferral()`, `update_element` records each wall's **pre-drag** endpoints and skips the recompute, and `end_drag(commit=True)` runs it once (`flush_deferred_join_edits`). Commit cost is **8.487 ms, once** — a one-off hit, not a per-frame cost.
+
+- **Gate:** `scratch/test_drag_session.py` §7 asserts `p95 < 8.0 ms` on **both** paths, plus negative controls. Equivalence and correctness of the deferral are gated by `scratch/test_drag_join_deferral.py`: a multi-frame deferred drag must commit geometry and join policies **identical** to the same edit applied as one command, the commit flush must be load-bearing (skipping it changes the geometry), the mid-gesture miter must be stale and then corrected, and a cancelled gesture must clear the deferral so later edits still recompute.
 - **Client latency is not recorded here.** The instrumentation separates `client` from `engine` (`REFACTOR-PLAN.md` §2.4). The figures above are **engine-only**, measured in-process; a browser-side client measurement has not been taken and must not be inferred from these.
+- **UX consequence, stated rather than hidden:** during a wall-end drag the dragged wall previews un-mitred and snaps to its mitred footprint on release. This is the behaviour §3.4 accepts; the alternative was paying 24 ms per frame.
 
 ---
 
