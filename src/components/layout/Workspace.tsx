@@ -65,17 +65,31 @@ export const Workspace: React.FC = () => {
       position: { direction: 'right', referencePanel: browserPanel },
     });
 
+    // The plan panels bind to the ids the backend seeds (`view-level-1`,
+    // `view-level-2`, `view-roof`). Their *names* follow the loaded model —
+    // `sync_plan_views_to_levels` rebinds them to the storeys that actually exist — so
+    // the titles here are pre-load fallbacks, replaced by the effect below once `views`
+    // arrives. A hardcoded "Floor Plan: Level 1" was wrong for every model but the box.
     event.api.addPanel({
       id: 'view-level-1',
       component: 'plan',
-      title: 'Floor Plan: Level 1',
+      title: 'Floor Plan',
       position: { referencePanel: centerPanel },
     });
 
     event.api.addPanel({
-      id: 'view-roof-plan',
+      id: 'view-level-2',
       component: 'plan',
-      title: 'Roof Plan',
+      title: 'Floor Plan 2',
+      position: { referencePanel: centerPanel },
+    });
+
+    // `view-roof`, not `view-roof-plan` — the latter never existed, so this tab bound
+    // to no view and rendered the empty-state fallback.
+    event.api.addPanel({
+      id: 'view-roof',
+      component: 'plan',
+      title: 'Floor Plan 3',
       position: { referencePanel: centerPanel },
     });
 
@@ -109,6 +123,22 @@ export const Workspace: React.FC = () => {
       }
     });
   };
+
+  // Retitle the seeded plan tabs once the model's views arrive, so they name the storeys
+  // the app actually loaded (`Floor Plan: FP1.GARAGE`) instead of a hardcoded
+  // "Floor Plan: Level 1" that only ever described the built-in box.
+  useEffect(() => {
+    const api = dockviewApiRef.current;
+    if (!api || !views.length) return;
+    // Look each seeded panel up by id. Positional indexing does not work: the plan
+    // views are not in elevation order in the payload (the imported model's extra
+    // storeys are appended), so plans[2] is not `view-roof`.
+    ['view-level-1', 'view-level-2', 'view-roof'].forEach((panelId) => {
+      const panel = api.getPanel?.(panelId);
+      const view = views.find((v) => v.id === panelId);
+      if (panel && view) panel.setTitle(view.name);
+    });
+  }, [views]);
 
   // When activeViewId changes externally (e.g. from Project Browser), activate tab in dockview
   useEffect(() => {

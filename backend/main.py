@@ -369,23 +369,43 @@ def reset_project(project_name: Optional[str] = "BIMWorks Project"):
     }
 
 
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+# The model the app opens with.
+#
+# `public/sample_building.ifc` is the real Revit 2027 export the app ships as its demo:
+# a 176-element, 5-storey ADU with correct metric geometry. The repo-root
+# `sample_building.ifc` is a 13-element fixture that the engine suites assert exact
+# counts against (`_probe_engine_smoke.py`, `test_container_fidelity.py`), so it is kept
+# as the fallback rather than deleted — but it is no longer what a user sees on boot.
+#
+# Note the boot cost: the real model parses in ~17-30 s and adds ~175 MB, so the sidecar
+# takes that long to become ready. That is the price of defaulting to a real building
+# instead of a box; see docs/DELTA-MEASUREMENT.md §2.4.
+SAMPLE_IFC = os.path.join(_REPO_ROOT, "public", "sample_building.ifc")
+FIXTURE_IFC = os.path.join(_REPO_ROOT, "sample_building.ifc")
+
+
+def _default_sample_path() -> Optional[str]:
+    for candidate in (SAMPLE_IFC, FIXTURE_IFC, os.path.abspath("sample_building.ifc")):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 @app.post("/api/sample")
 def load_sample_building():
-    """Populates the shipped sample building (sample_building.ifc) with 13 parametrized elements and 3 storeys."""
+    """Loads the shipped sample model — the real IFC, not a hand-built stub."""
     bim_manager.reset_model()
     command_bus.rev += 1
 
-    sample_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "sample_building.ifc"))
-    if os.path.exists(sample_path):
-        bim_manager.load_ifc_file(sample_path, "sample_building.ifc")
-    else:
-        # Fallback to current working directory if relative path differs
-        fallback = os.path.abspath("sample_building.ifc")
-        if os.path.exists(fallback):
-            bim_manager.load_ifc_file(fallback, "sample_building.ifc")
+    sample_path = _default_sample_path()
+    if sample_path:
+        bim_manager.load_ifc_file(sample_path, os.path.basename(sample_path))
 
     return {
         "status": "sample_loaded",
+        "sample": os.path.basename(sample_path) if sample_path else None,
         "elements_count": len(bim_manager.element_meta),
         "levels_count": len(bim_manager.levels),
         "project_name": bim_manager.project_name,

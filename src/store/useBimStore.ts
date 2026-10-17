@@ -2014,12 +2014,18 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         const data = await res.json().catch(() => ({}));
         set({ rev: undefined, docId: undefined });
         await get().fetchStateBundle();
-        const elemCount = typeof data?.elements_count === 'number' ? data.elements_count : 13;
-        const levelCount = typeof data?.levels_count === 'number' ? data.levels_count : 3;
+        setTimeout(() => window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT)), 150);
+        // Counts come from the response. The old 13/3 literals described a sample the
+        // loader no longer uses, so the status bar reported numbers for a model that
+        // was not on screen.
+        const elemCount = typeof data?.elements_count === 'number' ? data.elements_count : null;
+        const levelCount = typeof data?.levels_count === 'number' ? data.levels_count : null;
         set({
           projectName: data?.project_name || 'BIMWorks Prototype Building',
           isLoadingFile: false,
-          statusMessage: `Sample BIM Project Loaded (${elemCount} Elements, ${levelCount} Levels)`,
+          statusMessage: elemCount !== null && levelCount !== null
+            ? `Sample BIM Project Loaded (${elemCount} elements, ${levelCount} levels)`
+            : 'Sample BIM Project Loaded',
         });
       }
     } catch (e) {
@@ -2049,6 +2055,13 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           docId: undefined,
         });
         await get().fetchStateBundle();
+        // A loaded model is rarely near the origin — a real Revit export carries shared
+        // coordinates (the shipped ADU sits at x −25…−11 ft, z 558…567 ft) — while the
+        // camera is still framed on whatever was open before. The load reported success
+        // and the viewport showed empty space. Fit the view to the new geometry.
+        // Deferred a frame so the viewports have mounted their listeners with the new
+        // document before the event fires.
+        setTimeout(() => window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT)), 150);
         return true;
       } else {
         const err = await res.json().catch(() => ({ detail: 'Unknown error' }));

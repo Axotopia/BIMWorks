@@ -8153,6 +8153,70 @@ class BimModelManager:
         except Exception:
             return None
 
+    def sync_plan_views_to_levels(self) -> Dict[str, Any]:
+        """
+        Point the floor-plan views at the levels this model actually has.
+
+        `reset_model` seeds plans bound to the literal ids `"level_1"`, `"level_2"` and
+        `"roof"`, but `add_level` keys levels by their IFC GlobalId — so those ids are
+        dangling even for the built-in model, and unrelated to an imported one. A plan
+        then asks for its cut above a storey that does not exist, the cut falls back to
+        z ≈ cut_elevation, and any model whose geometry is not at the origin comes back
+        blank. That is why an imported building listed five levels and drew five empty
+        plans.
+
+        Rebind by ascending elevation, add a plan for a level that has none, and drop
+        plans for levels that are gone. Elevations, sections, 3D and sheets are
+        untouched, and a view already bound to a live level keeps its id so the UI does
+        not lose the open tab.
+        """
+        levels = sorted(
+            (lv for lv in self.levels.values() if lv.get("id")),
+            key=lambda lv: float(lv.get("elevation", 0.0)),
+        )
+        if not levels:
+            return {"plans": 0, "rebound": 0, "created": 0, "removed": 0}
+
+        elev_of = {lv["id"]: float(lv.get("elevation", 0.0)) for lv in levels}
+        plans = [v for v in self.views.values() if v.get("type") == "floor_plan"]
+
+        def plan_sort_key(v):
+            bound = v.get("level_id")
+            return (0, elev_of[bound]) if bound in elev_of else (1, 0.0)
+
+        plans.sort(key=plan_sort_key)
+
+        rebound = created = removed = 0
+        for index, level in enumerate(levels):
+            name = f"Floor Plan: {level['name']}"
+            if index < len(plans):
+                view = plans[index]
+                if view.get("level_id") != level["id"]:
+                    rebound += 1
+                view["level_id"] = level["id"]
+                view["name"] = name
+                continue
+            view_id = f"view-level-{level['id']}"
+            self.views[view_id] = {
+                "id": view_id,
+                "name": name,
+                "type": "floor_plan",
+                "level_id": level["id"],
+                "scale": '1/4" = 1\'-0"',
+                "detail_level": "medium",
+                "visual_style": "hidden_line",
+                "view_range": {"top": 8.0, "cut": 4.0, "bottom": 0.0, "view_depth": 0.0},
+            }
+            created += 1
+
+        # A plan whose level no longer exists would draw nothing; remove it so the
+        # browser does not offer views that cannot render.
+        for view in plans[len(levels):]:
+            self.views.pop(view.get("id"), None)
+            removed += 1
+
+        return {"plans": len(levels), "rebound": rebound, "created": created, "removed": removed}
+
     def load_ifc_file(self, file_path: str, filename: str = "Imported.ifc") -> Dict[str, Any]:
         """Loads IFC model directly from a file path and sets up the active scene."""
         self.model = ifcopenshell.open(file_path)
@@ -8676,12 +8740,17 @@ class BimModelManager:
                 self.import_report["geometry_only"].append(entry)
         self.import_report["levels"] = len(self.levels)
 
+        # The model's levels are now known, so rebind the floor plans to them. Without
+        # this the plans keep pointing at the previous model's storeys and draw empty.
+        views_sync = self.sync_plan_views_to_levels()
+
         return {
             "status": "loaded",
             "project_name": self.project_name,
             "elements_count": len(self.element_meta),
             "levels_count": len(self.levels),
             "grids_count": self.import_report["grids"],
+            "plan_views": views_sync,
             "import_report": self.import_report,
         }
 
