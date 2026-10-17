@@ -2,7 +2,7 @@
 
 **Reviewed artifact:** `github.com/Axotopia/BIMWorks`, branch `main`, HEAD `e4b9dd9`
 **Reviewer checkout:** `/home/song/Documents/DSH/axoworks/BIMWorks` (pulled to `origin/main`; tree clean; `planegcs` **installed**)
-**Normative input:** `review/IMPLEMENTATION-PLAN-geometric-references.md` (288 lines)
+**Normative input:** `review/archive/IMPLEMENTATION-PLAN-geometric-references.md` (288 lines)
 **Date:** 2026-10-15
 
 ---

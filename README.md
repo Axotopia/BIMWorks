@@ -76,7 +76,7 @@ row names the document that owns the claim; read that, not this.
 |---|---|---|
 | **Track A — make it testable** | The gap between "the engine passes its gates" and "a person can see it working": which model the app loads at startup, the default view range, dimension-driven editing when the dimension is *locked*, whether a failed edit reports as a failure, reading dimensions back, fitting a view on switch, and surfacing dimensions and sections in the UI | [`review/IMPLEMENTATION-PLAN-direct-manipulation.md`](review/IMPLEMENTATION-PLAN-direct-manipulation.md) §4 |
 | **Track B — direct manipulation** | The "IngeTrazo feel": one interaction session, a drag session on the bus (one snapshot per gesture), grips that emit parameters, value entry and hot retype, inference, and validity predicates with clamping | The same plan, §5 — its §1.1 is the evidence-graded record of which phases have landed |
-| **Semantics** | Dimensions as driving constraints, and the geometric-reference primitive (witness points, re-resolution, conflict reporting) they rest on | [`IMPLEMENTATION-PLAN-dimension-as-control.md`](review/IMPLEMENTATION-PLAN-dimension-as-control.md) and [`IMPLEMENTATION-PLAN-geometric-references.md`](review/IMPLEMENTATION-PLAN-geometric-references.md); the `REVIEW-*` rounds are the verification record |
+| **Semantics** | Dimensions as driving constraints, and the geometric-reference primitive (witness points, re-resolution, conflict reporting) they rest on | [`IMPLEMENTATION-PLAN-dimension-as-control.md`](review/archive/IMPLEMENTATION-PLAN-dimension-as-control.md) and [`IMPLEMENTATION-PLAN-geometric-references.md`](review/archive/IMPLEMENTATION-PLAN-geometric-references.md); the `REVIEW-*` rounds are the verification record |
 | **Revit-parity UI** | Ribbon, palettes, project browser, status bar — chrome, deliberately orthogonal to both tracks above | [`IMPLEMENTATION-PLAN-revit-feel.md`](review/IMPLEMENTATION-PLAN-revit-feel.md), measured in the `AUDIT-*-vs-revit.md` set |
 | **Edit path / transaction unit** | What a single live edit *is*, and separating the two jobs one snapshot was doing — durability versus rollback — so per-edit cost stops scaling with model size. This is what makes a per-frame drag affordable | [`docs/DECISION-live-edit-transaction-unit.md`](docs/DECISION-live-edit-transaction-unit.md); work ordered by [`docs/REFACTOR-PLAN.md`](docs/REFACTOR-PLAN.md) §9 |
 | **Sequencing** | Order P0–P7, status tables, risk register | [`docs/IMPLEMENTATION-PLAN-2026-10-14.md`](docs/IMPLEMENTATION-PLAN-2026-10-14.md) |
@@ -165,7 +165,7 @@ OS — or built on a different CPU — fails to load them and Vite never serves 
 ### Gates — run these before committing
 
 ```bash
-npm run check           # the six gates below, then tsc --noEmit
+npm run check           # the nine gates below, then tsc --noEmit
 ```
 
 | Script | What it protects |
@@ -175,7 +175,10 @@ npm run check           # the six gates below, then tsc --noEmit
 | `npm run check:state` | The `GET /api/state` bundle's invariants |
 | `npm run check:delta` | Delta-protocol equivalence |
 | `npm run check:snap` | Snap candidate resolution, priority hierarchy and selection geometry |
-| `npm run check:py` | The engine suites that must stay green: solver capability, container fidelity, dimensions CRUD, geometric references, transactions, `ReferenceMove` and drag-time extras, dependency graph |
+| `npm run check:interaction` | The interaction session is the single source of tool state (no viewport `useState`), plus Esc/wobble behaviour |
+| `npm run check:pushpull` | Face push/pull on the shipped `pushpull.ts` — hover targeting and the exact 1-inch thickness floor |
+| `npm run check:fit` | "Fit on view switch": 60–90% viewport occupancy and centring, asserted against the shipped `fitExtents.ts` |
+| `npm run check:py` | The engine suites that must stay green: solver capability, container fidelity, dimensions CRUD, geometric references, transactions, `ReferenceMove` and drag-time extras, dependency graph, validity predicates, drag sessions and join deferral, memento reversibility |
 | `tsc --noEmit` | Types |
 
 The gates exist because the violations they catch were real and shipped. Do not weaken them.
@@ -185,10 +188,17 @@ check written against an internal proxy (a flag, a return value, a line count) k
 thing a person sees has broken. Write the assertion against the user-visible result, and keep at least
 one negative control that fails when the check is inverted.
 
-`scratch/_probe_engine_smoke.py` is an engine smoke probe needing neither server nor browser: six checks
+**Two gates failed this test, and were found by applying it to them.** A "fit to extents" check
+re-implemented the fit maths locally and asserted on hardcoded fixtures, so it passed with the real fit
+function replaced by `return`. A memento check greps `command_bus.py` as text for command names, so it
+stayed green while `ConstraintEqualize` aborted on every call. The first now imports the viewport's fit
+module; the second is joined by `scratch/test_memento_reversibility.py`, which executes the commands. Both
+replacement gates were verified to **fail** when their fix is reverted.
+
+`scratch/_probe_engine_smoke.py` is an engine smoke probe needing neither server nor browser: seven checks
 over the model a fresh boot loads, the default plan cut, dimension-driven editing both unlocked and
-locked, failure reporting, and section/elevation linework. It is deliberately **not** wired into
-`npm run check` yet — it reports the gaps that Track A closes, and it joins the chain when they are closed.
+locked, failure reporting, and section/elevation linework. It **is** wired into `npm run check` (via
+`scripts/check-python-suites.mjs`) and currently passes 7/7.
 
 > **The UI gate makes real HTTP calls to the engine.** Start the backend first, or the run is misread —
 > the same trap recorded in `docs/REFACTOR-PLAN.md` §2.1.

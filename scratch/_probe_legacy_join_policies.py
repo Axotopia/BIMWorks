@@ -1,7 +1,7 @@
 """
 Probe — B2: legacy load silently discards join_policies (geometric-references refactor).
 
-Backs finding B2 in review/REVIEW-geometric-references-refactor-2026-10-15.md.
+Backs finding B2 in review/archive/REVIEW-geometric-references-refactor-2026-10-15.md.
 
 Commit cc0ddef deleted `self.join_policies = self._jsonable(overlay.get("join_policies", {}) or {})`
 from `load_orlt_project`'s legacy branch, alongside the `elements_overlay` line (B1). This probe

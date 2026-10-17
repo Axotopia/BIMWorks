@@ -2,8 +2,8 @@
 
 **Reviewed commit:** `41cbe82` — *"fix(dimensions): address round 2 review findings for dimension control"*
 **Parent:** `7a36697`; remediation for my round-2 review of `26cfed1`
-**Round 1 review:** `review/REVIEW-dimension-as-control-2026-10-16.md`
-**Round 2 review:** `review/REVIEW-dimension-as-control-round2-2026-10-16.md`
+**Round 1 review:** `review/archive/REVIEW-dimension-as-control-2026-10-16.md`
+**Round 2 review:** `review/archive/REVIEW-dimension-as-control-round2-2026-10-16.md`
 **Checkout:** `/home/song/Documents/DSH/axoworks/BIMWorks`, `main`, tree clean
 **Date:** 2026-10-16
 **Method:** Re-ran every gate; re-ran all four round-2 probes; re-ran the 10×3×3 kind-pair × axis ×

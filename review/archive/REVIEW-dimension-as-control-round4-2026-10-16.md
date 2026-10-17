@@ -2,9 +2,9 @@
 
 **Reviewed commit:** `db10611` — *"fix(dimensions): remediate round 3 review findings (N1-N4, H1 cross-axis)"*
 **Parent:** `ec2c99c` is current HEAD; `db10611` is the remediation (no `backend/` change since — verified)
-**Rounds 1–3:** `review/REVIEW-dimension-as-control-2026-10-16.md`,
-`review/REVIEW-dimension-as-control-round2-2026-10-16.md`,
-`review/REVIEW-dimension-as-control-round3-2026-10-16.md`
+**Rounds 1–3:** `review/archive/REVIEW-dimension-as-control-2026-10-16.md`,
+`review/archive/REVIEW-dimension-as-control-round2-2026-10-16.md`,
+`review/archive/REVIEW-dimension-as-control-round3-2026-10-16.md`
 **Checkout:** `/home/song/Documents/DSH/axoworks/BIMWorks`, `main`, tree clean
 **Date:** 2026-10-16
 **Method:** Re-ran every gate and the whole accumulated probe set (rounds 2–3 plus the three-commit matrix),

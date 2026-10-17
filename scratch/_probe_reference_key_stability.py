@@ -1,7 +1,7 @@
 """
 Probe — P0: `reference_key` is non-deterministic for unresolved point references.
 
-Backs the P0 finding in review/REVIEW-geometric-references-fixes-2026-10-15.md.
+Backs the P0 finding in review/archive/REVIEW-geometric-references-fixes-2026-10-15.md.
 
 The fix for the original "all unresolved points collapse to point:unresolved" collision was:
 

@@ -1,6 +1,6 @@
 """
 Test gate for Phase 4: ReferenceMove verb & drag-time extras wiring.
-Normative: review/IMPLEMENTATION-PLAN-geometric-references.md §4 Phase 4.
+Normative: review/archive/IMPLEMENTATION-PLAN-geometric-references.md §4 Phase 4.
 
 Verifies:
 1. ReferenceMove verb registered on CommandBusEngine.

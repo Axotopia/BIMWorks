@@ -2,7 +2,7 @@
 
 **Reviewed commit:** `26cfed1` — *"fix(dimensions): remediate REVIEW-dimension-as-control findings"*
 **Parent:** `c699e10` (merge); remediation for my round-1 review of `a276c97`
-**Round 1 review:** `review/REVIEW-dimension-as-control-2026-10-16.md`
+**Round 1 review:** `review/archive/REVIEW-dimension-as-control-2026-10-16.md`
 **Checkout:** `/home/song/Documents/DSH/axoworks/BIMWorks`, `main`, tree clean
 **Date:** 2026-10-16
 **Method:** Re-ran every gate; re-ran all round-1 probes; then built new probes for the parts round 1

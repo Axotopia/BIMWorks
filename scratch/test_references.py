@@ -1,6 +1,6 @@
 """
 Unit test gate for Geometric References (Phase 0).
-Normative: review/IMPLEMENTATION-PLAN-geometric-references.md §4 Phase 0.
+Normative: review/archive/IMPLEMENTATION-PLAN-geometric-references.md §4 Phase 0.
 
 Verifies:
 1. Every kind resolves.

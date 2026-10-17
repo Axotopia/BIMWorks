@@ -1,7 +1,7 @@
 """
 Probe — Phase 4: the ReferenceMove `extras` payload is inert in the gate's own scenario.
 
-Backs the Phase 4 finding in review/REVIEW-geometric-references-refactor-2026-10-15.md.
+Backs the Phase 4 finding in review/archive/REVIEW-geometric-references-refactor-2026-10-15.md.
 
 `scratch/test_reference_move.py` step 3 passes `extras=[("align", (grid_guid, w1_guid))]` and then
 asserts "Wall 2 followed Wall 1 (constraint held)". But the grid is not in the solve scope, so the

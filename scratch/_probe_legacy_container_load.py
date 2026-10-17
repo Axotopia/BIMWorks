@@ -1,7 +1,7 @@
 """
 Probe — B1: legacy container load crashes with NameError (geometric-references refactor).
 
-Backs finding B1 in review/REVIEW-geometric-references-refactor-2026-10-15.md.
+Backs finding B1 in review/archive/REVIEW-geometric-references-refactor-2026-10-15.md.
 
 `backend/ifc_service.py:load_orlt_project` legacy branch (`schema_version != 3`) consumes
 `elements_overlay`, which commit cc0ddef deleted while reworking dimension normalization in

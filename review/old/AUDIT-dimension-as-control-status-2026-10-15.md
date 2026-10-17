@@ -1,6 +1,6 @@
 # AUDIT — `IMPLEMENTATION-PLAN-dimension-as-control.md`: is it done?
 
-**Plan:** `review/IMPLEMENTATION-PLAN-dimension-as-control.md` (490 lines, Phases 0–8)
+**Plan:** `review/archive/IMPLEMENTATION-PLAN-dimension-as-control.md` (490 lines, Phases 0–8)
 **Repo state:** `github.com/Axotopia/BIMWorks` @ `63e7d6e`, tree clean
 **Date:** 2026-10-15
 

@@ -1,5 +1,5 @@
 """
-BIMWorks Geometric Reference Primitive (Normative: review/IMPLEMENTATION-PLAN-geometric-references.md)
+BIMWorks Geometric Reference Primitive (Normative: review/archive/IMPLEMENTATION-PLAN-geometric-references.md)
 
 A durable, comparable, repairable name for a piece of geometry (as opposed to a whole element).
 Owns reference construction, comparison, normalisation, resolution, and repair.

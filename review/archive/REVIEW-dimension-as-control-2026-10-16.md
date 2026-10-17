@@ -4,7 +4,7 @@
 structured conflict reporting"*
 **Parent:** `0b95038` (docs(plan): refresh dimension-as-control with measured state and symbol anchors)
 **Checkout:** `/home/song/Documents/DSH/axoworks/BIMWorks`, `main`, tree clean
-**Plan under review:** `review/IMPLEMENTATION-PLAN-dimension-as-control.md` (592 lines, state refreshed
+**Plan under review:** `review/archive/IMPLEMENTATION-PLAN-dimension-as-control.md` (592 lines, state refreshed
 against `main` @ `63e7d6e`)
 **Date:** 2026-10-16
 **Method:** Independently re-ran every gate Gemini cited; read the full diff; then wrote six throwaway probes

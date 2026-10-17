@@ -1,7 +1,7 @@
 """
 Probe — Phase 0: adversarial properties of backend/references.py.
 
-Backs the Phase 0 findings in review/REVIEW-geometric-references-refactor-2026-10-15.md.
+Backs the Phase 0 findings in review/archive/REVIEW-geometric-references-refactor-2026-10-15.md.
 
 These are deliberately NOT the shipped assertions in `scratch/test_references.py`; they probe the
 key/identity semantics the plan (§5.1) calls the actual risk, plus the §3.3 decisions.

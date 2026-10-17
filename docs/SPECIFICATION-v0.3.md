@@ -13,7 +13,7 @@ requirements remain in force — see §0.1).
 | `SPECIFICATION-v0.1.md` | First draft. Withdrawn. Moved to `docs/archive/`. | Withdrawn |
 | `docs/REFACTOR-PLAN.md` | **The delta-protocol refactor** — exact commands, gates, traps. Rules of engagement: `GEMINI.md`. | Contract (that refactor) |
 | `docs/IMPLEMENTATION-PLAN-2026-10-14.md` | **When and in what order.** P0–P7, status tables, risk register. | Sequencing |
-| `review/IMPLEMENTATION-PLAN-*.md` | The forward plans: `dimension-as-control`, `geometric-references`, `direct-manipulation`, `revit-feel`. | Plans |
+| `review/IMPLEMENTATION-PLAN-*.md` | The forward plans. **Live:** `direct-manipulation`, `revit-feel`. **Completed and archived:** `dimension-as-control`, `geometric-references` (in `review/archive/`). | Plans |
 | `review/AUDIT-*-vs-revit.md` | Measured parity audits, `file:line` cited. | Evidence |
 | `docs/SPEC.md` | **Why.** Master specification v2.3 — research rationale, sourced quotations. | Non-normative |
 | `README.md` | Orientation and how to run it. | Non-normative |
@@ -82,7 +82,7 @@ It also records three defects found since, one of which violates an **existing**
 | Gap | Evidence | Severity |
 |---|---|---|
 | **The embedded solver is not installed.** `planegcs>=0.9.6` is declared in `requirements.txt` but `import planegcs` raises `ImportError`. `_require_solver()` (`backend/constraint_solver.py:96-102`) raises `SolverUnavailable`, and `_solve_constraints_after_move` (`backend/ifc_service.py:2964-2966`) catches every exception and **returns silently**. The constraint system is therefore **inert and reporting nothing**. **RESOLVED 2026-10-16:** at `ec2c99c` `import planegcs` succeeds, `ConstraintSolver._solver_available()` is `True` (`Sketch is not None`, `backend/constraint_solver.py:119-120`), `/health` reports `"solver_available": true`, and the solver capability gate passes 17/17 alongside `scratch/test_pure_python_solver.py` (13). §29.1 is what keeps this checkable — do not delete the gate. | `[OBS]` execution, 2026-10-16 | **Closed** (was High) — violated v0.2 §12 until this date |
-| **An open boundary passes sketch validation.** An open 3-segment chain returns `is_closed() == True` and `validate() == None`, and the missing edge is **invented**. The only gate on the commit path (`backend/ifc_service.py:644-649`) therefore admits a boundary that was never closed. | `[OBS]` in `review/REVIEW-ingetrazo-…md` §4.2, reproduced by `review/probe-sketch-validation.py` | **High** |
+| **An open boundary passes sketch validation.** An open 3-segment chain returns `is_closed() == True` and `validate() == None`, and the missing edge is **invented**. The only gate on the commit path (`backend/ifc_service.py:644-649`) therefore admits a boundary that was never closed. | `[OBS]` in `review/REVIEW-ingetrazo-…md` §4.2, reproduced by `scratch/probe_sketch_validation.py` | **High** |
 | **An invalid polygon degrades silently.** `_triangulate_polygon_2d` swallows a Shapely failure or an invalid polygon and returns a fan (`backend/ifc_service.py:2188-2211`) — wrong area, no diagnostic. | `[OBS]` as above | Medium |
 | **`ElementUpdate` silently ignores what it does not understand.** `updates: Dict[str, Any]` (`backend/command_bus.py:189-191`) is untyped, and `update_element` applies recognised keys and **still reports `"updated"`** for the rest (`backend/ifc_service.py:3279-3404`). | `[OBS]` | Medium |
 | **Two independent dependency walks.** `ConstraintSolver.affected_guids` (`backend/constraint_solver.py:110-137`) and `DependencyGraph.recompute` (`backend/dependency_graph.py:160-216`). The latter builds `constraint` edges (`:71-87`) but acts only through `recompute_wall_joins`; `affected` is counted, never re-solved. Nothing keeps them consistent. | `[OBS]` | Medium |
@@ -377,13 +377,21 @@ including the pure-Python fallback (`backend/constraint_solver.py:287`).
 | V1 | A two-source reference does not collide with either of its single sources | `reference_key` unit gate |
 | V2 | An unresolvable reference reports `lost` and never a coordinate | dimension/route suite |
 | V3 | An `intersection` snap candidate carries **both** source guids | `npm run check:snap` |
-| V4 | An open boundary is **refused**, not closed by inference | `review/probe-sketch-validation.py` |
+| V4 | An open boundary is **refused**, not closed by inference | `scratch/probe_sketch_validation.py` |
 | V5 | A rejected command leaves the model and the journal untouched | bus suite |
 | V6 | A committed edit returns a delta, and the delta applies identically | `npm run check:delta` |
 
 **[REQ]** The gate set is `npm run check` — `check:bus`, `check:ui`, `check:state`, `check:delta`,
-`check:snap`, `check:py`, then `tsc --noEmit`. **The UI gate makes real HTTP calls to the engine; the
-backend MUST be running first** (`docs/REFACTOR-PLAN.md:67`).
+`check:snap`, `check:interaction`, `check:pushpull`, `check:fit`, `check:py`, then `tsc --noEmit`. **The UI
+gate makes real HTTP calls to the engine; the backend MUST be running first** (`docs/REFACTOR-PLAN.md:67`).
+
+**[REQ]** A gate MUST assert an observable outcome of shipped code, not a restatement of it. A gate that
+re-implements the logic it is meant to protect, or that reads source text for a symbol instead of
+executing the behaviour, MUST NOT be counted as coverage. Two such gates were found and replaced: the
+"fit on view switch" check evaluated its own copy of the fit maths and passed with the real function
+deleted, and the memento check greps `command_bus.py` for command names and stayed green while
+`ConstraintEqualize` aborted on every call. Each replacement was verified to **fail** when its fix is
+reverted.
 
 ---
 
@@ -394,7 +402,7 @@ Carried from v0.2 §21 unless closed. New or restated:
 | # | Question | Why it blocks |
 |---|---|---|
 | **Q1** | Does a `level_plane` reference resolve to a coordinate on an axis, or to a plane predicate? | Freezes the reference identity model (§26.3). |
-| **Q2** | Is the reference primitive owned by the geometric-references plan as a shared Phase 0, or defined in the dimension plan and consumed? | Decided: **shared, owned by `review/IMPLEMENTATION-PLAN-geometric-references.md`**; the dimension plan is amended to consume it. Recorded here so the decision is not re-litigated. |
+| **Q2** | Is the reference primitive owned by the geometric-references plan as a shared Phase 0, or defined in the dimension plan and consumed? | Decided: **shared, owned by `review/archive/IMPLEMENTATION-PLAN-geometric-references.md`**; the dimension plan is amended to consume it. Recorded here so the decision is not re-litigated. |
 | **Q3** | Which dependency walk is authoritative for reference-driven re-solve? | Two exist today (§0.4). A third is how the first two diverged. |
 | **Q4** | Does the REA policy's narrow exception widen, given §0.4.1? | A project decision, deliberately **not** taken by this document. |
 | **Q5** | Do the five `review/AUDIT-*.md` get re-anchored, or left pinned to `318ce26`? | Their line citations are drifting and live plans quote them. |

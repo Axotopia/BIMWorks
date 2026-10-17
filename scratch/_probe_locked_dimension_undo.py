@@ -1,7 +1,7 @@
 """
 Probe — Phase 5: undo of a locked-dimension cascade leaves a dangling constraint_id.
 
-Backs the Phase 5 finding in review/REVIEW-geometric-references-refactor-2026-10-15.md.
+Backs the Phase 5 finding in review/archive/REVIEW-geometric-references-refactor-2026-10-15.md.
 
 `delete_dimension` releases the dimension's lock via `delete_constraint(cid)`. The DeleteElement
 memento's `undo_fn` restores `mgr.dimensions` but not `mgr.constraints`. So after undo the

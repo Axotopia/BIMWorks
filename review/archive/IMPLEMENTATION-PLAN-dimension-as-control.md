@@ -501,7 +501,7 @@ reference for everything v0.3 does not change. The earlier premise here — *"th
 currently silent on a dimension object"* — is **no longer accurate**: v0.3 records that the persistent
 dimension object shipped (in its list of shipped changes), names dimensions in normative requirements
 alongside constraints, and records the ownership decision for the reference primitive as **Q2** (shared,
-owned by `review/IMPLEMENTATION-PLAN-geometric-references.md`, with this plan amended to consume it) —
+owned by `review/archive/IMPLEMENTATION-PLAN-geometric-references.md`, with this plan amended to consume it) —
 "so the decision is not re-litigated".
 
 What remains is still worth tracking, but as **edits against v0.3**, and the section numbers below are
