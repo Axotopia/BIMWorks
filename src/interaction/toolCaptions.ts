@@ -48,6 +48,24 @@ export const TOOL_CAPTIONS: Record<ActiveTool, ToolCaption> = {
   SEC: { caption: 'Section', shortcut: 'SEC', implemented: true },
   EL: { caption: 'Elevation', shortcut: 'EL', implemented: true },
   SHT: { caption: 'Sheet', shortcut: 'SHT', implemented: false },
+  // Direct 3D Modeling (SketchUp format)
+  LI: { caption: 'Model Line', shortcut: 'LI', implemented: true },
+  REC: { caption: 'Rectangle', shortcut: 'REC', implemented: true },
+  CI: { caption: 'Circle', shortcut: 'CI', implemented: true },
+  AR: { caption: 'Arc', shortcut: 'AR', implemented: true },
+  PP: { caption: 'Push/Pull', shortcut: 'PP', implemented: true },
+  OF: { caption: 'Offset', shortcut: 'OF', implemented: true },
+  FM: { caption: 'Follow Me', shortcut: 'FM', implemented: true },
+  TP: { caption: 'Tape Measure', shortcut: 'TP', implemented: true },
+  MV: { caption: 'Move', shortcut: 'MV', implemented: true },
+  RO: { caption: 'Rotate', shortcut: 'RO', implemented: true },
+  SC: { caption: 'Scale', shortcut: 'SC', implemented: true },
+  TW: { caption: 'Tag Wall', shortcut: 'TW', implemented: true },
+  TF: { caption: 'Tag Floor', shortcut: 'TF', implemented: true },
+  TC: { caption: 'Tag Column', shortcut: 'TC', implemented: true },
+  TR_ROOF: { caption: 'Tag Roof', shortcut: 'TR', implemented: true },
+  TO: { caption: 'Tag Opening', shortcut: 'TO', implemented: true },
+  GP: { caption: 'Create Group', shortcut: 'GP', implemented: true },
 };
 
 export function toolCaption(tool: ActiveTool): string {
@@ -100,6 +118,44 @@ export function toolPrompt(
       return 'Click location on floor plan to place elevation marker and create elevation view.';
     case 'sketch':
       return 'Draw sketch boundary lines. Press Enter to finish, Esc to cancel.';
+    case 'LI':
+      if (phase === 'picking' || picksCount >= 1) return 'Specify end point of line, or type a length.';
+      return 'Click start point of 3D line. Arrow keys lock axis (X=Right, Y=Left, Z=Up).';
+    case 'REC':
+      if (phase === 'picking' || picksCount >= 1) return 'Click opposite corner for 3D rectangle, or type dimensions.';
+      return 'Click first corner of 3D rectangle. Arrow keys lock plane.';
+    case 'CI':
+      if (phase === 'picking' || picksCount >= 1) return 'Specify radius point or type circle radius.';
+      return 'Click center point for 3D circle.';
+    case 'AR':
+      return 'Click start point, end point, and chord bulge for 3D arc.';
+    case 'PP':
+      if (phase === 'dragging') return 'Drag to extrude face, or type distance in Value Box.';
+      return 'Click planar face to push/pull along normal.';
+    case 'OF':
+      return 'Click face to offset boundary outline inward or outward.';
+    case 'FM':
+      return 'Select profile face, then click edge path to sweep along.';
+    case 'TP':
+      return 'Click two points to measure distance or place guide line.';
+    case 'MV':
+      return 'Pick base point and destination point to move selected elements.';
+    case 'RO':
+      return 'Pick rotation center and reference angle to rotate elements.';
+    case 'SC':
+      return 'Pick base point and drag scale handle.';
+    case 'TW':
+      return 'Click 3D solid to classify and tag as IfcWall.';
+    case 'TF':
+      return 'Click 3D solid to classify and tag as IfcSlab.';
+    case 'TC':
+      return 'Click 3D solid to classify and tag as IfcColumn.';
+    case 'TR_ROOF':
+      return 'Click 3D solid to classify and tag as IfcRoof.';
+    case 'TO':
+      return 'Click 3D solid to tag as opening subtraction.';
+    case 'GP':
+      return 'Select geometry and press GP to create a model group.';
     case 'select':
       return '';
     default:

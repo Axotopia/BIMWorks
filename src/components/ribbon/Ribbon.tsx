@@ -126,6 +126,15 @@ import {
   IconParkingComponent,
   IconPropertyLine,
   IconLabelContours,
+  IconPushPull,
+  IconFollowMe,
+  IconTapeMeasure,
+  Icon3DLine,
+  Icon3DRectangle,
+  Icon3DCircle,
+  Icon3DArc,
+  IconPlaneLock,
+  IconTagBim,
 } from '../icons/RevitIcons';
 
 export const Ribbon: React.FC = () => {
@@ -171,6 +180,9 @@ export const Ribbon: React.FC = () => {
     meshes,
     views,
     sheets,
+    tagSelectedElement,
+    planeLock,
+    setPlaneLock,
   } = useBimStore();
 
   const primaryGuid = selectedGuids.length > 0 ? selectedGuids[selectedGuids.length - 1] : selectedGuid;
@@ -235,12 +247,12 @@ export const Ribbon: React.FC = () => {
     }
   };
 
-  // Exactly Revit's 7 architectural tabs requested by user
   const tabs = [
     'Architecture',
     'Insert',
     'Annotate',
     'Massing&Site',
+    'Model',
     'View',
     'Manage',
     'Modify',
@@ -858,6 +870,60 @@ export const Ribbon: React.FC = () => {
             </RibbonPanel>
             {/* Excluded: Graded Region / Analysis (Crossed out in Red) */}
           </>
+        ) : activeRibbonTab === 'Model' ? (
+          /* MODEL TAB (Direct 3D Modeling - SketchUp & IngeTrazo format) */
+          <>
+            {/* Draw Panel */}
+            <RibbonPanel title="Draw">
+              {renderToolButton('LI', 'Line', 'LI', <Icon3DLine size={22} />)}
+              {renderToolButton('REC', 'Rectangle', 'REC', <Icon3DRectangle size={22} />)}
+              {renderToolButton('CI', 'Circle', 'CI', <Icon3DCircle size={22} />)}
+              {renderToolButton('AR', 'Arc', 'AR', <Icon3DArc size={22} />)}
+              <div className="flex flex-col justify-center space-y-0.5 pl-0.5 border-l border-[#e2e8f0]">
+                {renderSmallButton(
+                  planeLock ? `Lock: ${planeLock.toUpperCase()}` : 'Plane Lock',
+                  <IconPlaneLock size={13} />,
+                  () => setPlaneLock(planeLock === 'z' ? null : planeLock === 'x' ? 'y' : planeLock === 'y' ? 'z' : 'x'),
+                  undefined,
+                  '↑↓←→'
+                )}
+              </div>
+            </RibbonPanel>
+
+            {/* Push/Pull Panel */}
+            <RibbonPanel title="Push/Pull">
+              {renderToolButton('PP', 'Push/Pull', 'PP', <IconPushPull size={22} />)}
+              {renderToolButton('OF', 'Offset', 'OF', <IconOffset size={22} />)}
+              {renderToolButton('FM', 'Follow Me', 'FM', <IconFollowMe size={22} />)}
+            </RibbonPanel>
+
+            {/* Transform Panel */}
+            <RibbonPanel title="Transform">
+              {renderToolButton('MV', 'Move', 'MV', <IconMove size={22} />)}
+              {renderToolButton('RO', 'Rotate', 'RO', <IconRotate size={22} />)}
+              {renderToolButton('TP', 'Tape', 'TP', <IconTapeMeasure size={22} />)}
+            </RibbonPanel>
+
+            {/* BIM Tagging Panel */}
+            <RibbonPanel title="BIM Tagging">
+              {renderToolButton('TW', 'Tag Wall', 'TW', <IconWall size={22} />, () => tagSelectedElement('IfcWall'))}
+              {renderToolButton('TF', 'Tag Floor', 'TF', <IconFloor size={22} />, () => tagSelectedElement('IfcSlab'))}
+              {renderToolButton('TC', 'Tag Column', 'TC', <IconColumn size={22} />, () => tagSelectedElement('IfcColumn'))}
+              {renderToolButton('TR_ROOF', 'Tag Roof', 'TR', <IconRoof size={22} />, () => tagSelectedElement('IfcRoof'))}
+              <div className="flex flex-col justify-center space-y-0.5 pl-0.5 border-l border-[#e2e8f0]">
+                {renderSmallButton('Opening', <IconOpening size={13} />, () => setActiveTool('TO'), undefined, 'TO')}
+                {renderSmallButton('Clear Tag', <Trash2 size={13} className="text-[#dc2626]" />, () => setActiveTool('select'), undefined)}
+              </div>
+            </RibbonPanel>
+
+            {/* Groups Panel */}
+            <RibbonPanel title="Groups">
+              {renderToolButton('GP', 'Create Group', 'GP', <IconModelGroup size={22} />)}
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton('Explode', <Split size={13} />, undefined, 'Explode Group', 'EX')}
+              </div>
+            </RibbonPanel>
+          </>
         ) : activeRibbonTab === 'View' ? (
           /* VIEW TAB */
           <>
@@ -1065,6 +1131,12 @@ export const Ribbon: React.FC = () => {
               </div>
             </RibbonPanel>
 
+            {/* Direct Edit Panel */}
+            <RibbonPanel title="Direct Edit">
+              {renderToolButton('PP', 'Push/Pull', 'PP', <IconPushPull size={22} />)}
+              {renderToolButton('OF', 'Offset', 'OF', <IconOffset size={22} />)}
+            </RibbonPanel>
+
             {/* Geometry Panel */}
             <RibbonPanel title="Geometry">
               <div className="flex flex-col justify-center space-y-0.5">
@@ -1096,8 +1168,10 @@ export const Ribbon: React.FC = () => {
 
                 {/* Offset */}
                 <button
-                  onClick={() => {}}
-                  className="p-1.5 rounded border border-transparent hover:bg-[#e0f2fe]"
+                  onClick={() => setActiveTool('OF')}
+                  className={`p-1.5 rounded border ${
+                    activeTool === 'OF' ? 'bg-[#cce8ff] border-[#007acc]' : 'border-transparent hover:bg-[#e0f2fe]'
+                  }`}
                   title="Offset (OF)"
                 >
                   <IconOffset size={18} />

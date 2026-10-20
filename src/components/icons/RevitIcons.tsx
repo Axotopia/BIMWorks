@@ -856,3 +856,94 @@ export const IconLabelContours: React.FC<IconProps> = ({ size = 20, className = 
   </svg>
 );
 
+// 90. Direct Push/Pull (Extrude face / hole cut)
+export const IconPushPull: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <polygon points="12,2 20,6.5 12,11 4,6.5" fill="#bae6fd" stroke="#0284c7" strokeWidth="1.4" strokeLinejoin="round" />
+    <polygon points="4,6.5 12,11 12,21 4,16.5" fill="#e0f2fe" stroke="#0284c7" strokeWidth="1.4" strokeLinejoin="round" />
+    <polygon points="12,11 20,6.5 20,16.5 12,21" fill="#7dd3fc" stroke="#0284c7" strokeWidth="1.4" strokeLinejoin="round" />
+    <path d="M12,7 L12,1.5" stroke="#ea580c" strokeWidth="2" strokeLinecap="round" />
+    <polygon points="9.5,3.5 12,0.5 14.5,3.5" fill="#ea580c" />
+  </svg>
+);
+
+// 92. Follow Me (Sweep profile along path)
+export const IconFollowMe: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <path d="M4 19C4 11 10 5 18 5" stroke="#0284c7" strokeWidth="2" strokeLinecap="round" fill="none" />
+    <rect x="2" y="16" width="5" height="5" fill="#fed7aa" stroke="#ea580c" strokeWidth="1.3" />
+    <polygon points="17,2.5 21,5 17,7.5" fill="#0284c7" />
+  </svg>
+);
+
+// 93. Tape Measure / Guide
+export const IconTapeMeasure: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <rect x="3" y="7" width="14" height="14" rx="3" fill="#facc15" stroke="#ca8a04" strokeWidth="1.5" />
+    <circle cx="10" cy="14" r="3.5" fill="#eab308" stroke="#ca8a04" strokeWidth="1.2" />
+    <rect x="17" y="12" width="5" height="4" fill="#f8fafc" stroke="#475569" strokeWidth="1.2" />
+    <line x1="19" y1="12" x2="19" y2="14" stroke="#dc2626" strokeWidth="1" />
+    <line x1="21" y1="12" x2="21" y2="15" stroke="#475569" strokeWidth="1" />
+  </svg>
+);
+
+// 94. 3D Line
+export const Icon3DLine: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <line x1="4" y1="20" x2="20" y2="4" stroke="#0284c7" strokeWidth="2" strokeLinecap="round" />
+    <circle cx="4" cy="20" r="2.5" fill="#38bdf8" stroke="#0284c7" strokeWidth="1.5" />
+    <circle cx="20" cy="4" r="2.5" fill="#38bdf8" stroke="#0284c7" strokeWidth="1.5" />
+  </svg>
+);
+
+// 95. 3D Rectangle
+export const Icon3DRectangle: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <polygon points="12,4 21,9 12,14 3,9" fill="#bae6fd" stroke="#0284c7" strokeWidth="1.6" strokeLinejoin="round" />
+    <circle cx="3" cy="9" r="1.8" fill="#0284c7" />
+    <circle cx="21" cy="9" r="1.8" fill="#0284c7" />
+  </svg>
+);
+
+// 96. 3D Circle
+export const Icon3DCircle: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <ellipse cx="12" cy="12" rx="9" ry="5.5" fill="#bae6fd" stroke="#0284c7" strokeWidth="1.6" />
+    <circle cx="12" cy="12" r="1.8" fill="#0284c7" />
+    <line x1="12" y1="12" x2="21" y2="12" stroke="#ea580c" strokeWidth="1.2" strokeDasharray="1.5 1.5" />
+  </svg>
+);
+
+// 97. 3D Arc
+export const Icon3DArc: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <path d="M4 18C4 10 10 5 20 6" stroke="#0284c7" strokeWidth="2" strokeLinecap="round" fill="none" />
+    <circle cx="4" cy="18" r="2" fill="#38bdf8" stroke="#0284c7" strokeWidth="1.2" />
+    <circle cx="20" cy="6" r="2" fill="#38bdf8" stroke="#0284c7" strokeWidth="1.2" />
+    <circle cx="9.5" cy="9.5" r="1.8" fill="#ea580c" />
+  </svg>
+);
+
+// 98. Plane Lock (RGB Axes)
+export const IconPlaneLock: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <line x1="12" y1="14" x2="12" y2="4" stroke="#2563eb" strokeWidth="2" strokeLinecap="round" />
+    <polygon points="10,6 12,2 14,6" fill="#2563eb" />
+    <line x1="12" y1="14" x2="20" y2="18" stroke="#dc2626" strokeWidth="2" strokeLinecap="round" />
+    <polygon points="17.5,15 22,19 18.5,20.5" fill="#dc2626" />
+    <line x1="12" y1="14" x2="4" y2="18" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" />
+    <polygon points="5.5,20.5 2,19 6.5,15" fill="#16a34a" />
+    <circle cx="12" cy="14" r="2" fill="#475569" />
+  </svg>
+);
+
+// 99. Tag BIM Element
+export const IconTagBim: React.FC<IconProps> = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+    <path d="M4 4H10L20 14C21 15 21 17 20 18L18 20C17 21 15 21 14 20L4 10V4Z" fill="#bae6fd" stroke="#0284c7" strokeWidth="1.5" strokeLinejoin="round" />
+    <circle cx="7.5" cy="7.5" r="1.5" fill="#0284c7" />
+    <text x="12" y="15" fontSize="6" fontWeight="bold" fill="#0369a1" fontFamily="sans-serif">IFC</text>
+  </svg>
+);
+
+

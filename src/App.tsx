@@ -94,8 +94,8 @@ export const App: React.FC = () => {
         return;
       }
 
-      // Pass single character or Escape to hotkey engine
-      if (e.key.length === 1 || e.key === 'Escape') {
+      // Pass single character, Escape, or Arrow keys to hotkey engine
+      if (e.key.length === 1 || e.key === 'Escape' || e.key.startsWith('Arrow')) {
         handleKeyStroke(e.key);
       }
     };

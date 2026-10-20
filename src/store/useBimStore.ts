@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import {
   ActiveTool,
+  RibbonTab,
   BimElement,
   BimType,
   LevelData,
@@ -26,7 +27,12 @@ import {
   SketchSession,
   SketchLine,
   SketchDrawTool,
+  PlaneLockType,
 } from '../types/bim';
+import {
+  calculateMeshVolume,
+  calculateMeshArea,
+} from '../interaction/directModeling';
 import {
   DEFAULT_DRAFTING_LAYERS,
   DEFAULT_LAYER_GROUPS,
@@ -475,7 +481,7 @@ function extractPolygonFromLines(lines: SketchLine[]): { polygon: [number, numbe
 
 interface BimStoreState {
   // Navigation & Tools
-  activeRibbonTab: 'Architecture' | 'Insert' | 'Annotate' | 'Massing&Site' | 'View' | 'Manage' | 'Modify';
+  activeRibbonTab: RibbonTab;
   activeTool: ActiveTool;
   keyBuffer: string;
   keyBufferTimeout: any;
@@ -547,6 +553,11 @@ interface BimStoreState {
   hoverCandidates: string[];
   snapsEnabled: boolean;
 
+  // Direct 3D Modeling (IngeTrazo / SketchUp format)
+  planeLock: PlaneLockType;
+  setPlaneLock: (lock: PlaneLockType) => void;
+  tagSelectedElement: (targetClass: 'IfcWall' | 'IfcSlab' | 'IfcColumn' | 'IfcRoof') => Promise<void>;
+
   // Revit Spatial & Visibility Controls
   sectionBox: {
     enabled: boolean;
@@ -585,8 +596,8 @@ interface BimStoreState {
   activeVisualStyle: 'wireframe' | 'hidden_line' | 'consistent_colors';
 
   // Actions
-  setActiveRibbonTab: (tab: BimStoreState['activeRibbonTab']) => void;
-  setActiveTool: (tool: ActiveTool, ribbonTab?: BimStoreState['activeRibbonTab']) => void;
+  setActiveRibbonTab: (tab: RibbonTab) => void;
+  setActiveTool: (tool: ActiveTool, ribbonTab?: RibbonTab) => void;
   handleKeyStroke: (key: string) => void;
   clearKeyBuffer: () => void;
 
@@ -989,6 +1000,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   hoveredGuid: null,
   hoverCandidates: [],
   snapsEnabled: true,
+  planeLock: null,
+  setPlaneLock: (lock) => set({ planeLock: lock }),
 
   wallHeight: 10.0,
   wallLocationLine: 'centerline',
@@ -1081,6 +1094,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     set((state) => ({
       interactionResetToken: state.interactionResetToken + 1,
       interactionResetReason: reason,
+      planeLock: null,
     }));
   },
 
@@ -1088,6 +1102,32 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   handleKeyStroke: (key) => {
     const state = get();
     const upperKey = key.toUpperCase();
+
+    // Arrow keys toggle direct modeling Plane Lock (IngeTrazo plane lock)
+    if (key === 'ArrowUp') {
+      const next = state.planeLock === 'z' ? null : 'z';
+      set({ planeLock: next });
+      get().setStatusMessage(next ? 'Plane locked: Z-Axis (XY Plane)' : 'Plane lock cleared');
+      return;
+    }
+    if (key === 'ArrowRight') {
+      const next = state.planeLock === 'x' ? null : 'x';
+      set({ planeLock: next });
+      get().setStatusMessage(next ? 'Plane locked: X-Axis (YZ Plane)' : 'Plane lock cleared');
+      return;
+    }
+    if (key === 'ArrowLeft') {
+      const next = state.planeLock === 'y' ? null : 'y';
+      set({ planeLock: next });
+      get().setStatusMessage(next ? 'Plane locked: Y-Axis (XZ Plane)' : 'Plane lock cleared');
+      return;
+    }
+    if (key === 'ArrowDown') {
+      const next = state.planeLock === 'ref' ? null : 'ref';
+      set({ planeLock: next });
+      get().setStatusMessage(next ? 'Plane locked: Reference Normal' : 'Plane lock cleared');
+      return;
+    }
 
     // Escape cancels tool and clears selection / cancels sketch session
     if (key === 'Escape') {
@@ -1116,6 +1156,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         tempDimension: null,
         alignPickState: { step: null, refGuid: null },
         trimPickState: { step: null, firstGuid: null, firstPoint: null },
+        planeLock: null,
       });
       // UI-P0-10: this is the *only* Escape path now. It must also discard
       // in-progress viewport state (a first wall point, a first box corner, a
@@ -1148,10 +1189,26 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       RF: () => get().startSketchMode('roof'),
       LI: () => {
         if (get().sketchSession) get().setSketchDrawTool('line');
+        else get().setActiveTool('LI', 'Model');
       },
       RE: () => {
         if (get().sketchSession) get().setSketchDrawTool('rectangle');
+        else get().setActiveTool('REC', 'Model');
       },
+      REC: () => get().setActiveTool('REC', 'Model'),
+      CI: () => get().setActiveTool('CI', 'Model'),
+      AR: () => get().setActiveTool('AR', 'Model'),
+      PP: () => get().setActiveTool('PP', 'Model'),
+      OF: () => get().setActiveTool('OF', 'Model'),
+      FM: () => get().setActiveTool('FM', 'Model'),
+      TP: () => get().setActiveTool('TP', 'Model'),
+      MV: () => get().setActiveTool('MV', 'Model'),
+      RO: () => get().setActiveTool('RO', 'Model'),
+      SC: () => get().setActiveTool('SC', 'Model'),
+      GP: () => get().setActiveTool('GP', 'Model'),
+      TW: () => get().tagSelectedElement('IfcWall'),
+      TF: () => get().tagSelectedElement('IfcSlab'),
+      TC: () => get().tagSelectedElement('IfcColumn'),
       PW: () => {
         if (get().sketchSession) get().setSketchDrawTool('pick_walls');
       },
@@ -1160,7 +1217,10 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         // Routed through setActiveTool so the previous tool's in-progress pick is
         // discarded (UI-P0-11) — the raw `set` this used to do skipped that.
         get().setActiveTool('AL'),
-      TR: () => get().setActiveTool('TR', 'Modify'),
+      TR: () => {
+        if (get().activeRibbonTab === 'Model') get().tagSelectedElement('IfcRoof');
+        else get().setActiveTool('TR', 'Modify');
+      },
       SL: () => get().setActiveTool('SL', 'Modify'),
       SO: () => get().setActiveTool('SO', 'Modify'),
       EQ: () => get().equalizeSouthWallWindows(),
@@ -2306,6 +2366,28 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       set({ statusMessage: `Update element failed: ${failureMessage(e)}` });
       console.error('Failed to update element', e);
     }
+  },
+
+  tagSelectedElement: async (targetClass: 'IfcWall' | 'IfcSlab' | 'IfcColumn' | 'IfcRoof') => {
+    const { selectedGuid, selectedGuids, elements, meshes, updateElement, setStatusMessage } = get();
+    const guidsToTag = selectedGuids.length > 0 ? selectedGuids : (selectedGuid ? [selectedGuid] : []);
+    if (guidsToTag.length === 0) {
+      setStatusMessage(`Select an element or solid first to tag as ${targetClass}.`);
+      return;
+    }
+    for (const guid of guidsToTag) {
+      const el = elements[guid];
+      const mesh = meshes.find((m) => m.guid === guid);
+      const volume = mesh ? calculateMeshVolume(mesh.vertices, mesh.indices) : el?.volume;
+      const area = mesh ? calculateMeshArea(mesh.vertices, mesh.indices) : el?.area;
+      await updateElement(guid, {
+        ifc_class: targetClass,
+        name: `${targetClass.replace('Ifc', '')} : Custom Model Solid`,
+        ...(volume !== undefined ? { volume } : {}),
+        ...(area !== undefined ? { area } : {}),
+      });
+    }
+    setStatusMessage(`Tagged ${guidsToTag.length} element(s) as ${targetClass}.`);
   },
 
   deleteElement: async (guid) => {

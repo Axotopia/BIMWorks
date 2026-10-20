@@ -17,7 +17,8 @@
     "check:pushpull": "node scripts/check-pushpull-engine.mjs",
     "check:fit": "node scripts/check-fit-extents.mjs",
     "check:py": "node scripts/check-python-suites.mjs",
-    "check": "npm run check:bus && npm run check:ui && npm run check:state && npm run check:delta && npm run check:snap && npm run check:interaction && npm run check:pushpull && npm run check:fit && npm run check:py && tsc --noEmit",
+    "check:direct": "node scripts/check-direct-modeling.mjs",
+    "check": "npm run check:bus && npm run check:ui && npm run check:state && npm run check:delta && npm run check:snap && npm run check:interaction && npm run check:pushpull && npm run check:fit && npm run check:py && npm run check:direct && tsc --noEmit",
     "diagnose": "node scripts/diagnose-blank-page.mjs"
   },
   "bugs": {

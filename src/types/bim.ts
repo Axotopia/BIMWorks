@@ -5,6 +5,7 @@ export type IfcClass =
   | 'IfcWindow'
   | 'IfcSlab'
   | 'IfcRoof'
+  | 'IfcColumn'
   | 'IfcGrid'
   | 'IfcBuildingStorey';
 
@@ -52,6 +53,8 @@ export interface BimElement {
   elevation?: number;
   pitch?: number;
   tag?: string;
+  volume?: number;
+  area?: number;
   type_properties?: Record<string, string>;
 }
 
@@ -354,6 +357,18 @@ export interface ParametricConstraint {
   is_equalized?: boolean;
 }
 
+export type RibbonTab =
+  | 'Architecture'
+  | 'Insert'
+  | 'Annotate'
+  | 'Massing&Site'
+  | 'Model'
+  | 'View'
+  | 'Manage'
+  | 'Modify';
+
+export type PlaneLockType = 'x' | 'y' | 'z' | 'ref' | null;
+
 export type ActiveTool =
   | 'select'
   | 'WA' // Wall
@@ -376,7 +391,25 @@ export type ActiveTool =
   | 'TR' // Trim / Extend to Corner
   | 'SL' // Split Element
   | 'SO' // Split with Gap
-  | 'sketch'; // Revit Sketch Mode (Edit Boundary / Edit Footprint / Create)
+  | 'sketch' // Revit Sketch Mode (Edit Boundary / Edit Footprint / Create)
+  // Direct 3D Modeling (IngeTrazo / SketchUp format)
+  | 'LI' // 3D Line
+  | 'REC' // 3D Rectangle
+  | 'CI' // 3D Circle
+  | 'AR' // 3D Arc
+  | 'PP' // Push / Pull
+  | 'OF' // Offset
+  | 'FM' // Follow Me
+  | 'TP' // Tape Measure
+  | 'MV' // Move
+  | 'RO' // Rotate
+  | 'SC' // Scale
+  | 'TW' // Tag as Wall
+  | 'TF' // Tag as Floor/Slab
+  | 'TC' // Tag as Column
+  | 'TR_ROOF' // Tag as Roof
+  | 'TO' // Tag as Opening
+  | 'GP'; // Create Group
 
 export interface SketchLine {
   id: string;

@@ -8,6 +8,13 @@ import { findSnapCandidate, SnapSegment, SnapCandidate } from '../../interaction
 import { gripsFor, computeGripDragCommand, Grip } from '../../interaction/grips';
 import { WallFaceHit, detectWallFaceHover, computePushPullCommand } from '../../interaction/pushpull';
 import { ValueControlBox } from './ValueControlBox';
+import {
+  getPlaneBasis,
+  getWorkingPlane,
+  apply3DAxisMagnet,
+  compute3DRectangleVertices,
+  compute3DCircleVertices,
+} from '../../interaction/directModeling';
 
 /**
  * UI-P0-13: pointer capture over a React synthetic mouse event.
@@ -148,6 +155,9 @@ export const Viewport3D: React.FC = () => {
     modifyGridEndpoint,
     modifyPolygonVertex,
     moveLevel,
+    planeLock,
+    setPlaneLock,
+    tagSelectedElement,
   } = useBimStore();
 
   // Internal Three.js state
@@ -161,6 +171,7 @@ export const Viewport3D: React.FC = () => {
   const threeMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map());
   const clippingPlanesRef = useRef<THREE.Plane[]>([]);
   const sectionBoxMeshRef = useRef<THREE.LineSegments | null>(null);
+  const previewMeshRef = useRef<THREE.Group | null>(null);
 
   // Orbit & Pan mouse navigation state (Revit Shift+MMB orbit, MMB pan)
   const isNavigatingRef = useRef<{ mode: 'orbit' | 'pan' | null; startX: number; startY: number }>({
@@ -172,6 +183,8 @@ export const Viewport3D: React.FC = () => {
   // Track B Phase 1: Tool placement pick state derived from interactionSession single source
   const wallStartPoint = (interactionSession.picks[0] as [number, number, number] | undefined) ?? null;
   const wallCurrentPoint = (interactionSession.hover as [number, number, number] | undefined) ?? null;
+  const directStartPoint = wallStartPoint;
+  const directCurrentPoint = wallCurrentPoint;
   const setWallStartPoint = useCallback((pt: [number, number, number] | null) => {
     if (pt) dispatchInteraction({ type: 'point', point: pt });
   }, [dispatchInteraction]);
@@ -219,6 +232,38 @@ export const Viewport3D: React.FC = () => {
       createWall(wallStartPoint, endPt);
       setWallStartPoint(null);
       setWallCurrentPoint(null);
+      setActiveTool('select');
+      setLiveGripValue(null);
+    } else if (activeTool === 'LI' && directStartPoint && directCurrentPoint) {
+      const dx = directCurrentPoint[0] - directStartPoint[0];
+      const dy = directCurrentPoint[1] - directStartPoint[1];
+      const dz = directCurrentPoint[2] - directStartPoint[2];
+      const len = Math.hypot(dx, dy, dz);
+      const dir = len > 0.001 ? [dx / len, dy / len, dz / len] : [1, 0, 0];
+      const endPt: [number, number, number] = [
+        directStartPoint[0] + dir[0] * feet,
+        directStartPoint[1] + dir[1] * feet,
+        directStartPoint[2] + dir[2] * feet,
+      ];
+      createWall(directStartPoint, endPt);
+      dispatchInteraction({ type: 'commit' });
+      setActiveTool('select');
+      setLiveGripValue(null);
+    } else if (activeTool === 'REC' && directStartPoint && directCurrentPoint) {
+      const startVec = new THREE.Vector3(...directStartPoint);
+      const currentVec = new THREE.Vector3(...directCurrentPoint);
+      const working = getWorkingPlane(planeLock, startVec);
+      const corners = compute3DRectangleVertices(startVec, currentVec, working.normal);
+      createSlab(corners.map((c) => [c.x, c.y]), 0.25, directStartPoint[2] ?? 0.0);
+      dispatchInteraction({ type: 'commit' });
+      setActiveTool('select');
+      setLiveGripValue(null);
+    } else if (activeTool === 'CI' && directStartPoint) {
+      const startVec = new THREE.Vector3(...directStartPoint);
+      const working = getWorkingPlane(planeLock, startVec);
+      const circlePts = compute3DCircleVertices(startVec, feet, working.normal, 32);
+      createSlab(circlePts.map((c) => [c.x, c.y]), 0.25, directStartPoint[2] ?? 0.0);
+      dispatchInteraction({ type: 'commit' });
       setActiveTool('select');
       setLiveGripValue(null);
     } else if (activeDragGripRef.current) {
@@ -272,7 +317,12 @@ export const Viewport3D: React.FC = () => {
     activeTool,
     wallStartPoint,
     wallCurrentPoint,
+    directStartPoint,
+    directCurrentPoint,
     createWall,
+    createSlab,
+    dispatchInteraction,
+    planeLock,
     setActiveTool,
     modifyWallHeight,
     modifyWallThickness,
@@ -565,6 +615,87 @@ export const Viewport3D: React.FC = () => {
     }
   }, [sectionBox]);
 
+  // Direct 3D Modeling (LI, REC, CI) visual preview in Three.js scene
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    if (previewMeshRef.current) {
+      disposeObject(previewMeshRef.current);
+      scene.remove(previewMeshRef.current);
+      previewMeshRef.current = null;
+    }
+
+    const startPick = interactionSession.picks[0] as [number, number, number] | undefined;
+    const hoverPick = interactionSession.hover as [number, number, number] | undefined;
+
+    if (!startPick || !hoverPick) return;
+
+    const group = new THREE.Group();
+
+    if (activeTool === 'LI') {
+      const geom = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(startPick[0], startPick[1], startPick[2]),
+        new THREE.Vector3(hoverPick[0], hoverPick[1], hoverPick[2]),
+      ]);
+      const mat = new THREE.LineBasicMaterial({ color: 0x38bdf8, linewidth: 2, depthTest: false });
+      const line = new THREE.Line(geom, mat);
+      group.add(line);
+    } else if (activeTool === 'REC') {
+      const startVec = new THREE.Vector3(startPick[0], startPick[1], startPick[2]);
+      const hoverVec = new THREE.Vector3(hoverPick[0], hoverPick[1], hoverPick[2]);
+      const working = getWorkingPlane(planeLock, startVec);
+      const pts = compute3DRectangleVertices(startVec, hoverVec, working.normal);
+      const lineGeom = new THREE.BufferGeometry().setFromPoints([...pts, pts[0]]);
+      const lineMat = new THREE.LineBasicMaterial({ color: 0x38bdf8, linewidth: 2, depthTest: false });
+      group.add(new THREE.Line(lineGeom, lineMat));
+
+      const fillGeom = new THREE.BufferGeometry();
+      const pos = new Float32Array([
+        pts[0].x, pts[0].y, pts[0].z,
+        pts[1].x, pts[1].y, pts[1].z,
+        pts[2].x, pts[2].y, pts[2].z,
+        pts[0].x, pts[0].y, pts[0].z,
+        pts[2].x, pts[2].y, pts[2].z,
+        pts[3].x, pts[3].y, pts[3].z,
+      ]);
+      fillGeom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      fillGeom.computeVertexNormals();
+      const fillMat = new THREE.MeshBasicMaterial({
+        color: 0x38bdf8,
+        transparent: true,
+        opacity: 0.25,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      group.add(new THREE.Mesh(fillGeom, fillMat));
+    } else if (activeTool === 'CI') {
+      const startVec = new THREE.Vector3(startPick[0], startPick[1], startPick[2]);
+      const hoverVec = new THREE.Vector3(hoverPick[0], hoverPick[1], hoverPick[2]);
+      const working = getWorkingPlane(planeLock, startVec);
+      const radius = startVec.distanceTo(hoverVec);
+      if (radius > 0.01) {
+        const pts = compute3DCircleVertices(startVec, radius, working.normal, 32);
+        const lineGeom = new THREE.BufferGeometry().setFromPoints([...pts, pts[0]]);
+        const lineMat = new THREE.LineBasicMaterial({ color: 0x38bdf8, linewidth: 2, depthTest: false });
+        group.add(new THREE.Line(lineGeom, lineMat));
+      }
+    }
+
+    if (group.children.length > 0) {
+      scene.add(group);
+      previewMeshRef.current = group;
+    }
+
+    return () => {
+      if (previewMeshRef.current && scene) {
+        disposeObject(previewMeshRef.current);
+        scene.remove(previewMeshRef.current);
+        previewMeshRef.current = null;
+      }
+    };
+  }, [interactionSession.picks, interactionSession.hover, activeTool, planeLock]);
+
   // Populate IFC Elements Meshes in Three.js Scene
   useEffect(() => {
     const scene = sceneRef.current;
@@ -700,6 +831,46 @@ export const Viewport3D: React.FC = () => {
 
       const raycaster = new THREE.Raycaster();
       raycaster.setFromCamera(mouse, cameraRef.current);
+
+      // Direct Modeling Tools: LI (Line), REC (Rectangle), CI (Circle)
+      if (activeTool === 'LI' || activeTool === 'REC' || activeTool === 'CI') {
+        const startPick = interactionSession.picks[0] as [number, number, number] | undefined;
+        const startVec = startPick ? new THREE.Vector3(...startPick) : null;
+        const workingPlane = getWorkingPlane(planeLock, startVec);
+        const intersectPt = new THREE.Vector3();
+        if (raycaster.ray.intersectPlane(workingPlane, intersectPt)) {
+          let hit3D: [number, number, number] = [intersectPt.x, intersectPt.y, intersectPt.z];
+          if (startVec) {
+            const magnetResult = apply3DAxisMagnet(startVec, intersectPt, 3.0);
+            hit3D = [magnetResult.point.x, magnetResult.point.y, magnetResult.point.z];
+          }
+
+          if (!startPick || !startVec) {
+            dispatchInteraction({ type: 'point', point: hit3D });
+          } else {
+            if (activeTool === 'LI') {
+              createWall(startPick, hit3D);
+              dispatchInteraction({ type: 'commit' });
+            } else if (activeTool === 'REC') {
+              const rectCorners = compute3DRectangleVertices(
+                startVec,
+                new THREE.Vector3(...hit3D),
+                workingPlane.normal
+              );
+              createSlab(rectCorners.map((c) => [c.x, c.y]), 0.25, startPick[2] ?? 0.0);
+              dispatchInteraction({ type: 'commit' });
+            } else if (activeTool === 'CI') {
+              const radius = Math.hypot(hit3D[0] - startPick[0], hit3D[1] - startPick[1], hit3D[2] - startPick[2]);
+              if (radius >= 0.25) {
+                const circlePts = compute3DCircleVertices(startVec, radius, workingPlane.normal, 32);
+                createSlab(circlePts.map((c) => [c.x, c.y]), 0.25, startPick[2] ?? 0.0);
+              }
+              dispatchInteraction({ type: 'commit' });
+            }
+          }
+        }
+        return;
+      }
 
       // Tool: Wall Creation (WA)
       if (activeTool === 'WA') {
@@ -841,7 +1012,7 @@ export const Viewport3D: React.FC = () => {
 
       // Tool: Select (default)
       // Phase 7 / W9a: Face push/pull gesture on wall (nearest-object raycasting, deferred drag)
-      if (activeTool === 'select' && !activeDragGripRef.current) {
+      if ((activeTool === 'select' || activeTool === 'PP') && !activeDragGripRef.current) {
         const meshesList = Array.from(threeMeshesRef.current.values());
         const intersects = raycaster.intersectObjects(meshesList, false);
 
@@ -1090,8 +1261,47 @@ export const Viewport3D: React.FC = () => {
       }
     }
 
+    // Direct 3D Modeling (LI, REC, CI) creation preview
+    if ((activeTool === 'LI' || activeTool === 'REC' || activeTool === 'CI') && cameraRef.current && canvasRef.current) {
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (rect) {
+        const mouse = new THREE.Vector2(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          -((e.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, cameraRef.current);
+        const startPick = interactionSession.picks[0] as [number, number, number] | undefined;
+        const startVec = startPick ? new THREE.Vector3(...startPick) : null;
+        const workingPlane = getWorkingPlane(planeLock, startVec);
+        const pt = new THREE.Vector3();
+        if (raycaster.ray.intersectPlane(workingPlane, pt)) {
+          let hit3D: [number, number, number] = [pt.x, pt.y, pt.z];
+          if (startVec) {
+            const magnetResult = apply3DAxisMagnet(startVec, pt, 3.0);
+            hit3D = [magnetResult.point.x, magnetResult.point.y, magnetResult.point.z];
+          }
+          dispatchInteraction({ type: 'hover', point: hit3D });
+
+          if (startPick) {
+            if (activeTool === 'LI') {
+              const dist = Math.hypot(hit3D[0] - startPick[0], hit3D[1] - startPick[1], hit3D[2] - startPick[2]);
+              setLiveGripValue({ label: 'Line Length', value: dist });
+            } else if (activeTool === 'REC') {
+              const dx = Math.abs(hit3D[0] - startPick[0]);
+              const dy = Math.abs(hit3D[1] - startPick[1]);
+              setLiveGripValue({ label: `${formatLength(dx, displayUnit)} × ${formatLength(dy, displayUnit)}`, value: Math.hypot(dx, dy) });
+            } else if (activeTool === 'CI') {
+              const radius = Math.hypot(hit3D[0] - startPick[0], hit3D[1] - startPick[1], hit3D[2] - startPick[2]);
+              setLiveGripValue({ label: 'Circle Radius', value: radius });
+            }
+          }
+        }
+      }
+    }
+
     // Phase 7: Face hover detection for Push/Pull
-    if (activeTool === 'select' && !activeDragGripRef.current && !activePushPullRef.current && !isNavigatingRef.current.mode && cameraRef.current && canvasRef.current) {
+    if ((activeTool === 'select' || activeTool === 'PP') && !activeDragGripRef.current && !activePushPullRef.current && !isNavigatingRef.current.mode && cameraRef.current && canvasRef.current) {
       const rect = canvasRef.current.getBoundingClientRect();
       const mouse = new THREE.Vector2(
         ((e.clientX - rect.left) / rect.width) * 2 - 1,
@@ -1429,16 +1639,77 @@ export const Viewport3D: React.FC = () => {
         );
       })()}
 
+      {/* Direct Modeling Plane Lock Floating HUD Indicator */}
+      {planeLock && (
+        <div
+          className="absolute top-14 left-4 z-20 flex items-center space-x-2 px-3 py-1.5 rounded-lg shadow-xl backdrop-blur text-xs font-mono border animate-fade-in"
+          style={{
+            backgroundColor:
+              planeLock === 'x'
+                ? 'rgba(185, 28, 28, 0.9)'
+                : planeLock === 'y'
+                ? 'rgba(21, 128, 61, 0.9)'
+                : planeLock === 'z'
+                ? 'rgba(29, 78, 216, 0.9)'
+                : 'rgba(126, 34, 206, 0.9)',
+            borderColor:
+              planeLock === 'x'
+                ? '#f87171'
+                : planeLock === 'y'
+                ? '#4ade80'
+                : planeLock === 'z'
+                ? '#60a5fa'
+                : '#c084fc',
+            color: '#ffffff',
+          }}
+        >
+          <span className="w-2 h-2 rounded-full bg-white animate-ping" />
+          <span className="font-bold">
+            {planeLock === 'x' && 'PLANE LOCK: X-Axis (YZ Plane)'}
+            {planeLock === 'y' && 'PLANE LOCK: Y-Axis (XZ Plane)'}
+            {planeLock === 'z' && 'PLANE LOCK: Z-Axis (XY Plane)'}
+            {planeLock === 'ref' && 'PLANE LOCK: Reference Normal'}
+          </span>
+          <button
+            onClick={() => setPlaneLock(null)}
+            className="ml-2 px-1.5 py-0.5 bg-black/40 hover:bg-black/60 rounded text-[10px]"
+            title="Clear Plane Lock (Arrow key or Esc)"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Phase 4: Value Control Box & Direct Numeric Entry HUD */}
       <ValueControlBox
         currentLiveValue={
           activeTool === 'WA' && wallStartPoint && wallCurrentPoint
             ? Math.hypot(wallCurrentPoint[0] - wallStartPoint[0], wallCurrentPoint[1] - wallStartPoint[1])
+            : activeTool === 'LI' && directStartPoint && directCurrentPoint
+            ? Math.hypot(
+                directCurrentPoint[0] - directStartPoint[0],
+                directCurrentPoint[1] - directStartPoint[1],
+                directCurrentPoint[2] - directStartPoint[2]
+              )
+            : activeTool === 'CI' && directStartPoint && directCurrentPoint
+            ? Math.hypot(
+                directCurrentPoint[0] - directStartPoint[0],
+                directCurrentPoint[1] - directStartPoint[1],
+                directCurrentPoint[2] - directStartPoint[2]
+              )
             : liveGripValue?.value ?? null
         }
         liveLabel={
           activeTool === 'WA' && wallStartPoint
             ? 'Wall Length'
+            : activeTool === 'LI' && directStartPoint
+            ? 'Line Length'
+            : activeTool === 'REC' && directStartPoint
+            ? 'Rectangle'
+            : activeTool === 'CI' && directStartPoint
+            ? 'Circle Radius'
+            : activeTool === 'PP'
+            ? 'Push/Pull'
             : liveGripValue?.label
         }
         onCommitLiveValue={handleCommitLiveValue}
@@ -1547,6 +1818,97 @@ export const Viewport3D: React.FC = () => {
             className="px-2 py-0.5 bg-[#3c3c3c] hover:bg-[#4a4a4a] rounded text-[10px]"
           >
             Cancel (Esc)
+          </button>
+        </div>
+      )}
+
+      {/* 3D Line Placement Status Banner */}
+      {activeTool === 'LI' && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#094771]/90 backdrop-blur px-4 py-2 rounded-lg border border-[#007acc] text-xs text-white shadow-xl flex items-center space-x-3 z-10 animate-fade-in">
+          <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
+          <span>
+            {directStartPoint
+              ? `Click endpoint to complete 3D Line (${formatLength(
+                  Math.hypot(
+                    (directCurrentPoint?.[0] || 0) - directStartPoint[0],
+                    (directCurrentPoint?.[1] || 0) - directStartPoint[1],
+                    (directCurrentPoint?.[2] || 0) - directStartPoint[2]
+                  ),
+                  displayUnit
+                )})`
+              : 'Click 1st point for 3D Line'}
+          </span>
+          <button
+            onClick={() => {
+              setActiveTool('select');
+              dispatchInteraction({ type: 'cancel' });
+            }}
+            className="px-2 py-0.5 bg-[#3c3c3c] hover:bg-[#4a4a4a] rounded text-[10px]"
+          >
+            Cancel (Esc)
+          </button>
+        </div>
+      )}
+
+      {/* 3D Rectangle Placement Status Banner */}
+      {activeTool === 'REC' && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#094771]/90 backdrop-blur px-4 py-2 rounded-lg border border-[#007acc] text-xs text-white shadow-xl flex items-center space-x-3 z-10 animate-fade-in">
+          <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
+          <span>
+            {directStartPoint
+              ? `Click opposite corner to complete 3D Rectangle`
+              : 'Click 1st corner for 3D Rectangle'}
+          </span>
+          <button
+            onClick={() => {
+              setActiveTool('select');
+              dispatchInteraction({ type: 'cancel' });
+            }}
+            className="px-2 py-0.5 bg-[#3c3c3c] hover:bg-[#4a4a4a] rounded text-[10px]"
+          >
+            Cancel (Esc)
+          </button>
+        </div>
+      )}
+
+      {/* 3D Circle Placement Status Banner */}
+      {activeTool === 'CI' && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#094771]/90 backdrop-blur px-4 py-2 rounded-lg border border-[#007acc] text-xs text-white shadow-xl flex items-center space-x-3 z-10 animate-fade-in">
+          <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
+          <span>
+            {directStartPoint
+              ? `Click radius to complete 3D Circle (${formatLength(
+                  Math.hypot(
+                    (directCurrentPoint?.[0] || 0) - directStartPoint[0],
+                    (directCurrentPoint?.[1] || 0) - directStartPoint[1],
+                    (directCurrentPoint?.[2] || 0) - directStartPoint[2]
+                  ),
+                  displayUnit
+                )})`
+              : 'Click center point for 3D Circle'}
+          </span>
+          <button
+            onClick={() => {
+              setActiveTool('select');
+              dispatchInteraction({ type: 'cancel' });
+            }}
+            className="px-2 py-0.5 bg-[#3c3c3c] hover:bg-[#4a4a4a] rounded text-[10px]"
+          >
+            Cancel (Esc)
+          </button>
+        </div>
+      )}
+
+      {/* Push/Pull Mode Status Banner */}
+      {activeTool === 'PP' && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#094771]/90 backdrop-blur px-4 py-2 rounded-lg border border-[#007acc] text-xs text-white shadow-xl flex items-center space-x-3 z-10 animate-fade-in">
+          <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
+          <span>Click and drag any wall face to Push/Pull</span>
+          <button
+            onClick={() => setActiveTool('select')}
+            className="px-2 py-0.5 bg-[#3c3c3c] hover:bg-[#4a4a4a] rounded text-[10px]"
+          >
+            Done (Esc)
           </button>
         </div>
       )}
