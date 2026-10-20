@@ -936,6 +936,7 @@ export const Ribbon: React.FC = () => {
                     setActiveViewId('view-3d');
                     setCameraProjection('perspective');
                   },
+                  undefined,
                   'Perspective 3D Projection'
                 )}
                 {renderSmallButton(
@@ -945,6 +946,7 @@ export const Ribbon: React.FC = () => {
                     setActiveViewId('view-3d');
                     setCameraProjection('isometric');
                   },
+                  undefined,
                   'Isometric / Orthographic 3D Projection'
                 )}
               </div>
@@ -1013,6 +1015,7 @@ export const Ribbon: React.FC = () => {
                     setActiveViewId('view-3d');
                     setCameraProjection('perspective');
                   },
+                  undefined,
                   'Perspective 3D Projection'
                 )}
                 {renderSmallButton(
@@ -1022,6 +1025,7 @@ export const Ribbon: React.FC = () => {
                     setActiveViewId('view-3d');
                     setCameraProjection('isometric');
                   },
+                  undefined,
                   'Isometric / Orthographic 3D Projection'
                 )}
               </div>
