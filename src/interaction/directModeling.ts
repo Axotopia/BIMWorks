@@ -10,6 +10,7 @@
  */
 
 import * as THREE from 'three';
+import type { MeshBufferData } from '../types/bim';
 
 export type PlaneLockType = 'x' | 'y' | 'z' | 'ref' | null;
 
@@ -304,4 +305,374 @@ export function calculateMeshArea(
   }
   return totalArea;
 }
+
+function generateSafeGuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'geom-' + Math.random().toString(36).substring(2, 11) + '-' + Date.now().toString(36);
+}
+
+/**
+ * Creates a persistent 3D model line mesh represented as a slender, watertight box
+ * with sharp edges, immediately renderable and selectable in Three.js.
+ */
+export function createLineModelMesh(
+  p0: THREE.Vector3,
+  p1: THREE.Vector3,
+  name?: string
+): MeshBufferData {
+  const diff = p1.clone().sub(p0);
+  const len = diff.length();
+  const dir = len > 1e-5 ? diff.clone().normalize() : new THREE.Vector3(1, 0, 0);
+  const { u, v } = getPlaneBasis(dir);
+  const r = 0.03; // Radius / half-width (~0.36 in)
+
+  // 8 box corners around the segment p0 -> p1
+  const c0 = p0.clone().addScaledVector(u, -r).addScaledVector(v, -r);
+  const c1 = p0.clone().addScaledVector(u, r).addScaledVector(v, -r);
+  const c2 = p0.clone().addScaledVector(u, r).addScaledVector(v, r);
+  const c3 = p0.clone().addScaledVector(u, -r).addScaledVector(v, r);
+
+  const c4 = p1.clone().addScaledVector(u, -r).addScaledVector(v, -r);
+  const c5 = p1.clone().addScaledVector(u, r).addScaledVector(v, -r);
+  const c6 = p1.clone().addScaledVector(u, r).addScaledVector(v, r);
+  const c7 = p1.clone().addScaledVector(u, -r).addScaledVector(v, r);
+
+  const corners = [c0, c1, c2, c3, c4, c5, c6, c7];
+  const positions: number[] = [];
+  corners.forEach((c) => positions.push(c.x, c.y, c.z));
+
+  // 12 triangles for 6 box faces
+  const indices: number[] = [
+    // Bottom cap (p0)
+    0, 2, 1, 0, 3, 2,
+    // Top cap (p1)
+    4, 5, 6, 4, 6, 7,
+    // Side 1
+    0, 1, 5, 0, 5, 4,
+    // Side 2
+    1, 2, 6, 1, 6, 5,
+    // Side 3
+    2, 3, 7, 2, 7, 6,
+    // Side 4
+    3, 0, 4, 3, 4, 7,
+  ];
+
+  const guid = generateSafeGuid();
+  const elemName = name || 'Line : 3D Model Line';
+
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  corners.forEach((c) => {
+    minX = Math.min(minX, c.x);
+    minY = Math.min(minY, c.y);
+    minZ = Math.min(minZ, c.z);
+    maxX = Math.max(maxX, c.x);
+    maxY = Math.max(maxY, c.y);
+    maxZ = Math.max(maxZ, c.z);
+  });
+
+  return {
+    guid,
+    name: elemName,
+    ifc_class: 'IfcBuildingElementProxy',
+    vertices: positions,
+    indices,
+    color: '#334155',
+    cut_color: '#0f172a',
+    opacity: 1.0,
+    bbox: {
+      min: [minX, minY, minZ],
+      max: [maxX, maxY, maxZ],
+    },
+    params: {
+      name: elemName,
+      ifc_class: 'IfcBuildingElementProxy',
+      start: [p0.x, p0.y, p0.z],
+      end: [p1.x, p1.y, p1.z],
+      length: len,
+      is3DLine: true,
+    },
+  };
+}
+
+/**
+ * Creates a persistent 2D planar face mesh from an ordered boundary polygon.
+ * Double-sided so it renders crisp surfaces on any 3D drawing plane and is immediately push/pullable.
+ */
+export function createPlanarFaceMesh(
+  vertices: THREE.Vector3[],
+  name?: string,
+  ifcClass?: string
+): MeshBufferData {
+  const count = vertices.length;
+  if (count < 3) {
+    throw new Error('createPlanarFaceMesh requires at least 3 vertices');
+  }
+
+  // Compute plane normal using Newell / cross product
+  const e1 = vertices[1].clone().sub(vertices[0]);
+  const e2 = vertices[2].clone().sub(vertices[0]);
+  const n = new THREE.Vector3().crossVectors(e1, e2).normalize();
+  if (n.lengthSq() < 1e-6) n.set(0, 0, 1);
+
+  const positions: number[] = [];
+  vertices.forEach((v) => positions.push(v.x, v.y, v.z));
+
+  // Double-sided fan triangulation
+  const indices: number[] = [];
+  // Front CCW
+  for (let i = 1; i < count - 1; i++) {
+    indices.push(0, i, i + 1);
+  }
+  // Back CW (visible and raycastable from underneath/reverse)
+  for (let i = 1; i < count - 1; i++) {
+    indices.push(0, i + 1, i);
+  }
+
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  vertices.forEach((v) => {
+    minX = Math.min(minX, v.x);
+    minY = Math.min(minY, v.y);
+    minZ = Math.min(minZ, v.z);
+    maxX = Math.max(maxX, v.x);
+    maxY = Math.max(maxY, v.y);
+    maxZ = Math.max(maxZ, v.z);
+  });
+
+  const guid = generateSafeGuid();
+  const elemName = name || 'Face : 2D Planar Surface';
+  const targetClass = ifcClass || 'IfcSlab';
+  const area = calculateMeshArea(positions, indices) / 2.0;
+
+  return {
+    guid,
+    name: elemName,
+    ifc_class: targetClass,
+    vertices: positions,
+    indices,
+    color: '#94a3b8',
+    cut_color: '#475569',
+    opacity: 0.9,
+    bbox: {
+      min: [minX, minY, minZ - 0.05],
+      max: [maxX, maxY, maxZ + 0.05],
+    },
+    params: {
+      name: elemName,
+      ifc_class: targetClass,
+      is2DPlanar: true,
+      polygon3D: vertices.map((v) => [v.x, v.y, v.z]),
+      planeNormal: [n.x, n.y, n.z],
+      area,
+    },
+  };
+}
+
+export interface UniversalFaceHit {
+  guid: string;
+  kind: 'top' | 'side' | 'universal';
+  param?: 'height' | 'thickness' | 'extrude';
+  label: string;
+  normal: [number, number, number];
+  hitPoint: [number, number, number];
+  currentValue: number;
+  is2DPlanar?: boolean;
+  boundaryVertices?: [number, number, number][];
+  coplanarVertexIndices?: number[];
+}
+
+/**
+ * Detects whether an intersection with ANY 3D mesh (drawn face, slab, roof, custom solid, box, column)
+ * corresponds to an extrudable planar face.
+ */
+export function detectUniversalFaceHover(
+  hit: { object: any; point: THREE.Vector3; face?: any | null },
+  meshes: MeshBufferData[],
+  elements: Record<string, any>
+): UniversalFaceHit | null {
+  if (!hit || !hit.face || !hit.object) return null;
+  const guid = hit.object.userData?.guid;
+  if (!guid) return null;
+
+  const meshData = meshes.find((m) => m.guid === guid);
+  const element = elements[guid];
+  const name = meshData?.name || element?.name || 'Solid';
+
+  // Compute world normal
+  const normal = hit.face.normal.clone();
+  if (hit.object.matrixWorld) {
+    normal.transformDirection(hit.object.matrixWorld);
+  }
+  normal.normalize();
+
+  const hitPoint: [number, number, number] = [hit.point.x, hit.point.y, hit.point.z];
+  const normalArr: [number, number, number] = [normal.x, normal.y, normal.z];
+
+  // 1. Check if it's a 2D planar face
+  const is2DPlanar = Boolean(
+    meshData?.params?.is2DPlanar ||
+      (meshData?.vertices && meshData.vertices.length <= 120 && meshData?.params?.polygon3D)
+  );
+
+  if (is2DPlanar && meshData?.params?.polygon3D) {
+    const boundaryVertices: [number, number, number][] = meshData.params.polygon3D;
+    return {
+      guid,
+      kind: 'universal',
+      param: 'extrude',
+      label: `${name} (Extrude Face)`,
+      normal: normalArr,
+      hitPoint,
+      currentValue: 0.0,
+      is2DPlanar: true,
+      boundaryVertices,
+    };
+  }
+
+  // 2. Existing 3D solid or element: find all coplanar vertex indices
+  const coplanarIndices: number[] = [];
+  if (meshData && meshData.vertices) {
+    const verts = meshData.vertices;
+    const planeD = -normal.dot(hit.point);
+    for (let i = 0; i < verts.length; i += 3) {
+      const v = new THREE.Vector3(verts[i], verts[i + 1], verts[i + 2]);
+      if (hit.object.matrixWorld) {
+        v.applyMatrix4(hit.object.matrixWorld);
+      }
+      const dist = Math.abs(normal.dot(v) + planeD);
+      if (dist < 0.05) {
+        coplanarIndices.push(i / 3);
+      }
+    }
+  }
+
+  let faceDesc = 'Face';
+  if (normal.z > 0.7) faceDesc = 'Top Face';
+  else if (normal.z < -0.7) faceDesc = 'Bottom Face';
+  else faceDesc = 'Side Face';
+
+  return {
+    guid,
+    kind: 'universal',
+    param: 'extrude',
+    label: `${name} : ${faceDesc}`,
+    normal: normalArr,
+    hitPoint,
+    currentValue: 0.0,
+    is2DPlanar: false,
+    coplanarVertexIndices: coplanarIndices,
+  };
+}
+
+/**
+ * Extrudes either a 2D planar face into a watertight 3D solid, or translates
+ * coplanar vertices of an existing 3D solid along the face normal.
+ */
+export function extrudeFaceOrSolid(
+  meshData: MeshBufferData,
+  normal: [number, number, number],
+  distance: number,
+  boundaryOrCoplanar?: [number, number, number][] | number[]
+): MeshBufferData {
+  const normVec = new THREE.Vector3(...normal).normalize();
+  const is2D = Boolean(meshData.params?.is2DPlanar);
+
+  if (is2D) {
+    // 2D planar face -> Extrude into 3D watertight solid
+    let boundaryPts: THREE.Vector3[] = [];
+    if (Array.isArray(boundaryOrCoplanar) && boundaryOrCoplanar.length > 0 && Array.isArray(boundaryOrCoplanar[0])) {
+      boundaryPts = (boundaryOrCoplanar as [number, number, number][]).map((p) => new THREE.Vector3(...p));
+    } else if (meshData.params?.polygon3D) {
+      boundaryPts = (meshData.params.polygon3D as [number, number, number][]).map((p) => new THREE.Vector3(...p));
+    } else {
+      for (let i = 0; i < meshData.vertices.length; i += 3) {
+        boundaryPts.push(new THREE.Vector3(meshData.vertices[i], meshData.vertices[i + 1], meshData.vertices[i + 2]));
+      }
+    }
+
+    const extruded = extrudePlanarPolygon(boundaryPts, normVec, distance);
+    const volume = calculateMeshVolume(extruded.positions, extruded.indices);
+    const area = calculateMeshArea(extruded.positions, extruded.indices);
+
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < extruded.positions.length; i += 3) {
+      minX = Math.min(minX, extruded.positions[i]);
+      minY = Math.min(minY, extruded.positions[i + 1]);
+      minZ = Math.min(minZ, extruded.positions[i + 2]);
+      maxX = Math.max(maxX, extruded.positions[i]);
+      maxY = Math.max(maxY, extruded.positions[i + 1]);
+      maxZ = Math.max(maxZ, extruded.positions[i + 2]);
+    }
+
+    return {
+      ...meshData,
+      name: meshData.name.replace('2D Face', '3D Solid').replace('2D Planar Surface', '3D Solid'),
+      vertices: Array.from(extruded.positions),
+      indices: Array.from(extruded.indices),
+      color: '#0284c7', // Slate/sky solid
+      opacity: 1.0,
+      bbox: {
+        min: [minX, minY, minZ],
+        max: [maxX, maxY, maxZ],
+      },
+      params: {
+        ...meshData.params,
+        is2DPlanar: false,
+        height: Math.abs(distance),
+        volume,
+        area,
+      },
+    };
+  }
+
+  // Existing 3D solid: translate coplanar vertices along normal
+  const newVerts = [...meshData.vertices];
+  const offset = normVec.clone().multiplyScalar(distance);
+  const coplanarIndices =
+    Array.isArray(boundaryOrCoplanar) && typeof boundaryOrCoplanar[0] === 'number'
+      ? (boundaryOrCoplanar as number[])
+      : [];
+
+  if (coplanarIndices.length > 0) {
+    const movedSet = new Set(coplanarIndices);
+    for (const vIdx of movedSet) {
+      newVerts[vIdx * 3] += offset.x;
+      newVerts[vIdx * 3 + 1] += offset.y;
+      newVerts[vIdx * 3 + 2] += offset.z;
+    }
+  }
+
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < newVerts.length; i += 3) {
+    minX = Math.min(minX, newVerts[i]);
+    minY = Math.min(minY, newVerts[i + 1]);
+    minZ = Math.min(minZ, newVerts[i + 2]);
+    maxX = Math.max(maxX, newVerts[i]);
+    maxY = Math.max(maxY, newVerts[i + 1]);
+    maxZ = Math.max(maxZ, newVerts[i + 2]);
+  }
+
+  const volume = calculateMeshVolume(newVerts, meshData.indices);
+  const area = calculateMeshArea(newVerts, meshData.indices);
+
+  return {
+    ...meshData,
+    vertices: newVerts,
+    bbox: {
+      min: [minX, minY, minZ],
+      max: [maxX, maxY, maxZ],
+    },
+    params: {
+      ...meshData.params,
+      volume,
+      area,
+    },
+  };
+}
+
 

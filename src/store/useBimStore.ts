@@ -558,6 +558,8 @@ interface BimStoreState {
   planeLock: PlaneLockType;
   setPlaneLock: (lock: PlaneLockType) => void;
   tagSelectedElement: (targetClass: 'IfcWall' | 'IfcSlab' | 'IfcColumn' | 'IfcRoof') => Promise<void>;
+  addModelMesh: (mesh: MeshBufferData, element?: Partial<BimElement>) => void;
+  updateModelMesh: (guid: string, updates: Partial<MeshBufferData>) => void;
 
   // Revit Spatial & Visibility Controls
   sectionBox: {
@@ -2402,11 +2404,80 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     setStatusMessage(`Tagged ${guidsToTag.length} element(s) as ${targetClass}.`);
   },
 
+  addModelMesh: (mesh: MeshBufferData, element?: Partial<BimElement>) => {
+    const elem: BimElement = {
+      guid: mesh.guid,
+      ifc_class: (mesh.ifc_class || 'IfcBuildingElementProxy') as any,
+      name: mesh.name,
+      start: mesh.params?.start,
+      end: mesh.params?.end,
+      length: mesh.params?.length,
+      height: mesh.params?.height,
+      thickness: mesh.params?.thickness,
+      volume: mesh.params?.volume,
+      area: mesh.params?.area,
+      polygon: mesh.params?.polygon,
+      ...element,
+    };
+    set((state) => ({
+      meshes: [...state.meshes.filter((m) => m.guid !== mesh.guid), mesh],
+      elements: { ...state.elements, [mesh.guid]: elem },
+      selectedGuid: mesh.guid,
+      statusMessage: `Created ${mesh.name}`,
+    }));
+  },
+
+  updateModelMesh: (guid: string, updates: Partial<MeshBufferData>) => {
+    set((state) => {
+      const existingMesh = state.meshes.find((m) => m.guid === guid);
+      if (!existingMesh) return state;
+      const updatedMesh: MeshBufferData = {
+        ...existingMesh,
+        ...updates,
+        params: {
+          ...existingMesh.params,
+          ...updates.params,
+        },
+      };
+      const existingElem = state.elements[guid];
+      const updatedElem: BimElement = existingElem
+        ? {
+            ...existingElem,
+            name: updatedMesh.name || existingElem.name,
+            volume: updatedMesh.params?.volume ?? existingElem.volume,
+            area: updatedMesh.params?.area ?? existingElem.area,
+            height: updatedMesh.params?.height ?? existingElem.height,
+          }
+        : {
+            guid,
+            ifc_class: (updatedMesh.ifc_class || 'IfcBuildingElementProxy') as any,
+            name: updatedMesh.name,
+            volume: updatedMesh.params?.volume,
+            area: updatedMesh.params?.area,
+          };
+      return {
+        meshes: state.meshes.map((m) => (m.guid === guid ? updatedMesh : m)),
+        elements: { ...state.elements, [guid]: updatedElem },
+        statusMessage: `Updated ${updatedMesh.name}`,
+      };
+    });
+  },
+
   deleteElement: async (guid) => {
     try {
       await get().dispatchTransaction('deleteElement', { guid }, 'Delete element');
       set({ selectedGuid: null, tempDimension: null });
     } catch (e) {
+      set((state) => {
+        const nextElements = { ...state.elements };
+        delete nextElements[guid];
+        return {
+          meshes: state.meshes.filter((m) => m.guid !== guid),
+          elements: nextElements,
+          selectedGuid: null,
+          tempDimension: null,
+        };
+      });
       set({ statusMessage: `Delete element failed: ${failureMessage(e)}` });
       console.error('Failed to delete element', e);
     }

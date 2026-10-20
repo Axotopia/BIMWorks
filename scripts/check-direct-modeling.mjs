@@ -50,6 +50,10 @@ try {
     extrudePlanarPolygon,
     calculateMeshVolume,
     calculateMeshArea,
+    createLineModelMesh,
+    createPlanarFaceMesh,
+    detectUniversalFaceHover,
+    extrudeFaceOrSolid,
   } = directMod;
 
   console.log('\n--- 1. Orthonormal Basis on Arbitrary Planes ---');
@@ -107,6 +111,45 @@ try {
   const area = calculateMeshArea(extruded.positions, extruded.indices);
   // Area = 2*(2*3 + 3*4 + 2*4) = 2*(6 + 12 + 8) = 52.0
   check('Extruded box surface area is exactly 52.0', Math.abs(area - 52.0) < 1e-4, `got: ${area}`);
+
+  console.log('\n--- 6. Persistent Primitives & Universal Push/Pull ---');
+  // Line mesh
+  const lineMesh = createLineModelMesh(new THREE.Vector3(0, 0, 0), new THREE.Vector3(10, 0, 0));
+  check('Line mesh has guid', typeof lineMesh.guid === 'string' && lineMesh.guid.length > 0);
+  check('Line mesh has 8 vertices (24 coords)', lineMesh.vertices.length === 24);
+  check('Line mesh has 12 triangles (36 indices)', lineMesh.indices.length === 36);
+  check('Line mesh reports length 10.0', Math.abs((lineMesh.params?.length ?? 0) - 10.0) < 1e-4);
+
+  // 2D Planar Face mesh
+  const faceMesh = createPlanarFaceMesh(rectCorners, 'Rectangle : 2D Face');
+  check('Face mesh is marked 2D planar', faceMesh.params?.is2DPlanar === true);
+  check('Face mesh area is exactly 6.0 (2x3)', Math.abs((faceMesh.params?.area ?? 0) - 6.0) < 1e-4);
+  check('Face mesh has double-sided triangulation', faceMesh.indices.length === 12);
+
+  // Face hover detection
+  const dummyHit = {
+    object: {
+      userData: { guid: faceMesh.guid },
+      matrixWorld: new THREE.Matrix4().identity(),
+    },
+    face: { normal: new THREE.Vector3(0, 0, 1) },
+    point: new THREE.Vector3(1, 1.5, 0),
+  };
+  const faceHit = detectUniversalFaceHover(dummyHit, [faceMesh], {});
+  check('Detects universal face hover on planar mesh', faceHit !== null);
+  check('Hovered face normal is (0,0,1)', faceHit?.normal[2] === 1);
+  check('Hovered face is 2D planar', faceHit?.is2DPlanar === true);
+
+  // Push/Pull extrusion of 2D face into 3D watertight solid
+  const extrudedSolid = extrudeFaceOrSolid(
+    faceMesh,
+    faceHit.normal,
+    4.0,
+    faceHit.boundaryVertices
+  );
+  check('Extruded solid is no longer 2D planar', extrudedSolid.params?.is2DPlanar === false);
+  check('Extruded solid volume is exactly 24.0 (2x3x4)', Math.abs((extrudedSolid.params?.volume ?? 0) - 24.0) < 1e-4);
+  check('Extruded solid name indicates 3D solid', extrudedSolid.name.includes('3D Solid'));
 
   console.log('\n------------------------------------------------------------------------');
   console.log(`DIRECT MODELING GATE: ${passed} passed, ${failed} failed\n`);

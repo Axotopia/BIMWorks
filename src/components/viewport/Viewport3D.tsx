@@ -14,6 +14,11 @@ import {
   apply3DAxisMagnet,
   compute3DRectangleVertices,
   compute3DCircleVertices,
+  createLineModelMesh,
+  createPlanarFaceMesh,
+  detectUniversalFaceHover,
+  extrudeFaceOrSolid,
+  UniversalFaceHit,
 } from '../../interaction/directModeling';
 
 /**
@@ -157,7 +162,10 @@ export const Viewport3D: React.FC = () => {
     moveLevel,
     planeLock,
     setPlaneLock,
+    snapsEnabled,
     tagSelectedElement,
+    addModelMesh,
+    updateModelMesh,
     cameraProjection,
     setCameraProjection,
     toggleCameraProjection,
@@ -210,14 +218,15 @@ export const Viewport3D: React.FC = () => {
   const [hoveredGripId, setHoveredGripId] = useState<string | null>(null);
   const [activeSnapCandidate, setActiveSnapCandidate] = useState<SnapCandidate | null>(null);
   const activeDragGripRef = useRef<{ grip: Grip; element: any } | null>(null);
-  const [hoveredFace, setHoveredFace] = useState<WallFaceHit | null>(null);
+  const [hoveredFace, setHoveredFace] = useState<WallFaceHit | UniversalFaceHit | null>(null);
   const activePushPullRef = useRef<{
-    face: WallFaceHit;
+    face: WallFaceHit | UniversalFaceHit;
     element: any;
     startScreen: [number, number];
     didMove: boolean;
     dragStarted?: boolean;
   } | null>(null);
+  const pushPullPreviewMeshRef = useRef<THREE.Mesh | null>(null);
   const [liveGripValue, setLiveGripValue] = useState<{ label: string; value: number } | null>(null);
   const [isEditingDim, setIsEditingDim] = useState<boolean>(false);
 
@@ -248,7 +257,13 @@ export const Viewport3D: React.FC = () => {
         directStartPoint[1] + dir[1] * feet,
         directStartPoint[2] + dir[2] * feet,
       ];
-      createWall(directStartPoint, endPt);
+      const p0 = new THREE.Vector3(...directStartPoint);
+      const p1 = new THREE.Vector3(...endPt);
+      const lineMesh = createLineModelMesh(p0, p1);
+      addModelMesh(lineMesh);
+      try {
+        createWall(directStartPoint, endPt);
+      } catch {}
       dispatchInteraction({ type: 'commit' });
       setActiveTool('select');
       setLiveGripValue(null);
@@ -257,7 +272,11 @@ export const Viewport3D: React.FC = () => {
       const currentVec = new THREE.Vector3(...directCurrentPoint);
       const working = getWorkingPlane(planeLock, startVec);
       const corners = compute3DRectangleVertices(startVec, currentVec, working.normal);
-      createSlab(corners.map((c) => [c.x, c.y]), 0.25, directStartPoint[2] ?? 0.0);
+      const rectMesh = createPlanarFaceMesh(corners, 'Rectangle : 2D Face');
+      addModelMesh(rectMesh);
+      try {
+        createSlab(corners.map((c) => [c.x, c.y]), 0.25, directStartPoint[2] ?? 0.0);
+      } catch {}
       dispatchInteraction({ type: 'commit' });
       setActiveTool('select');
       setLiveGripValue(null);
@@ -265,9 +284,21 @@ export const Viewport3D: React.FC = () => {
       const startVec = new THREE.Vector3(...directStartPoint);
       const working = getWorkingPlane(planeLock, startVec);
       const circlePts = compute3DCircleVertices(startVec, feet, working.normal, 32);
-      createSlab(circlePts.map((c) => [c.x, c.y]), 0.25, directStartPoint[2] ?? 0.0);
+      const circleMesh = createPlanarFaceMesh(circlePts, 'Circle : 2D Face');
+      addModelMesh(circleMesh);
+      try {
+        createSlab(circlePts.map((c) => [c.x, c.y]), 0.25, directStartPoint[2] ?? 0.0);
+      } catch {}
       dispatchInteraction({ type: 'commit' });
       setActiveTool('select');
+      setLiveGripValue(null);
+    } else if (activeTool === 'PP' && selectedGuid) {
+      const meshData = meshes.find((m) => m.guid === selectedGuid);
+      if (meshData) {
+        const normal: [number, number, number] = meshData.params?.planeNormal || [0, 0, 1];
+        const finalData = extrudeFaceOrSolid(meshData, normal, feet);
+        updateModelMesh(selectedGuid, finalData);
+      }
       setLiveGripValue(null);
     } else if (activeDragGripRef.current) {
       const { grip, element } = activeDragGripRef.current;
@@ -412,6 +443,11 @@ export const Viewport3D: React.FC = () => {
     setEditingDimValue('');
     setActiveSnapCandidate(null);
     isNavigatingRef.current.mode = null;
+    if (pushPullPreviewMeshRef.current && sceneRef.current) {
+      sceneRef.current.remove(pushPullPreviewMeshRef.current);
+      disposeObject(pushPullPreviewMeshRef.current);
+      pushPullPreviewMeshRef.current = null;
+    }
     // `activeTool` is a belt-and-braces dependency: `setActiveTool` also bumps the
     // token, but a tool armed by any route must clear a half-finished pick.
   }, [interactionResetToken, activeTool]);
@@ -911,7 +947,15 @@ export const Viewport3D: React.FC = () => {
             dispatchInteraction({ type: 'point', point: hit3D });
           } else {
             if (activeTool === 'LI') {
-              createWall(startPick, hit3D);
+              const p0 = startVec;
+              const p1 = new THREE.Vector3(...hit3D);
+              if (p0.distanceTo(p1) > 0.05) {
+                const lineMesh = createLineModelMesh(p0, p1);
+                addModelMesh(lineMesh);
+                try {
+                  createWall(startPick, hit3D);
+                } catch {}
+              }
               dispatchInteraction({ type: 'commit' });
             } else if (activeTool === 'REC') {
               const rectCorners = compute3DRectangleVertices(
@@ -919,13 +963,21 @@ export const Viewport3D: React.FC = () => {
                 new THREE.Vector3(...hit3D),
                 workingPlane.normal
               );
-              createSlab(rectCorners.map((c) => [c.x, c.y]), 0.25, startPick[2] ?? 0.0);
+              const rectMesh = createPlanarFaceMesh(rectCorners, 'Rectangle : 2D Face');
+              addModelMesh(rectMesh);
+              try {
+                createSlab(rectCorners.map((c) => [c.x, c.y]), 0.25, startPick[2] ?? 0.0);
+              } catch {}
               dispatchInteraction({ type: 'commit' });
             } else if (activeTool === 'CI') {
               const radius = Math.hypot(hit3D[0] - startPick[0], hit3D[1] - startPick[1], hit3D[2] - startPick[2]);
               if (radius >= 0.25) {
                 const circlePts = compute3DCircleVertices(startVec, radius, workingPlane.normal, 32);
-                createSlab(circlePts.map((c) => [c.x, c.y]), 0.25, startPick[2] ?? 0.0);
+                const circleMesh = createPlanarFaceMesh(circlePts, 'Circle : 2D Face');
+                addModelMesh(circleMesh);
+                try {
+                  createSlab(circlePts.map((c) => [c.x, c.y]), 0.25, startPick[2] ?? 0.0);
+                } catch {}
               }
               dispatchInteraction({ type: 'commit' });
             }
@@ -1072,7 +1124,7 @@ export const Viewport3D: React.FC = () => {
         if (intersects.length > 0 && intersects[0].object.userData.guid === consumed) return;
       }
 
-      // Tool: Select (default)
+      // Tool: Select (default) & Push/Pull (PP)
       // Phase 7 / W9a: Face push/pull gesture on wall (nearest-object raycasting, deferred drag)
       if ((activeTool === 'select' || activeTool === 'PP') && !activeDragGripRef.current) {
         const meshesList = Array.from(threeMeshesRef.current.values());
@@ -1082,13 +1134,20 @@ export const Viewport3D: React.FC = () => {
           const nearestHit = intersects[0];
           const hitIfcClass = nearestHit.object.userData?.ifc_class;
           const isWall = hitIfcClass === 'IfcWall' || hitIfcClass === 'IfcWallStandardCase';
-          let faceToPush: WallFaceHit | null = null;
-          if (isWall) {
+          let faceToPush: WallFaceHit | UniversalFaceHit | null = null;
+          if (isWall && activeTool === 'select') {
             faceToPush = detectWallFaceHover(nearestHit, elements);
           }
+          if (!faceToPush) {
+            faceToPush = detectUniversalFaceHover(nearestHit, meshes, elements);
+          }
 
-          if (faceToPush && elements[faceToPush.guid]) {
-            const el = elements[faceToPush.guid];
+          if (faceToPush) {
+            const el = elements[faceToPush.guid] || {
+              guid: faceToPush.guid,
+              name: faceToPush.label,
+              ifc_class: 'IfcSlab',
+            };
             activePushPullRef.current = {
               face: faceToPush,
               element: el,
@@ -1099,7 +1158,7 @@ export const Viewport3D: React.FC = () => {
             return;
           }
 
-          // Nearest hit is not a pushable wall face (e.g. slab, roof, door, window) or non-pushable face
+          // Nearest hit is not a pushable face (e.g. non-mesh or unhandled)
           const hitGuid = nearestHit.object.userData.guid;
           setSelectedGuid(hitGuid);
           return;
@@ -1134,35 +1193,90 @@ export const Viewport3D: React.FC = () => {
         const raycaster = new THREE.Raycaster();
         raycaster.setFromCamera(mouse, cameraRef.current);
 
-        let targetPoint: [number, number, number] | null = null;
-        if (face.param === 'height') {
+        if (face.kind === 'top' || face.kind === 'side') {
+          let targetPoint: [number, number, number] | null = null;
+          if (face.param === 'height') {
+            const camDir = new THREE.Vector3();
+            cameraRef.current.getWorldDirection(camDir);
+            const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+              camDir.clone().negate(),
+              new THREE.Vector3(face.hitPoint[0], face.hitPoint[1], face.hitPoint[2])
+            );
+            const hitPt = new THREE.Vector3();
+            if (raycaster.ray.intersectPlane(plane, hitPt)) {
+              targetPoint = [hitPt.x, hitPt.y, hitPt.z];
+            }
+          } else {
+            const baseZ = Number(element.start?.[2] ?? element.elevation ?? 0);
+            const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -baseZ);
+            const hitPt = new THREE.Vector3();
+            if (raycaster.ray.intersectPlane(plane, hitPt)) {
+              targetPoint = [hitPt.x, hitPt.y, hitPt.z];
+            }
+          }
+
+          if (targetPoint) {
+            const cmd = computePushPullCommand(face as WallFaceHit, targetPoint, element);
+            if (cmd.action === 'modifyWallHeight' && cmd.params.height !== undefined) {
+              modifyWallHeight(element.guid, cmd.params.height);
+              setLiveGripValue({ label: 'Wall Height', value: cmd.params.height });
+            } else if (cmd.action === 'modifyWallThickness' && cmd.params.thickness !== undefined) {
+              modifyWallThickness(element.guid, cmd.params.thickness);
+              setLiveGripValue({ label: 'Wall Thickness', value: cmd.params.thickness });
+            }
+          }
+        } else {
+          // Universal Face Push/Pull along face normal
+          const normVec = new THREE.Vector3(...face.normal).normalize();
+          const hitPtVec = new THREE.Vector3(...face.hitPoint);
           const camDir = new THREE.Vector3();
           cameraRef.current.getWorldDirection(camDir);
           const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
             camDir.clone().negate(),
-            new THREE.Vector3(face.hitPoint[0], face.hitPoint[1], face.hitPoint[2])
+            hitPtVec
           );
           const hitPt = new THREE.Vector3();
           if (raycaster.ray.intersectPlane(plane, hitPt)) {
-            targetPoint = [hitPt.x, hitPt.y, hitPt.z];
-          }
-        } else {
-          const baseZ = Number(element.start?.[2] ?? element.elevation ?? 0);
-          const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -baseZ);
-          const hitPt = new THREE.Vector3();
-          if (raycaster.ray.intersectPlane(plane, hitPt)) {
-            targetPoint = [hitPt.x, hitPt.y, hitPt.z];
-          }
-        }
+            let dist = hitPt.clone().sub(hitPtVec).dot(normVec);
+            if (snapsEnabled) {
+              dist = Math.round(dist * 4) / 4;
+            }
+            if (Math.abs(dist) < 0.1) dist = dist >= 0 ? 0.1 : -0.1;
+            setLiveGripValue({ label: face.label, value: dist });
 
-        if (targetPoint) {
-          const cmd = computePushPullCommand(face, targetPoint, element);
-          if (cmd.action === 'modifyWallHeight' && cmd.params.height !== undefined) {
-            modifyWallHeight(element.guid, cmd.params.height);
-            setLiveGripValue({ label: 'Wall Height', value: cmd.params.height });
-          } else if (cmd.action === 'modifyWallThickness' && cmd.params.thickness !== undefined) {
-            modifyWallThickness(element.guid, cmd.params.thickness);
-            setLiveGripValue({ label: 'Wall Thickness', value: cmd.params.thickness });
+            // Real-time preview mesh
+            const meshData = meshes.find((m) => m.guid === face.guid);
+            if (meshData && sceneRef.current) {
+              const uFace = face as UniversalFaceHit;
+              const previewData = extrudeFaceOrSolid(
+                meshData,
+                face.normal,
+                dist,
+                uFace.is2DPlanar ? uFace.boundaryVertices : uFace.coplanarVertexIndices
+              );
+
+              if (!pushPullPreviewMeshRef.current) {
+                const pGeom = new THREE.BufferGeometry();
+                pGeom.setAttribute('position', new THREE.Float32BufferAttribute(previewData.vertices, 3));
+                pGeom.setIndex(previewData.indices);
+                pGeom.computeVertexNormals();
+                const pMat = new THREE.MeshStandardMaterial({
+                  color: 0x38bdf8,
+                  transparent: true,
+                  opacity: 0.8,
+                  roughness: 0.4,
+                });
+                const pMesh = new THREE.Mesh(pGeom, pMat);
+                sceneRef.current.add(pMesh);
+                pushPullPreviewMeshRef.current = pMesh;
+              } else {
+                const pGeom = pushPullPreviewMeshRef.current.geometry;
+                pGeom.setAttribute('position', new THREE.Float32BufferAttribute(previewData.vertices, 3));
+                pGeom.setIndex(previewData.indices);
+                pGeom.computeVertexNormals();
+                pGeom.attributes.position.needsUpdate = true;
+              }
+            }
           }
         }
       }
@@ -1377,7 +1491,13 @@ export const Viewport3D: React.FC = () => {
         const nearestHit = intersects[0];
         const hitIfcClass = nearestHit.object.userData?.ifc_class;
         const isWall = hitIfcClass === 'IfcWall' || hitIfcClass === 'IfcWallStandardCase';
-        const faceHit = isWall ? detectWallFaceHover(nearestHit, elements) : null;
+        let faceHit: WallFaceHit | UniversalFaceHit | null = null;
+        if (isWall && activeTool === 'select') {
+          faceHit = detectWallFaceHover(nearestHit, elements);
+        }
+        if (!faceHit) {
+          faceHit = detectUniversalFaceHover(nearestHit, meshes, elements);
+        }
         setHoveredFace(faceHit);
       } else if (hoveredFace !== null) {
         setHoveredFace(null);
@@ -1396,8 +1516,27 @@ export const Viewport3D: React.FC = () => {
     if (activePushPullRef.current) {
       if (activePushPullRef.current.dragStarted) {
         endDrag(true);
+        const { face } = activePushPullRef.current;
+        if ((face.kind === 'universal' || face.param === 'extrude') && liveGripValue) {
+          const meshData = meshes.find((m) => m.guid === face.guid);
+          if (meshData) {
+            const uFace = face as UniversalFaceHit;
+            const finalData = extrudeFaceOrSolid(
+              meshData,
+              face.normal,
+              liveGripValue.value,
+              uFace.is2DPlanar ? uFace.boundaryVertices : uFace.coplanarVertexIndices
+            );
+            updateModelMesh(face.guid, finalData);
+          }
+        }
       } else {
         setSelectedGuid(activePushPullRef.current.face.guid);
+      }
+      if (pushPullPreviewMeshRef.current && sceneRef.current) {
+        sceneRef.current.remove(pushPullPreviewMeshRef.current);
+        disposeObject(pushPullPreviewMeshRef.current);
+        pushPullPreviewMeshRef.current = null;
       }
       activePushPullRef.current = null;
       setLiveGripValue(null);
@@ -1422,6 +1561,11 @@ export const Viewport3D: React.FC = () => {
     if (activePushPullRef.current) {
       if (activePushPullRef.current.dragStarted) {
         endDrag(false);
+      }
+      if (pushPullPreviewMeshRef.current && sceneRef.current) {
+        sceneRef.current.remove(pushPullPreviewMeshRef.current);
+        disposeObject(pushPullPreviewMeshRef.current);
+        pushPullPreviewMeshRef.current = null;
       }
       activePushPullRef.current = null;
       setLiveGripValue(null);
@@ -1565,7 +1709,11 @@ export const Viewport3D: React.FC = () => {
       ref={containerRef}
       className={`relative w-full h-full bg-[#202022] overflow-hidden select-none ${
         activePushPullRef.current || hoveredFace
-          ? (hoveredFace?.param === 'height' || activePushPullRef.current?.face.param === 'height' ? 'cursor-ns-resize' : 'cursor-ew-resize')
+          ? (hoveredFace?.param === 'height' || activePushPullRef.current?.face.param === 'height'
+              ? 'cursor-ns-resize'
+              : hoveredFace?.param === 'extrude' || activePushPullRef.current?.face.param === 'extrude'
+              ? 'cursor-grab'
+              : 'cursor-ew-resize')
           : 'cursor-crosshair'
       }`}
       onMouseDown={handleMouseDown}

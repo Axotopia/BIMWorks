@@ -81,8 +81,8 @@ export interface MeshBufferData {
 
 /** Serializable subset of the engine's per-element parametric metadata. */
 export interface ElementParams {
-  guid: string;
-  ifc_class: string;
+  guid?: string;
+  ifc_class?: string;
   name?: string;
   type_id?: string;
   start?: [number, number, number];
@@ -103,6 +103,13 @@ export interface ElementParams {
   tag?: string;
   type_properties?: Record<string, string>;
   hosted_openings?: string[];
+  volume?: number;
+  area?: number;
+  is2DPlanar?: boolean;
+  is3DLine?: boolean;
+  polygon3D?: [number, number, number][];
+  planeNormal?: [number, number, number];
+  [key: string]: any;
 }
 
 export interface LevelData {
