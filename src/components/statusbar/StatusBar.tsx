@@ -20,6 +20,8 @@ export const StatusBar: React.FC = () => {
     setDetailLevel,
     activeVisualStyle,
     setVisualStyle,
+    cameraProjection,
+    setCameraProjection,
     hiddenGuids,
     isolatedGuids,
     resetTempVisibility,
@@ -112,6 +114,28 @@ export const StatusBar: React.FC = () => {
             title="Wireframe"
           >
             WF
+          </button>
+        </div>
+
+        {/* 3D Camera Projection Mode */}
+        <div className="flex items-center space-x-0.5 bg-[#ffffff] border border-[#cbd5e1] rounded p-0.5">
+          <button
+            onClick={() => setCameraProjection('perspective')}
+            className={`px-1.5 py-0.5 rounded text-[10px] ${
+              cameraProjection === 'perspective' ? 'bg-[#cce8ff] text-[#094771] font-bold' : 'text-[#64748b] hover:text-[#0f172a]'
+            }`}
+            title="Perspective 3D View"
+          >
+            Persp
+          </button>
+          <button
+            onClick={() => setCameraProjection('isometric')}
+            className={`px-1.5 py-0.5 rounded text-[10px] ${
+              cameraProjection === 'isometric' ? 'bg-[#cce8ff] text-[#094771] font-bold' : 'text-[#64748b] hover:text-[#0f172a]'
+            }`}
+            title="Isometric (Orthographic) 3D View"
+          >
+            Iso
           </button>
         </div>
 

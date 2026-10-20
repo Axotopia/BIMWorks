@@ -158,11 +158,14 @@ export const Viewport3D: React.FC = () => {
     planeLock,
     setPlaneLock,
     tagSelectedElement,
+    cameraProjection,
+    setCameraProjection,
+    toggleCameraProjection,
   } = useBimStore();
 
   // Internal Three.js state
   const sceneRef = useRef<THREE.Scene | null>(null);
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | THREE.OrthographicCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   // Set when WebGL is unavailable, so the panel can explain itself instead of taking
   // the whole application down with it.
@@ -441,6 +444,22 @@ export const Viewport3D: React.FC = () => {
 
     cameraRef.current.position.set(x, y, z);
     cameraRef.current.lookAt(target);
+
+    // If orthographic camera, update frustum based on radius and aspect ratio
+    if (cameraRef.current instanceof THREE.OrthographicCamera && containerRef.current) {
+      const w = containerRef.current.clientWidth;
+      const h = containerRef.current.clientHeight;
+      if (w > 0 && h > 0) {
+        const aspect = w / h;
+        const halfH = radius * Math.tan((45 * Math.PI) / 360);
+        const halfW = halfH * aspect;
+        cameraRef.current.left = -halfW;
+        cameraRef.current.right = halfW;
+        cameraRef.current.top = halfH;
+        cameraRef.current.bottom = -halfH;
+        cameraRef.current.updateProjectionMatrix();
+      }
+    }
     setCameraTick((t) => (t + 1) % 1000000);
   }, []);
 
@@ -458,7 +477,14 @@ export const Viewport3D: React.FC = () => {
     scene.background = new THREE.Color(0x202022); // Consistent shaded Revit background
     sceneRef.current = scene;
 
-    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
+    let camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
+    if (cameraProjection === 'isometric') {
+      const halfH = sphericalRef.current.radius * Math.tan((45 * Math.PI) / 360);
+      const halfW = halfH * (width / height);
+      camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
+    } else {
+      camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 10000);
+    }
     camera.up.set(0, 0, 1);
     cameraRef.current = camera;
     updateCameraPosition();
@@ -523,7 +549,9 @@ export const Viewport3D: React.FC = () => {
     let animationFrameId: number;
     const animate = () => {
       animationFrameId = requestAnimationFrame(animate);
-      renderer.render(scene, camera);
+      if (cameraRef.current) {
+        renderer.render(scene, cameraRef.current);
+      }
     };
     animate();
 
@@ -533,8 +561,19 @@ export const Viewport3D: React.FC = () => {
       const w = containerRef.current.clientWidth;
       const h = containerRef.current.clientHeight;
       if (w === 0 || h === 0) return;
-      cameraRef.current.aspect = w / h;
-      cameraRef.current.updateProjectionMatrix();
+      if (cameraRef.current instanceof THREE.PerspectiveCamera) {
+        cameraRef.current.aspect = w / h;
+        cameraRef.current.updateProjectionMatrix();
+      } else if (cameraRef.current instanceof THREE.OrthographicCamera) {
+        const aspect = w / h;
+        const halfH = sphericalRef.current.radius * Math.tan((45 * Math.PI) / 360);
+        const halfW = halfH * aspect;
+        cameraRef.current.left = -halfW;
+        cameraRef.current.right = halfW;
+        cameraRef.current.top = halfH;
+        cameraRef.current.bottom = -halfH;
+        cameraRef.current.updateProjectionMatrix();
+      }
       rendererRef.current.setSize(w, h);
     };
     window.addEventListener('resize', handleResize);
@@ -563,6 +602,29 @@ export const Viewport3D: React.FC = () => {
       renderer.dispose();
     };
   }, [updateCameraPosition]);
+
+  // Switch between Perspective and Isometric (Orthographic) 3D camera
+  useEffect(() => {
+    if (!containerRef.current || !rendererRef.current) return;
+    const w = containerRef.current.clientWidth || 800;
+    const h = containerRef.current.clientHeight || 600;
+    if (w === 0 || h === 0) return;
+    const aspect = w / h;
+    const { radius } = sphericalRef.current;
+
+    if (cameraProjection === 'isometric') {
+      const halfH = radius * Math.tan((45 * Math.PI) / 360);
+      const halfW = halfH * aspect;
+      const ortho = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
+      ortho.up.set(0, 0, 1);
+      cameraRef.current = ortho;
+    } else {
+      const persp = new THREE.PerspectiveCamera(45, aspect, 0.1, 10000);
+      persp.up.set(0, 0, 1);
+      cameraRef.current = persp;
+    }
+    updateCameraPosition();
+  }, [cameraProjection, updateCameraPosition]);
 
   // Update Section Box clipping planes
   useEffect(() => {
@@ -1397,6 +1459,9 @@ export const Viewport3D: React.FC = () => {
       sphericalRef.current.radius = maxDim * 1.8;
       if (cameraRef.current) {
         cameraRef.current.far = Math.max(10000, maxDim * 20);
+        if (cameraRef.current instanceof THREE.OrthographicCamera) {
+          cameraRef.current.near = -Math.max(10000, maxDim * 20);
+        }
         cameraRef.current.updateProjectionMatrix();
       }
       updateCameraPosition();
@@ -1535,12 +1600,40 @@ export const Viewport3D: React.FC = () => {
       )}
 
       {/* Viewport Top Controls Overlay */}
-      <div className="absolute top-3 left-3 flex items-center space-x-2 bg-[#1e1e1e]/85 backdrop-blur px-2.5 py-1.5 rounded border border-[#3c3c3c] text-xs z-10">
-        <span className="font-semibold text-white">Default 3D View: {'{3D}'}</span>
-        <span className="text-[#858585]">|</span>
+      <div className="absolute top-3 left-3 flex items-center space-x-2 bg-[#1e1e1e]/90 backdrop-blur px-2.5 py-1.5 rounded-lg border border-[#3c3c3c] text-xs z-10 shadow-lg">
+        <span className="font-semibold text-white tracking-wide">3D View: {'{3D}'}</span>
+        <span className="text-[#555555]">|</span>
+
+        {/* Perspective vs Isometric Switch */}
+        <div className="flex items-center bg-[#2d2d2d] rounded p-0.5 border border-[#444444]">
+          <button
+            onClick={() => setCameraProjection('perspective')}
+            className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+              cameraProjection === 'perspective'
+                ? 'bg-[#007acc] text-white shadow-sm font-semibold'
+                : 'text-[#aaaaaa] hover:text-white'
+            }`}
+            title="Perspective Projection (Depth & Realism)"
+          >
+            Perspective
+          </button>
+          <button
+            onClick={() => setCameraProjection('isometric')}
+            className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+              cameraProjection === 'isometric'
+                ? 'bg-[#007acc] text-white shadow-sm font-semibold'
+                : 'text-[#aaaaaa] hover:text-white'
+            }`}
+            title="Isometric / Orthographic Projection (Parallel Lines)"
+          >
+            Isometric
+          </button>
+        </div>
+
+        <span className="text-[#555555]">|</span>
         <button
           onClick={() => window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT))}
-          className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white"
+          className="p-1 hover:bg-[#333333] rounded text-[#cccccc] hover:text-white transition-colors"
           title="Zoom Extents (ZE or Double-Click MMB)"
         >
           <Maximize size={13} />

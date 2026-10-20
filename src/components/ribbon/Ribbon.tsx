@@ -183,6 +183,8 @@ export const Ribbon: React.FC = () => {
     tagSelectedElement,
     planeLock,
     setPlaneLock,
+    cameraProjection,
+    setCameraProjection,
   } = useBimStore();
 
   const primaryGuid = selectedGuids.length > 0 ? selectedGuids[selectedGuids.length - 1] : selectedGuid;
@@ -923,6 +925,30 @@ export const Ribbon: React.FC = () => {
                 {renderSmallButton('Explode', <Split size={13} />, undefined, 'Explode Group', 'EX')}
               </div>
             </RibbonPanel>
+
+            {/* 3D Camera Projection Panel */}
+            <RibbonPanel title="Camera">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton(
+                  'Perspective',
+                  <Eye size={13} className={cameraProjection === 'perspective' ? 'text-[#0284c7]' : 'text-[#64748b]'} />,
+                  () => {
+                    setActiveViewId('view-3d');
+                    setCameraProjection('perspective');
+                  },
+                  'Perspective 3D Projection'
+                )}
+                {renderSmallButton(
+                  'Isometric',
+                  <Box size={13} className={cameraProjection === 'isometric' ? 'text-[#0284c7]' : 'text-[#64748b]'} />,
+                  () => {
+                    setActiveViewId('view-3d');
+                    setCameraProjection('isometric');
+                  },
+                  'Isometric / Orthographic 3D Projection'
+                )}
+              </div>
+            </RibbonPanel>
           </>
         ) : activeRibbonTab === 'View' ? (
           /* VIEW TAB */
@@ -976,6 +1002,29 @@ export const Ribbon: React.FC = () => {
               {renderToolButton('select', 'View Range', 'VR', <SlidersHorizontal size={22} className="text-[#0284c7]" />, () =>
                 setViewRangeModalOpen(true)
               )}
+            </RibbonPanel>
+
+            <RibbonPanel title="Camera">
+              <div className="flex flex-col justify-center space-y-0.5">
+                {renderSmallButton(
+                  'Perspective',
+                  <Eye size={13} className={cameraProjection === 'perspective' ? 'text-[#0284c7]' : 'text-[#64748b]'} />,
+                  () => {
+                    setActiveViewId('view-3d');
+                    setCameraProjection('perspective');
+                  },
+                  'Perspective 3D Projection'
+                )}
+                {renderSmallButton(
+                  'Isometric',
+                  <Box size={13} className={cameraProjection === 'isometric' ? 'text-[#0284c7]' : 'text-[#64748b]'} />,
+                  () => {
+                    setActiveViewId('view-3d');
+                    setCameraProjection('isometric');
+                  },
+                  'Isometric / Orthographic 3D Projection'
+                )}
+              </div>
             </RibbonPanel>
 
             <RibbonPanel title="Windows">

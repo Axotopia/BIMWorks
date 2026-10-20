@@ -13,6 +13,7 @@ import {
   Check,
   X,
   Grid,
+  Box,
 } from 'lucide-react';
 
 export interface ContextMenuProps {
@@ -38,6 +39,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, targetGuid, onCl
     setActiveTool,
     toggleSnaps,
     snapsEnabled,
+    activeViewId,
+    cameraProjection,
+    toggleCameraProjection,
   } = useBimStore();
 
   const elem = targetGuid ? elements[targetGuid] : null;
@@ -271,6 +275,21 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, targetGuid, onCl
             <span className="flex-1">Snaps ({snapsEnabled ? 'Enabled' : 'Disabled'})</span>
             <span className="font-mono text-[10px] text-[#94a3b8] ml-2">F3</span>
           </button>
+
+          {activeViewId === 'view-3d' && (
+            <button
+              onClick={() => {
+                toggleCameraProjection();
+                onClose();
+              }}
+              className="w-full flex items-center px-3 py-1.5 hover:bg-[#e0f2fe] hover:text-[#0369a1] text-left transition-colors"
+            >
+              <Box size={13} className="text-[#64748b] mr-2 shrink-0" />
+              <span className="flex-1">
+                Switch to {cameraProjection === 'perspective' ? 'Isometric' : 'Perspective'} View
+              </span>
+            </button>
+          )}
         </>
       )}
     </div>

@@ -226,6 +226,8 @@ export interface OverlayDimension {
 
 export type ViewType = 'floor_plan' | '3d' | 'section' | 'elevation' | 'sheet';
 
+export type CameraProjectionMode = 'perspective' | 'isometric';
+
 export interface ViewDefinition {
   id: string;
   name: string;
@@ -234,6 +236,7 @@ export interface ViewDefinition {
   scale: string;
   detailLevel: 'coarse' | 'medium' | 'fine';
   visualStyle: 'wireframe' | 'hidden_line' | 'consistent_colors';
+  projection?: CameraProjectionMode;
   viewRange: {
     top: number;
     cut: number;

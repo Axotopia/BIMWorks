@@ -28,6 +28,7 @@ import {
   SketchLine,
   SketchDrawTool,
   PlaneLockType,
+  CameraProjectionMode,
 } from '../types/bim';
 import {
   calculateMeshVolume,
@@ -628,6 +629,9 @@ interface BimStoreState {
   setScale: (scale: string) => void;
   setDetailLevel: (detail: 'coarse' | 'medium' | 'fine') => void;
   setVisualStyle: (style: 'wireframe' | 'hidden_line' | 'consistent_colors') => void;
+  cameraProjection: CameraProjectionMode;
+  setCameraProjection: (mode: CameraProjectionMode) => void;
+  toggleCameraProjection: () => void;
 
   setGeoreferenceModalOpen: (open: boolean) => void;
   setEditTypeModalOpen: (open: boolean) => void;
@@ -1043,6 +1047,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   activeScale: '1/4" = 1\'-0"',
   activeDetailLevel: 'medium',
   activeVisualStyle: 'consistent_colors',
+  cameraProjection: 'perspective',
 
   // GLM Spec v2 Initial States
   displayUnit: 'imperial_fractional',
@@ -1279,6 +1284,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     if (view && view.type !== '3d' && view.type !== 'sheet') {
       const cut = view.viewRange?.cut ?? (view as any)?.view_range?.cut ?? 4.0;
       get().fetch2DSlice(cut);
+    } else if (view && view.type === '3d' && view.projection) {
+      set({ cameraProjection: view.projection });
     }
   },
 
@@ -1477,6 +1484,11 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   setScale: (scale) => set({ activeScale: scale }),
   setDetailLevel: (detail) => set({ activeDetailLevel: detail }),
   setVisualStyle: (style) => set({ activeVisualStyle: style }),
+  setCameraProjection: (mode) => set({ cameraProjection: mode }),
+  toggleCameraProjection: () =>
+    set((state) => ({
+      cameraProjection: state.cameraProjection === 'perspective' ? 'isometric' : 'perspective',
+    })),
 
   setGeoreferenceModalOpen: (open) => set({ isGeoreferenceModalOpen: open }),
   setEditTypeModalOpen: (open) => set({ isEditTypeModalOpen: open }),
