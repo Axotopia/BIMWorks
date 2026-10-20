@@ -1,7 +1,8 @@
-import React, { useRef, useState } from 'react';
-import { Download, Move, Plus, FileSpreadsheet, Layers, Trash2, Edit2, Layers3 } from 'lucide-react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
+import { Download, Plus, FileSpreadsheet, Trash2, Layers3, RotateCw, Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
-import { SheetViewport } from '../../types/bim';
+import { SheetPaperSize } from '../../types/bim';
+import { PAPER_SIZES, getSheetDimensions, STANDARD_SCALES, getScaleLabel } from './paperSizes';
 
 export const SheetCanvas: React.FC = () => {
   const {
@@ -11,6 +12,7 @@ export const SheetCanvas: React.FC = () => {
     addViewportToSheet,
     removeViewportFromSheet,
     moveViewport,
+    updateViewportScale,
     updateSheet,
     exportSheetPdf,
     exportBatchPdf,
@@ -24,7 +26,8 @@ export const SheetCanvas: React.FC = () => {
     id: 'sheet-default',
     sheetNumber: 'A101',
     sheetTitle: 'UNNAMED SHEET',
-    paperSize: 'ARCH_D',
+    paperSize: 'ARCH_D' as SheetPaperSize,
+    orientation: 'landscape' as const,
     projectName: 'BIMWorks Project',
     date: '2026-10-15',
     drawnBy: 'BIMWorks Architect',
@@ -32,6 +35,7 @@ export const SheetCanvas: React.FC = () => {
     viewports: [],
   };
 
+  const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
   // In-place editing state
@@ -42,13 +46,55 @@ export const SheetCanvas: React.FC = () => {
   const crsCode = (georeference?.projected_crs || '').split(' - ')[0] || 'Not georeferenced';
   const sheetDate = sheet.date || new Date().toISOString().slice(0, 10);
 
-  // Sheet dimensions in points (ARCH D = 36" x 24" = 2592 x 1728 points / 1056 x 704 px)
-  const sheetWidth = 1056;
-  const sheetHeight = 704;
+  // Dynamic Sheet dimensions based on paper size & orientation
+  const { width: sheetWidth, height: sheetHeight } = getSheetDimensions(sheet.paperSize, sheet.orientation);
+
+  // Pan & Zoom state
+  const [viewTransform, setViewTransform] = useState<{ x: number; y: number; zoom: number }>({ x: 0, y: 0, zoom: 1 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState<{ x: number; y: number; startX: number; startY: number } | null>(null);
 
   // Viewport dragging state
   const [draggingVpId, setDraggingVpId] = useState<string | null>(null);
   const [dragStart, setDragStart] = useState<{ x: number; y: number; vpX: number; vpY: number } | null>(null);
+
+  // Fit sheet to viewport screen
+  const fitToScreen = useCallback(() => {
+    if (!containerRef.current) return;
+    const containerW = containerRef.current.clientWidth;
+    const containerH = containerRef.current.clientHeight;
+    const padding = 80;
+    const availW = containerW - padding;
+    const availH = containerH - padding - 60; // account for top bar
+    if (availW <= 0 || availH <= 0) return;
+    const scale = Math.min(availW / sheetWidth, availH / sheetHeight);
+    const zoom = Math.max(0.2, Math.min(scale, 1.5));
+    const x = (containerW - sheetWidth * zoom) / 2;
+    const y = (containerH - sheetHeight * zoom) / 2 + 25;
+    setViewTransform({ x, y, zoom });
+  }, [sheetWidth, sheetHeight]);
+
+  // Auto-fit on mount or when sheet paper size / orientation changes
+  useEffect(() => {
+    fitToScreen();
+  }, [sheet.id, sheet.paperSize, sheet.orientation, fitToScreen]);
+
+  // Handle Wheel Zoom (centered on mouse position)
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+    setViewTransform((prev) => {
+      const newZoom = Math.max(0.15, Math.min(prev.zoom * zoomFactor, 5.0));
+      const newX = mouseX - (mouseX - prev.x) * (newZoom / prev.zoom);
+      const newY = mouseY - (mouseY - prev.y) * (newZoom / prev.zoom);
+      return { x: newX, y: newY, zoom: newZoom };
+    });
+  };
 
   // Drag & drop from project browser
   const handleDragOver = (e: React.DragEvent) => {
@@ -63,8 +109,8 @@ export const SheetCanvas: React.FC = () => {
       if (data.type === 'view') {
         const rect = svgRef.current?.getBoundingClientRect();
         if (!rect) return;
-        const dropX = e.clientX - rect.left - 200;
-        const dropY = e.clientY - rect.top - 150;
+        const dropX = (e.clientX - rect.left) / viewTransform.zoom - 200;
+        const dropY = (e.clientY - rect.top) / viewTransform.zoom - 150;
         addViewportToSheet(sheet.id, data.viewId, Math.max(50, Math.min(dropX, sheetWidth - 350)), Math.max(50, Math.min(dropY, sheetHeight - 200)));
       }
     } catch (err) {
@@ -81,8 +127,7 @@ export const SheetCanvas: React.FC = () => {
   };
 
   const renderSheetSvgString = (targetSheet: typeof sheet): string => {
-    const sWidth = sheetWidth;
-    const sHeight = sheetHeight;
+    const { width: sWidth, height: sHeight } = getSheetDimensions(targetSheet.paperSize, targetSheet.orientation);
     const pName = projectName || targetSheet.projectName || 'BIMWorks Project';
     const sTitle = targetSheet.sheetTitle || 'UNNAMED SHEET';
     const sNum = targetSheet.sheetNumber || 'A101';
@@ -92,6 +137,7 @@ export const SheetCanvas: React.FC = () => {
     const viewportsSvg = (targetSheet.viewports || []).map((vp, index) => {
       const viewDef = views.find((v) => v.id === vp.viewId);
       const viewName = viewDef?.name || 'Floor Plan: Level 1';
+      const vpScale = vp.scaleFactor ?? 20;
 
       const slabsSvg = (sliced2D?.slabs || []).map((s) => `<path d="${s.d}" stroke="#cbd5e1" stroke-width="0.05" fill="#f8fafc" />`).join('');
       const cutsSvg = (sliced2D?.cut_paths || []).map((p) => `<path d="${p.d}" stroke="#0f172a" stroke-width="0.07" fill="#cbd5e1" />`).join('');
@@ -101,7 +147,7 @@ export const SheetCanvas: React.FC = () => {
       return `
         <g transform="translate(${vp.x}, ${vp.y})">
           <rect x="0" y="0" width="${vp.width}" height="${vp.height}" fill="#ffffff" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4, 2" />
-          <g transform="translate(180, 220) scale(20, -20)">
+          <g transform="translate(180, 220) scale(${vpScale}, -${vpScale})">
             ${slabsSvg}
             ${cutsSvg}
             ${projsSvg}
@@ -111,7 +157,7 @@ export const SheetCanvas: React.FC = () => {
             <circle cx="12" cy="0" r="12" fill="#0f172a" />
             <text x="12" y="4" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="bold">${index + 1}</text>
             <text x="32" y="-2" fill="#0f172a" font-size="12" font-weight="bold">${viewName}</text>
-            <text x="32" y="11" fill="#64748b" font-size="9" font-family="JetBrains Mono, monospace">Scale: 1/4" = 1'-0"</text>
+            <text x="32" y="11" fill="#64748b" font-size="9" font-family="JetBrains Mono, monospace">Scale: ${getScaleLabel(vpScale)}</text>
             <line x1="30" y1="18" x2="${vp.width - 40}" y2="18" stroke="#0f172a" stroke-width="1.2" />
           </g>
         </g>
@@ -196,45 +242,129 @@ export const SheetCanvas: React.FC = () => {
     setEditingField(null);
   };
 
+  // Viewport pointer down
   const handlePointerDownVp = (e: React.PointerEvent, vpId: string, currentX: number, currentY: number) => {
+    e.stopPropagation();
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     setDraggingVpId(vpId);
     setDragStart({ x: e.clientX, y: e.clientY, vpX: currentX, vpY: currentY });
   };
 
+  // Canvas container pointer down for pan
+  const handleContainerPointerDown = (e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest('.viewport-element')) return;
+    if (e.button === 0 || e.button === 1 || e.shiftKey) {
+      setIsPanning(true);
+      setPanStart({ x: e.clientX, y: e.clientY, startX: viewTransform.x, startY: viewTransform.y });
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    }
+  };
+
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (!draggingVpId || !dragStart) return;
-    const dx = e.clientX - dragStart.x;
-    const dy = e.clientY - dragStart.y;
-    const newX = Math.max(30, Math.min(dragStart.vpX + dx, sheetWidth - 320));
-    const newY = Math.max(30, Math.min(dragStart.vpY + dy, sheetHeight - 150));
-    moveViewport(draggingVpId, newX, newY, sheet.id);
+    if (isPanning && panStart) {
+      const dx = e.clientX - panStart.x;
+      const dy = e.clientY - panStart.y;
+      setViewTransform((prev) => ({
+        ...prev,
+        x: panStart.startX + dx,
+        y: panStart.startY + dy,
+      }));
+      return;
+    }
+
+    if (draggingVpId && dragStart) {
+      const dx = (e.clientX - dragStart.x) / viewTransform.zoom;
+      const dy = (e.clientY - dragStart.y) / viewTransform.zoom;
+      const newX = Math.max(30, Math.min(dragStart.vpX + dx, sheetWidth - 320));
+      const newY = Math.max(30, Math.min(dragStart.vpY + dy, sheetHeight - 150));
+      moveViewport(draggingVpId, newX, newY, sheet.id);
+    }
   };
 
   const handlePointerUp = () => {
-    setDraggingVpId(null);
-    setDragStart(null);
+    if (isPanning) {
+      setIsPanning(false);
+      setPanStart(null);
+    }
+    if (draggingVpId) {
+      setDraggingVpId(null);
+      setDragStart(null);
+    }
   };
 
   return (
     <div
-      className="relative w-full h-full bg-[#18181b] flex flex-col overflow-auto select-none p-6 items-center justify-center"
+      ref={containerRef}
+      className="relative w-full h-full bg-[#18181b] overflow-hidden select-none"
+      onWheel={handleWheel}
+      onPointerDown={handleContainerPointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      style={{ cursor: isPanning ? 'grabbing' : 'default' }}
     >
       {/* Top Floating Control Bar */}
-      <div className="absolute top-4 left-6 right-6 flex items-center justify-between bg-[#27272a]/90 backdrop-blur px-4 py-2 rounded-lg border border-[#3f3f46] text-xs z-10 shadow-lg">
+      <div className="absolute top-4 left-6 right-6 flex items-center justify-between bg-[#27272a]/95 backdrop-blur px-4 py-2 rounded-lg border border-[#3f3f46] text-xs z-10 shadow-lg">
         <div className="flex items-center space-x-3 text-white">
           <FileSpreadsheet size={16} className="text-[#10b981]" />
           <span className="font-bold text-sm tracking-wide">
             {sheet.sheetNumber} — {sheet.sheetTitle}
           </span>
-          <span className="text-[#a1a1aa] text-[11px] bg-[#3f3f46] px-2 py-0.5 rounded">
-            ARCH D (24" × 36")
-          </span>
+
+          {/* Paper Size Selector */}
+          <select
+            value={sheet.paperSize || 'ARCH_D'}
+            onChange={(e) => updateSheet(sheet.id, { paperSize: e.target.value as SheetPaperSize })}
+            className="bg-[#3f3f46] text-white text-[11px] px-2 py-1 rounded border border-[#52525b] outline-none cursor-pointer hover:border-[#71717a] transition-colors"
+            title="Sheet Paper Size"
+          >
+            {Object.entries(PAPER_SIZES).map(([key, def]) => (
+              <option key={key} value={key}>
+                {def.name} ({def.description})
+              </option>
+            ))}
+          </select>
+
+          {/* Orientation Toggle Button */}
+          <button
+            onClick={() => updateSheet(sheet.id, { orientation: sheet.orientation === 'portrait' ? 'landscape' : 'portrait' })}
+            className="flex items-center space-x-1.5 px-2.5 py-1 bg-[#3f3f46] hover:bg-[#52525b] text-white rounded text-[11px] border border-[#52525b] transition-colors"
+            title="Toggle Landscape / Portrait"
+          >
+            <RotateCw size={12} />
+            <span className="capitalize">{sheet.orientation || 'landscape'}</span>
+          </button>
         </div>
 
         <div className="flex items-center space-x-2">
+          {/* Zoom controls */}
+          <div className="flex items-center bg-[#3f3f46] rounded px-1.5 py-0.5 space-x-1 text-[#a1a1aa] border border-[#52525b]">
+            <button
+              onClick={() => setViewTransform((prev) => ({ ...prev, zoom: Math.max(0.2, prev.zoom * 0.85) }))}
+              className="p-1 hover:text-white rounded"
+              title="Zoom Out"
+            >
+              <ZoomOut size={13} />
+            </button>
+            <span className="text-[11px] font-mono px-1.5 text-white font-medium">
+              {Math.round(viewTransform.zoom * 100)}%
+            </span>
+            <button
+              onClick={() => setViewTransform((prev) => ({ ...prev, zoom: Math.min(4.0, prev.zoom * 1.15) }))}
+              className="p-1 hover:text-white rounded"
+              title="Zoom In"
+            >
+              <ZoomIn size={13} />
+            </button>
+            <button
+              onClick={fitToScreen}
+              className="flex items-center space-x-1 px-2 py-0.5 hover:text-white hover:bg-[#52525b] rounded text-[11px] transition-colors"
+              title="Fit Sheet to Window"
+            >
+              <Maximize2 size={12} />
+              <span>Fit</span>
+            </button>
+          </div>
+
           <button
             onClick={() => {
               addViewportToSheet(sheet.id, 'view-level-1', 70, 100);
@@ -265,348 +395,378 @@ export const SheetCanvas: React.FC = () => {
         </div>
       </div>
 
-      {/* Sheet White Canvas */}
+      {/* Sheet Canvas Pan/Zoom Wrapper */}
       <div
-        className="relative bg-white shadow-2xl border border-slate-300 rounded-sm mt-10"
-        style={{ width: `${sheetWidth}px`, height: `${sheetHeight}px` }}
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
+        style={{
+          transform: `translate(${viewTransform.x}px, ${viewTransform.y}px) scale(${viewTransform.zoom})`,
+          transformOrigin: '0 0',
+          transition: isPanning ? 'none' : 'transform 0.05s ease-out',
+        }}
       >
-        <svg
-          ref={svgRef}
-          viewBox={`0 0 ${sheetWidth} ${sheetHeight}`}
-          width={sheetWidth}
-          height={sheetHeight}
-          className="w-full h-full block font-sans"
-          xmlns="http://www.w3.org/2000/svg"
+        <div
+          className="relative bg-white shadow-2xl border border-slate-300 rounded-sm"
+          style={{ width: `${sheetWidth}px`, height: `${sheetHeight}px` }}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
         >
-          {/* Sheet Outer Border & Margin */}
-          <rect
-            x="20"
-            y="20"
-            width={sheetWidth - 40}
-            height={sheetHeight - 40}
-            fill="#ffffff"
-            stroke="#0f172a"
-            strokeWidth="2"
-          />
-          <rect
-            x="24"
-            y="24"
-            width={sheetWidth - 48}
-            height={sheetHeight - 48}
-            fill="none"
-            stroke="#64748b"
-            strokeWidth="0.75"
-          />
-
-          {/* ========================================================= */}
-          {/* TITLE BLOCK ENGINE: Standard Architectural Title Block    */}
-          {/* In-place editable content: SheetTitle, SheetNumber, etc.  */}
-          {/* ========================================================= */}
-          <g id="title-block" transform={`translate(${sheetWidth - 280}, 24)`}>
-            {/* Title Block Column */}
+          <svg
+            ref={svgRef}
+            viewBox={`0 0 ${sheetWidth} ${sheetHeight}`}
+            width={sheetWidth}
+            height={sheetHeight}
+            className="w-full h-full block font-sans"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            {/* Sheet Outer Border & Margin */}
             <rect
-              x="0"
-              y="0"
-              width="256"
-              height={sheetHeight - 48}
-              fill="#fafafa"
+              x="20"
+              y="20"
+              width={sheetWidth - 40}
+              height={sheetHeight - 40}
+              fill="#ffffff"
               stroke="#0f172a"
-              strokeWidth="1.5"
+              strokeWidth="2"
+            />
+            <rect
+              x="24"
+              y="24"
+              width={sheetWidth - 48}
+              height={sheetHeight - 48}
+              fill="none"
+              stroke="#64748b"
+              strokeWidth="0.75"
             />
 
-            {/* Logo & Firm Name */}
-            <rect x="0" y="0" width="256" height="85" fill="#0f172a" />
-            <text x="128" y="38" textAnchor="middle" fill="#ffffff" fontSize="20" fontWeight="bold" letterSpacing="1">
-              BIMWORKS
-            </text>
-            <text x="128" y="58" textAnchor="middle" fill="#38bdf8" fontSize="10" letterSpacing="2">
-              NATIVE IFC4 BIM STUDIO
-            </text>
+            {/* ========================================================= */}
+            {/* TITLE BLOCK ENGINE: Standard Architectural Title Block    */}
+            {/* In-place editable content: SheetTitle, SheetNumber, etc.  */}
+            {/* ========================================================= */}
+            <g id="title-block" transform={`translate(${sheetWidth - 280}, 24)`}>
+              {/* Title Block Column */}
+              <rect
+                x="0"
+                y="0"
+                width="256"
+                height={sheetHeight - 48}
+                fill="#fafafa"
+                stroke="#0f172a"
+                strokeWidth="1.5"
+              />
 
-            {/* Project Metadata Section */}
-            <g transform="translate(15, 115)">
-              <text x="0" y="0" fill="#64748b" fontSize="8" fontWeight="bold" letterSpacing="1">
-                PROJECT NAME
+              {/* Logo & Firm Name */}
+              <rect x="0" y="0" width="256" height="85" fill="#0f172a" />
+              <text x="128" y="38" textAnchor="middle" fill="#ffffff" fontSize="20" fontWeight="bold" letterSpacing="1">
+                BIMWORKS
               </text>
-              <text x="0" y="16" fill="#0f172a" fontSize="13" fontWeight="bold">
-                {projectName || sheet.projectName}
+              <text x="128" y="58" textAnchor="middle" fill="#38bdf8" fontSize="10" letterSpacing="2">
+                NATIVE IFC4 BIM STUDIO
               </text>
 
-              <line x1="0" y1="30" x2="226" y2="30" stroke="#e2e8f0" strokeWidth="1" />
-
-              <text x="0" y="48" fill="#64748b" fontSize="8" fontWeight="bold" letterSpacing="1">
-                SHEET TITLE (click to edit)
-              </text>
-              {editingField === 'title' ? (
-                <foreignObject x="0" y="50" width="226" height="26">
-                  <input
-                    type="text"
-                    value={tempValue}
-                    autoFocus
-                    onChange={(e) => setTempValue(e.target.value)}
-                    onBlur={commitEdit}
-                    onKeyDown={(e) => e.key === 'Enter' && commitEdit()}
-                    className="w-full h-full px-1.5 py-0.5 border border-[#0284c7] rounded bg-white text-xs font-bold text-[#0f172a] outline-none shadow-xs"
-                  />
-                </foreignObject>
-              ) : (
-                <text
-                  x="0"
-                  y="66"
-                  fill="#0f172a"
-                  fontSize="14"
-                  fontWeight="bold"
-                  className="cursor-pointer hover:fill-[#0284c7] transition-colors"
-                  onClick={() => startEdit('title', sheet.sheetTitle)}
-                >
-                  {sheet.sheetTitle} ✎
+              {/* Project Metadata Section */}
+              <g transform="translate(15, 115)">
+                <text x="0" y="0" fill="#64748b" fontSize="8" fontWeight="bold" letterSpacing="1">
+                  PROJECT NAME
                 </text>
-              )}
-
-              <line x1="0" y1="80" x2="226" y2="80" stroke="#e2e8f0" strokeWidth="1" />
-
-              <text x="0" y="98" fill="#64748b" fontSize="8" fontWeight="bold">
-                DATE / DRAWN BY
-              </text>
-              {editingField === 'drawnBy' ? (
-                <foreignObject x="0" y="100" width="226" height="24">
-                  <input
-                    type="text"
-                    value={tempValue}
-                    autoFocus
-                    onChange={(e) => setTempValue(e.target.value)}
-                    onBlur={commitEdit}
-                    onKeyDown={(e) => e.key === 'Enter' && commitEdit()}
-                    className="w-full h-full px-1.5 py-0.5 border border-[#0284c7] rounded bg-white text-xs font-mono outline-none shadow-xs"
-                  />
-                </foreignObject>
-              ) : (
-                <text
-                  x="0"
-                  y="114"
-                  fill="#0f172a"
-                  fontSize="11"
-                  fontFamily="JetBrains Mono, monospace"
-                  className="cursor-pointer hover:fill-[#0284c7]"
-                  onClick={() => startEdit('drawnBy', sheet.drawnBy || 'BIMWorks Architect')}
-                >
-                  {sheetDate} | {sheet.drawnBy || 'BIMWorks Architect'} ✎
+                <text x="0" y="16" fill="#0f172a" fontSize="13" fontWeight="bold">
+                  {projectName || sheet.projectName}
                 </text>
-              )}
 
-              <line x1="0" y1="128" x2="226" y2="128" stroke="#e2e8f0" strokeWidth="1" />
+                <line x1="0" y1="30" x2="226" y2="30" stroke="#e2e8f0" strokeWidth="1" />
 
-              <text x="0" y="146" fill="#64748b" fontSize="8" fontWeight="bold">
-                SCALE / GEOREFERENCE
-              </text>
-              <text x="0" y="162" fill="#0f172a" fontSize="11" fontFamily="JetBrains Mono, monospace">
-                {activeScale} ({crsCode})
-              </text>
-            </g>
-
-            {/* Architectural Legal Notice & Professional Disclaimer */}
-            <g transform="translate(15, 305)">
-              <line x1="0" y1="0" x2="226" y2="0" stroke="#0f172a" strokeWidth="1.5" />
-              <text x="0" y="16" fill="#0f172a" fontSize="8" fontWeight="bold" letterSpacing="0.5">
-                NOTICE &amp; LEGAL DISCLAIMER
-              </text>
-              <text x="0" y="30" fill="#b91c1c" fontSize="6.5" fontWeight="bold">
-                DO NOT SCALE DRAWINGS
-              </text>
-              <text x="0" y="42" fill="#64748b" fontSize="5.5">
-                All dimensions and conditions must be verified on site
-              </text>
-              <text x="0" y="52" fill="#64748b" fontSize="5.5">
-                prior to ordering materials or commencing fabrication/work.
-              </text>
-              <text x="0" y="64" fill="#64748b" fontSize="5.5">
-                Drawings and digital models are instruments of service
-              </text>
-              <text x="0" y="74" fill="#64748b" fontSize="5.5">
-                and uncertified drafts. They do not constitute stamped
-              </text>
-              <text x="0" y="84" fill="#64748b" fontSize="5.5">
-                architectural or engineering contract documents unless
-              </text>
-              <text x="0" y="94" fill="#64748b" fontSize="5.5">
-                signed &amp; sealed by a registered design professional.
-              </text>
-              <line x1="0" y1="106" x2="226" y2="106" stroke="#e2e8f0" strokeWidth="1" />
-
-              {/* Revisions Table */}
-              <text x="0" y="122" fill="#0f172a" fontSize="8" fontWeight="bold" letterSpacing="0.5">
-                REVISIONS
-              </text>
-              <rect x="0" y="128" width="226" height="16" fill="#f1f5f9" stroke="#cbd5e1" strokeWidth="0.5" />
-              <text x="6" y="139" fill="#475569" fontSize="6.5" fontWeight="bold">NO.</text>
-              <text x="35" y="139" fill="#475569" fontSize="6.5" fontWeight="bold">DESCRIPTION</text>
-              <text x="180" y="139" fill="#475569" fontSize="6.5" fontWeight="bold">DATE</text>
-              <rect x="0" y="144" width="226" height="16" fill="#ffffff" stroke="#cbd5e1" strokeWidth="0.5" />
-              <text x="10" y="155" fill="#0f172a" fontSize="6.5">1</text>
-              <text x="35" y="155" fill="#0f172a" fontSize="6.5">INITIAL BIM ISSUE</text>
-              <text x="175" y="155" fill="#0f172a" fontSize="6.5">2026-10-15</text>
-            </g>
-
-            {/* Sheet Number Huge Callout Box at Bottom */}
-            <g transform={`translate(0, ${sheetHeight - 148})`}>
-              <rect x="0" y="0" width="256" height="100" fill="#0f172a" />
-              <text x="128" y="24" textAnchor="middle" fill="#94a3b8" fontSize="9" fontWeight="bold">
-                SHEET NUMBER (click to edit)
-              </text>
-              {editingField === 'number' ? (
-                <foreignObject x="30" y="32" width="196" height="48">
-                  <input
-                    type="text"
-                    value={tempValue}
-                    autoFocus
-                    onChange={(e) => setTempValue(e.target.value)}
-                    onBlur={commitEdit}
-                    onKeyDown={(e) => e.key === 'Enter' && commitEdit()}
-                    className="w-full h-full text-center px-1 py-0.5 border border-[#38bdf8] rounded bg-[#1e293b] text-2xl font-mono font-bold text-white outline-none shadow-xs"
-                  />
-                </foreignObject>
-              ) : (
-                <text
-                  x="128"
-                  y="72"
-                  textAnchor="middle"
-                  fill="#ffffff"
-                  fontSize="40"
-                  fontWeight="900"
-                  fontFamily="JetBrains Mono, monospace"
-                  className="cursor-pointer hover:fill-[#38bdf8] transition-colors"
-                  onClick={() => startEdit('number', sheet.sheetNumber)}
-                >
-                  {sheet.sheetNumber}
+                <text x="0" y="48" fill="#64748b" fontSize="8" fontWeight="bold" letterSpacing="1">
+                  SHEET TITLE (click to edit)
                 </text>
-              )}
-            </g>
-          </g>
-
-          {/* ========================================================= */}
-          {/* VIEWPORTS PLACEMENT ON SHEET                              */}
-          {/* Moveable viewports with title bars & delete handle        */}
-          {/* ========================================================= */}
-          {sheet.viewports.map((vp, index) => {
-            const viewDef = views.find((v) => v.id === vp.viewId);
-            const viewName = viewDef?.name || 'Floor Plan: Level 1';
-
-            return (
-              <g
-                key={vp.id}
-                transform={`translate(${vp.x}, ${vp.y})`}
-                className="group"
-              >
-                {/* Viewport Crop Border & Drag Handle */}
-                <rect
-                  x="0"
-                  y="0"
-                  width={vp.width}
-                  height={vp.height}
-                  fill="#ffffff"
-                  stroke="#94a3b8"
-                  strokeWidth="1"
-                  strokeDasharray="4, 2"
-                  className="group-hover:stroke-[#0284c7] cursor-move"
-                  onPointerDown={(e) => handlePointerDownVp(e, vp.id, vp.x, vp.y)}
-                />
-
-                {/* Viewport Action Bar on Hover */}
-                <foreignObject x={vp.width - 28} y={4} width="24" height="24" className="opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    onClick={() => removeViewportFromSheet(vp.id, sheet.id)}
-                    title="Remove Viewport from Sheet"
-                    className="w-6 h-6 bg-red-100 hover:bg-red-200 text-red-600 rounded flex items-center justify-center shadow-xs"
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </foreignObject>
-
-                {/* Embedded 2D Vector Plan Linework */}
-                <g transform="translate(180, 220) scale(20, -20)">
-                  {/* Slabs */}
-                  {sliced2D?.slabs.map((slab) => (
-                    <path
-                      key={`s-slab-${slab.guid}`}
-                      d={slab.d}
-                      stroke="#cbd5e1"
-                      strokeWidth="0.05"
-                      fill="#f8fafc"
+                {editingField === 'title' ? (
+                  <foreignObject x="0" y="50" width="226" height="26">
+                    <input
+                      type="text"
+                      value={tempValue}
+                      autoFocus
+                      onChange={(e) => setTempValue(e.target.value)}
+                      onBlur={commitEdit}
+                      onKeyDown={(e) => e.key === 'Enter' && commitEdit()}
+                      className="w-full h-full px-1.5 py-0.5 border border-[#0284c7] rounded bg-white text-xs font-bold text-[#0f172a] outline-none shadow-xs"
                     />
-                  ))}
-
-                  {/* Walls Cut */}
-                  {sliced2D?.cut_paths.map((p, pIdx) => (
-                    <path
-                      key={`s-cut-${pIdx}`}
-                      d={p.d}
-                      stroke="#0f172a"
-                      strokeWidth="0.07"
-                      fill="#cbd5e1"
-                    />
-                  ))}
-
-                  {/* Projections */}
-                  {sliced2D?.projection_paths.map((p, pIdx) => (
-                    <path
-                      key={`s-proj-${pIdx}`}
-                      d={p.d}
-                      stroke="#334155"
-                      strokeWidth="0.03"
-                      fill="none"
-                    />
-                  ))}
-
-                  {/* Swings */}
-                  {sliced2D?.swing_paths.map((p, pIdx) => (
-                    <path
-                      key={`s-swing-${pIdx}`}
-                      d={p.d}
-                      stroke="#2563eb"
-                      strokeWidth="0.025"
-                      fill="none"
-                    />
-                  ))}
-                </g>
-
-                {/* ========================================================= */}
-                {/* AUTOMATIC VIEW TITLE BAR BELOW VIEWPORT                   */}
-                {/* Displays: View Name, Scale, Detail/Sheet Number Bubble    */}
-                {/* ========================================================= */}
-                <g
-                  transform={`translate(20, ${vp.height + 25})`}
-                  className="cursor-move"
-                  onPointerDown={(e) => handlePointerDownVp(e, vp.id, vp.x, vp.y)}
-                >
-                  {/* Detail Bubble */}
-                  <circle cx="12" cy="0" r="12" fill="#0f172a" />
+                  </foreignObject>
+                ) : (
                   <text
-                    x="12"
-                    y="4"
+                    x="0"
+                    y="66"
+                    fill="#0f172a"
+                    fontSize="14"
+                    fontWeight="bold"
+                    className="cursor-pointer hover:fill-[#0284c7] transition-colors"
+                    onClick={() => startEdit('title', sheet.sheetTitle)}
+                  >
+                    {sheet.sheetTitle} ✎
+                  </text>
+                )}
+
+                <line x1="0" y1="80" x2="226" y2="80" stroke="#e2e8f0" strokeWidth="1" />
+
+                <text x="0" y="98" fill="#64748b" fontSize="8" fontWeight="bold">
+                  DATE / DRAWN BY
+                </text>
+                {editingField === 'drawnBy' ? (
+                  <foreignObject x="0" y="100" width="226" height="24">
+                    <input
+                      type="text"
+                      value={tempValue}
+                      autoFocus
+                      onChange={(e) => setTempValue(e.target.value)}
+                      onBlur={commitEdit}
+                      onKeyDown={(e) => e.key === 'Enter' && commitEdit()}
+                      className="w-full h-full px-1.5 py-0.5 border border-[#0284c7] rounded bg-white text-xs font-mono outline-none shadow-xs"
+                    />
+                  </foreignObject>
+                ) : (
+                  <text
+                    x="0"
+                    y="114"
+                    fill="#0f172a"
+                    fontSize="11"
+                    fontFamily="JetBrains Mono, monospace"
+                    className="cursor-pointer hover:fill-[#0284c7]"
+                    onClick={() => startEdit('drawnBy', sheet.drawnBy || 'BIMWorks Architect')}
+                  >
+                    {sheetDate} | {sheet.drawnBy || 'BIMWorks Architect'} ✎
+                  </text>
+                )}
+
+                <line x1="0" y1="128" x2="226" y2="128" stroke="#e2e8f0" strokeWidth="1" />
+
+                <text x="0" y="146" fill="#64748b" fontSize="8" fontWeight="bold">
+                  SCALE / GEOREFERENCE
+                </text>
+                <text x="0" y="162" fill="#0f172a" fontSize="11" fontFamily="JetBrains Mono, monospace">
+                  {activeScale} ({crsCode})
+                </text>
+              </g>
+
+              {/* Architectural Legal Notice & Professional Disclaimer */}
+              <g transform="translate(15, 305)">
+                <line x1="0" y1="0" x2="226" y2="0" stroke="#0f172a" strokeWidth="1.5" />
+                <text x="0" y="16" fill="#0f172a" fontSize="8" fontWeight="bold" letterSpacing="0.5">
+                  NOTICE &amp; LEGAL DISCLAIMER
+                </text>
+                <text x="0" y="30" fill="#b91c1c" fontSize="6.5" fontWeight="bold">
+                  DO NOT SCALE DRAWINGS
+                </text>
+                <text x="0" y="42" fill="#64748b" fontSize="5.5">
+                  All dimensions and conditions must be verified on site
+                </text>
+                <text x="0" y="52" fill="#64748b" fontSize="5.5">
+                  prior to ordering materials or commencing fabrication/work.
+                </text>
+                <text x="0" y="64" fill="#64748b" fontSize="5.5">
+                  Drawings and digital models are instruments of service
+                </text>
+                <text x="0" y="74" fill="#64748b" fontSize="5.5">
+                  and uncertified drafts. They do not constitute stamped
+                </text>
+                <text x="0" y="84" fill="#64748b" fontSize="5.5">
+                  architectural or engineering contract documents unless
+                </text>
+                <text x="0" y="94" fill="#64748b" fontSize="5.5">
+                  signed &amp; sealed by a registered design professional.
+                </text>
+                <line x1="0" y1="106" x2="226" y2="106" stroke="#e2e8f0" strokeWidth="1" />
+
+                {/* Revisions Table */}
+                <text x="0" y="122" fill="#0f172a" fontSize="8" fontWeight="bold" letterSpacing="0.5">
+                  REVISIONS
+                </text>
+                <rect x="0" y="128" width="226" height="16" fill="#f1f5f9" stroke="#cbd5e1" strokeWidth="0.5" />
+                <text x="6" y="139" fill="#475569" fontSize="6.5" fontWeight="bold">NO.</text>
+                <text x="35" y="139" fill="#475569" fontSize="6.5" fontWeight="bold">DESCRIPTION</text>
+                <text x="180" y="139" fill="#475569" fontSize="6.5" fontWeight="bold">DATE</text>
+                <rect x="0" y="144" width="226" height="16" fill="#ffffff" stroke="#cbd5e1" strokeWidth="0.5" />
+                <text x="10" y="155" fill="#0f172a" fontSize="6.5">1</text>
+                <text x="35" y="155" fill="#0f172a" fontSize="6.5">INITIAL BIM ISSUE</text>
+                <text x="175" y="155" fill="#0f172a" fontSize="6.5">2026-10-15</text>
+              </g>
+
+              {/* Sheet Number Huge Callout Box at Bottom */}
+              <g transform={`translate(0, ${sheetHeight - 148})`}>
+                <rect x="0" y="0" width="256" height="100" fill="#0f172a" />
+                <text x="128" y="24" textAnchor="middle" fill="#94a3b8" fontSize="9" fontWeight="bold">
+                  SHEET NUMBER (click to edit)
+                </text>
+                {editingField === 'number' ? (
+                  <foreignObject x="30" y="32" width="196" height="48">
+                    <input
+                      type="text"
+                      value={tempValue}
+                      autoFocus
+                      onChange={(e) => setTempValue(e.target.value)}
+                      onBlur={commitEdit}
+                      onKeyDown={(e) => e.key === 'Enter' && commitEdit()}
+                      className="w-full h-full text-center px-1 py-0.5 border border-[#38bdf8] rounded bg-[#1e293b] text-2xl font-mono font-bold text-white outline-none shadow-xs"
+                    />
+                  </foreignObject>
+                ) : (
+                  <text
+                    x="128"
+                    y="72"
                     textAnchor="middle"
                     fill="#ffffff"
-                    fontSize="11"
-                    fontWeight="bold"
+                    fontSize="40"
+                    fontWeight="900"
+                    fontFamily="JetBrains Mono, monospace"
+                    className="cursor-pointer hover:fill-[#38bdf8] transition-colors"
+                    onClick={() => startEdit('number', sheet.sheetNumber)}
                   >
-                    {index + 1}
+                    {sheet.sheetNumber}
                   </text>
-
-                  {/* View Name & Scale Line */}
-                  <text x="32" y="-2" fill="#0f172a" fontSize="12" fontWeight="bold">
-                    {viewName}
-                  </text>
-                  <text x="32" y="11" fill="#64748b" fontSize="9" fontFamily="JetBrains Mono, monospace">
-                    Scale: 1/4" = 1'-0"
-                  </text>
-                  <line x1="30" y1="18" x2={vp.width - 40} y2="18" stroke="#0f172a" strokeWidth="1.2" />
-                </g>
+                )}
               </g>
-            );
-          })}
-        </svg>
+            </g>
+
+            {/* ========================================================= */}
+            {/* VIEWPORTS PLACEMENT ON SHEET                              */}
+            {/* Moveable viewports with title bars, scale picker & delete */}
+            {/* ========================================================= */}
+            {sheet.viewports.map((vp, index) => {
+              const viewDef = views.find((v) => v.id === vp.viewId);
+              const viewName = viewDef?.name || 'Floor Plan: Level 1';
+              const vpScale = vp.scaleFactor ?? 20;
+
+              return (
+                <g
+                  key={vp.id}
+                  transform={`translate(${vp.x}, ${vp.y})`}
+                  className="group viewport-element"
+                >
+                  {/* Viewport Crop Border & Drag Handle */}
+                  <rect
+                    x="0"
+                    y="0"
+                    width={vp.width}
+                    height={vp.height}
+                    fill="#ffffff"
+                    stroke="#94a3b8"
+                    strokeWidth="1"
+                    strokeDasharray="4, 2"
+                    className="group-hover:stroke-[#0284c7] cursor-move"
+                    onPointerDown={(e) => handlePointerDownVp(e, vp.id, vp.x, vp.y)}
+                  />
+
+                  {/* Viewport Action Bar on Hover (Scale Picker + Remove) */}
+                  <foreignObject x={vp.width - 150} y={6} width="144" height="28" className="opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex items-center space-x-1.5 justify-end">
+                      <select
+                        value={vpScale}
+                        onChange={(e) => updateViewportScale(vp.id, Number(e.target.value), sheet.id)}
+                        className="h-6 px-1.5 py-0 bg-white/95 text-[#0f172a] text-[10px] font-mono font-medium rounded border border-slate-300 shadow-xs outline-none cursor-pointer hover:border-[#0284c7]"
+                        title="Viewport Scale"
+                        onClick={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => e.stopPropagation()}
+                      >
+                        {STANDARD_SCALES.map((sc) => (
+                          <option key={sc.scaleFactor} value={sc.scaleFactor}>
+                            {sc.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeViewportFromSheet(vp.id, sheet.id);
+                        }}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        title="Remove Viewport from Sheet"
+                        className="w-6 h-6 bg-red-100 hover:bg-red-200 text-red-600 rounded flex items-center justify-center shadow-xs cursor-pointer"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </foreignObject>
+
+                  {/* Embedded 2D Vector Plan Linework */}
+                  <g transform={`translate(180, 220) scale(${vpScale}, -${vpScale})`}>
+                    {/* Slabs */}
+                    {sliced2D?.slabs.map((slab) => (
+                      <path
+                        key={`s-slab-${slab.guid}`}
+                        d={slab.d}
+                        stroke="#cbd5e1"
+                        strokeWidth="0.05"
+                        fill="#f8fafc"
+                      />
+                    ))}
+
+                    {/* Walls Cut */}
+                    {sliced2D?.cut_paths.map((p, pIdx) => (
+                      <path
+                        key={`s-cut-${pIdx}`}
+                        d={p.d}
+                        stroke="#0f172a"
+                        strokeWidth="0.07"
+                        fill="#cbd5e1"
+                      />
+                    ))}
+
+                    {/* Projections */}
+                    {sliced2D?.projection_paths.map((p, pIdx) => (
+                      <path
+                        key={`s-proj-${pIdx}`}
+                        d={p.d}
+                        stroke="#334155"
+                        strokeWidth="0.03"
+                        fill="none"
+                      />
+                    ))}
+
+                    {/* Swings */}
+                    {sliced2D?.swing_paths.map((p, pIdx) => (
+                      <path
+                        key={`s-swing-${pIdx}`}
+                        d={p.d}
+                        stroke="#2563eb"
+                        strokeWidth="0.025"
+                        fill="none"
+                      />
+                    ))}
+                  </g>
+
+                  {/* ========================================================= */}
+                  {/* AUTOMATIC VIEW TITLE BAR BELOW VIEWPORT                   */}
+                  {/* Displays: View Name, Scale, Detail/Sheet Number Bubble    */}
+                  {/* ========================================================= */}
+                  <g
+                    transform={`translate(20, ${vp.height + 25})`}
+                    className="cursor-move"
+                    onPointerDown={(e) => handlePointerDownVp(e, vp.id, vp.x, vp.y)}
+                  >
+                    {/* Detail Bubble */}
+                    <circle cx="12" cy="0" r="12" fill="#0f172a" />
+                    <text
+                      x="12"
+                      y="4"
+                      textAnchor="middle"
+                      fill="#ffffff"
+                      fontSize="11"
+                      fontWeight="bold"
+                    >
+                      {index + 1}
+                    </text>
+
+                    {/* View Name & Scale Line */}
+                    <text x="32" y="-2" fill="#0f172a" fontSize="12" fontWeight="bold">
+                      {viewName}
+                    </text>
+                    <text x="32" y="11" fill="#64748b" fontSize="9" fontFamily="JetBrains Mono, monospace">
+                      Scale: {getScaleLabel(vpScale)}
+                    </text>
+                    <line x1="30" y1="18" x2={vp.width - 40} y2="18" stroke="#0f172a" strokeWidth="1.2" />
+                  </g>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
       </div>
     </div>
   );
 };
+

@@ -7460,6 +7460,7 @@ class BimModelManager:
         sheet_id: Optional[str] = None,
         drawn_by: str = "BIMWorks Architect",
         date: Optional[str] = None,
+        orientation: str = "landscape",
     ) -> Dict[str, Any]:
         """
         Creates a new sheet in the model.
@@ -7484,6 +7485,7 @@ class BimModelManager:
             "sheet_number": num_clean,
             "sheet_title": sheet_title.strip() if sheet_title else "Unnamed Sheet",
             "paper_size": paper_size,
+            "orientation": orientation,
             "project_name": self.project_name,
             "date": date or "2026-10-13",
             "drawn_by": drawn_by,
@@ -7535,6 +7537,20 @@ class BimModelManager:
             val = updates.get("paper_size") if "paper_size" in updates else updates.get("paperSize")
             if val is not None:
                 s["paper_size"] = str(val).strip()
+        if "orientation" in updates:
+            val = updates.get("orientation")
+            if val is not None:
+                s["orientation"] = str(val).strip().lower()
+        if "viewports" in updates:
+            normalized_vps = []
+            for vp in updates["viewports"]:
+                vp_clean = dict(vp)
+                if "scaleFactor" in vp_clean and "scale_factor" not in vp_clean:
+                    vp_clean["scale_factor"] = vp_clean["scaleFactor"]
+                if "viewId" in vp_clean and "view_id" not in vp_clean:
+                    vp_clean["view_id"] = vp_clean["viewId"]
+                normalized_vps.append(vp_clean)
+            s["viewports"] = normalized_vps
         self.sheets_rev += 1
         return s
 
@@ -7651,6 +7667,7 @@ class BimModelManager:
             item["paperSize"] = item.get("paper_size")
             item["projectName"] = item.get("project_name")
             item["drawnBy"] = item.get("drawn_by")
+            item["orientation"] = item.get("orientation", "landscape")
             item["isPlaceholder"] = item.get("is_placeholder", False)
             vps = []
             for vp in item.get("viewports", []):

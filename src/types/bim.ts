@@ -255,15 +255,19 @@ export interface SheetViewport {
   scaleFactor: number;
 }
 
+export type SheetPaperSize = 'ARCH_D' | 'ARCH_C' | 'ISO_A1' | 'ANSI_D' | 'TABLOID' | 'LETTER';
+
 export interface SheetDefinition {
   id: string;
   sheetNumber: string;
   sheetTitle: string;
-  paperSize: 'ARCH_D' | 'ARCH_C' | 'ISO_A1';
+  paperSize: SheetPaperSize;
+  orientation?: 'landscape' | 'portrait';
   viewports: SheetViewport[];
   projectName: string;
   date: string;
   drawnBy: string;
+  isPlaceholder?: boolean;
 }
 
 export interface TemporaryDimension {

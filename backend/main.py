@@ -234,6 +234,7 @@ class SheetCreateRequest(BaseModel):
     sheet_id: Optional[str] = None
     drawn_by: Optional[str] = "BIMWorks Architect"
     date: Optional[str] = None
+    orientation: Optional[str] = "landscape"
 
 
 class ViewportAddRequest(BaseModel):

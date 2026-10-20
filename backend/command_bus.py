@@ -276,6 +276,7 @@ class SheetCreateParams(BaseModel):
     sheet_id: Optional[str] = Field(default=None, description="Optional explicit sheet ID")
     drawn_by: str = Field(default="BIMWorks Architect", description="Drawn by author string")
     date: Optional[str] = Field(default=None, description="Authored date string")
+    orientation: str = Field(default="landscape", description="Paper orientation: landscape or portrait")
 
     @model_validator(mode="before")
     @classmethod
@@ -981,6 +982,7 @@ class CommandBusEngine:
                 sheet_id=p.sheet_id,
                 drawn_by=p.drawn_by,
                 date=p.date,
+                orientation=p.orientation,
             )
             return {"status": "created", "sheet": sheet, "sheet_id": sheet["id"]}
 
@@ -1719,6 +1721,7 @@ class CommandBusEngine:
                 drawn_by=p.drawn_by,
                 is_placeholder=p.is_placeholder,
                 sheet_id=p.sheet_id,
+                orientation=p.orientation,
             )
             sid = sheet["id"]
             def undo_fn(mgr):
@@ -1731,6 +1734,7 @@ class CommandBusEngine:
                     drawn_by=p.drawn_by,
                     is_placeholder=p.is_placeholder,
                     sheet_id=sid,
+                    orientation=p.orientation,
                 )
             return CommandMemento(cmd_name, undo_fn, redo_fn), {"status": "created", "sheet": sheet, "sheet_id": sid}
 

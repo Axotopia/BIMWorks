@@ -9,6 +9,7 @@ import {
   Sliced2DData,
   ViewDefinition,
   SheetDefinition,
+  SheetPaperSize,
   TemporaryDimension,
   SheetViewport,
   ParametricConstraint,
@@ -660,9 +661,10 @@ interface BimStoreState {
   modifyPolygonVertex: (guid: string, vertexIndex: number, point: [number, number]) => Promise<void>;
   moveReference: (source: any, target: any, axis?: string) => Promise<void>;
   updateGeoreferencing: (data: BimStoreState['georeference']) => Promise<void>;
-  createSheet: (sheetNumber: string, sheetTitle: string, paperSize?: 'ARCH_D' | 'ARCH_C' | 'ISO_A1') => Promise<void>;
+  createSheet: (sheetNumber: string, sheetTitle: string, paperSize?: SheetPaperSize, orientation?: 'landscape' | 'portrait') => Promise<void>;
   deleteSheet: (sheetId: string) => Promise<void>;
   updateSheet: (sheetId: string, updates: Partial<SheetDefinition>) => Promise<void>;
+  updateViewportScale: (viewportId: string, scaleFactor: number, sheetId?: string) => Promise<void>;
   addViewportToSheet: (sheetId: string, viewId: string, x: number, y: number) => Promise<void>;
   removeViewportFromSheet: (viewportId: string, sheetId?: string) => Promise<void>;
   moveViewport: (viewportId: string, x: number, y: number, sheetId?: string) => Promise<void>;
@@ -2493,16 +2495,40 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     }
   },
 
-  createSheet: async (sheetNumber, sheetTitle, paperSize = 'ARCH_D') => {
+  createSheet: async (sheetNumber, sheetTitle, paperSize = 'ANSI_D', orientation = 'landscape') => {
     try {
       await get().dispatchTransaction('createSheet', {
         sheet_number: sheetNumber,
         sheet_title: sheetTitle,
         paper_size: paperSize,
+        orientation,
       }, `Create Sheet ${sheetNumber}`);
     } catch (e) {
       set({ statusMessage: `Failed to create sheet: ${failureMessage(e)}` });
       console.error('Failed to create sheet', e);
+      throw e;
+    }
+  },
+
+  updateViewportScale: async (viewportId, scaleFactor, sheetId) => {
+    try {
+      const state = get();
+      const sId = sheetId || state.activeSheetId;
+      if (!sId) return;
+      const targetSheet = state.sheets.find((s) => s.id === sId);
+      if (!targetSheet) return;
+      const updatedViewports = (targetSheet.viewports || []).map((vp) =>
+        vp.id === viewportId ? { ...vp, scaleFactor } : vp
+      );
+      set({
+        sheets: state.sheets.map((s) =>
+          s.id === sId ? { ...s, viewports: updatedViewports } : s
+        ),
+      });
+      await get().updateSheet(sId, { viewports: updatedViewports } as any);
+    } catch (e) {
+      set({ statusMessage: `Failed to update viewport scale: ${failureMessage(e)}` });
+      console.error('Failed to update viewport scale', e);
       throw e;
     }
   },
