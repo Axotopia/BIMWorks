@@ -4,7 +4,7 @@ import {
   DockviewReadyEvent,
   IDockviewPanelProps,
 } from 'dockview-react';
-import { useBimStore, TILE_WINDOWS_EVENT, ZOOM_EXTENTS_EVENT } from '../../store/useBimStore';
+import { useBimStore, TILE_WINDOWS_EVENT, TAB_VIEWS_EVENT, ZOOM_EXTENTS_EVENT } from '../../store/useBimStore';
 import { ProjectBrowser } from '../browser/ProjectBrowser';
 import { PropertiesPalette } from '../properties/PropertiesPalette';
 import { Viewport3D } from '../viewport/Viewport3D';
@@ -172,34 +172,57 @@ export const Workspace: React.FC = () => {
   }, [activeSheetId]);
 
   useEffect(() => {
-    let isTiled = false;
     const handleTile = () => {
       const api = dockviewApiRef.current;
       if (!api) return;
-      const planPanel = api.getPanel('view-level-1');
       const threeDPanel = api.getPanel('view-3d');
-      if (planPanel && threeDPanel) {
-        if (!isTiled) {
-          planPanel.api.moveTo({
-            direction: 'right',
-            referencePanel: threeDPanel,
-          });
-          isTiled = true;
-        } else {
-          planPanel.api.moveTo({
-            referencePanel: threeDPanel,
-          });
-          isTiled = false;
-        }
+      // Find the active 2D view or sheet, or fallback to view-level-1
+      const active2dId =
+        activeViewId && activeViewId !== 'view-3d'
+          ? activeViewId
+          : activeSheetId || 'view-level-1';
+      const secondPanel = api.getPanel(active2dId) || api.getPanel('view-level-1');
+      if (secondPanel && threeDPanel) {
+        secondPanel.api.moveTo({
+          direction: 'right',
+          referencePanel: threeDPanel,
+        });
         setTimeout(() => {
           window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT));
         }, 100);
       }
     };
 
+    const handleTabViews = () => {
+      const api = dockviewApiRef.current;
+      if (!api) return;
+      const threeDPanel = api.getPanel('view-3d');
+      if (!threeDPanel) return;
+      // Move open plan and sheet panels back into the central tab group
+      const allPanelIds = ['view-level-1', 'view-level-2', 'view-roof', 'sheet-a101', 'sheet-a201'];
+      if (activeViewId && !allPanelIds.includes(activeViewId)) {
+        allPanelIds.push(activeViewId);
+      }
+      allPanelIds.forEach((pId) => {
+        const p = api.getPanel(pId);
+        if (p && p !== threeDPanel) {
+          p.api.moveTo({
+            referencePanel: threeDPanel,
+          });
+        }
+      });
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT));
+      }, 100);
+    };
+
     window.addEventListener(TILE_WINDOWS_EVENT, handleTile);
-    return () => window.removeEventListener(TILE_WINDOWS_EVENT, handleTile);
-  }, []);
+    window.addEventListener(TAB_VIEWS_EVENT, handleTabViews);
+    return () => {
+      window.removeEventListener(TILE_WINDOWS_EVENT, handleTile);
+      window.removeEventListener(TAB_VIEWS_EVENT, handleTabViews);
+    };
+  }, [activeViewId, activeSheetId]);
 
   return (
     <div className="flex-1 w-full h-full overflow-hidden dockview-theme-dark">

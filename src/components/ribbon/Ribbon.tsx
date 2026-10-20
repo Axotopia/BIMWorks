@@ -33,7 +33,7 @@ import {
   Maximize2,
   Grid,
 } from 'lucide-react';
-import { useBimStore } from '../../store/useBimStore';
+import { useBimStore, TILE_WINDOWS_EVENT, TAB_VIEWS_EVENT } from '../../store/useBimStore';
 import { ActiveTool } from '../../types/bim';
 import { isToolImplemented } from '../../interaction/toolCaptions';
 import { OptionsBar } from '../optionsbar/OptionsBar';
@@ -1033,8 +1033,20 @@ export const Ribbon: React.FC = () => {
 
             <RibbonPanel title="Windows">
               <div className="flex flex-col justify-center space-y-0.5">
-                {renderSmallButton('Tile Views', <Grid size={13} className="text-[#0284c7]" />, undefined, 'Tile Views', 'WT')}
-                {renderSmallButton('Tab Views', <Square size={13} className="text-[#9333ea]" />, undefined, 'Tab Views', 'TW')}
+                {renderSmallButton(
+                  'Tile Views',
+                  <Grid size={13} className="text-[#0284c7]" />,
+                  () => window.dispatchEvent(new CustomEvent(TILE_WINDOWS_EVENT)),
+                  undefined,
+                  'Tile Windows (WT)'
+                )}
+                {renderSmallButton(
+                  'Tab Views',
+                  <Square size={13} className="text-[#9333ea]" />,
+                  () => window.dispatchEvent(new CustomEvent(TAB_VIEWS_EVENT)),
+                  undefined,
+                  'Tab Views (TW)'
+                )}
               </div>
             </RibbonPanel>
           </>

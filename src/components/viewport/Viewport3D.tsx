@@ -8,6 +8,8 @@ import { findSnapCandidate, SnapSegment, SnapCandidate } from '../../interaction
 import { gripsFor, computeGripDragCommand, Grip } from '../../interaction/grips';
 import { WallFaceHit, detectWallFaceHover, computePushPullCommand } from '../../interaction/pushpull';
 import { ValueControlBox } from './ValueControlBox';
+import { ViewCube, ViewCubeHandle } from './ViewCube';
+import { SurveyPointOverlay } from './SurveyPointOverlay';
 import {
   getPlaneBasis,
   getWorkingPlane,
@@ -106,6 +108,8 @@ function offsetAlongBaseline(
 export const Viewport3D: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const viewCubeRef = useRef<ViewCubeHandle>(null);
+  const [cursorWorldPoint, setCursorWorldPoint] = useState<[number, number, number] | null>(null);
 
   /** Set while a placement mousedown is completing, so the click that follows the
    *  same gesture does not also re-select the host. */
@@ -588,6 +592,7 @@ export const Viewport3D: React.FC = () => {
       if (cameraRef.current) {
         renderer.render(scene, cameraRef.current);
       }
+      viewCubeRef.current?.update();
     };
     animate();
 
@@ -1402,6 +1407,24 @@ export const Viewport3D: React.FC = () => {
       return;
     }
 
+    // Update cursor world coordinates on XY ground plane
+    if (!isNavigatingRef.current.mode && cameraRef.current && canvasRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        const mouse = new THREE.Vector2(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          -((e.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, cameraRef.current);
+        const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+        const pt = new THREE.Vector3();
+        if (raycaster.ray.intersectPlane(groundPlane, pt)) {
+          setCursorWorldPoint([pt.x, pt.y, pt.z]);
+        }
+      }
+    }
+
     // Wall creation preview
     if (activeTool === 'WA' && wallStartPoint && cameraRef.current) {
       const rect = canvasRef.current?.getBoundingClientRect();
@@ -1553,6 +1576,7 @@ export const Viewport3D: React.FC = () => {
 
   /** A pointer that left the viewport must not leave a gesture latched. */
   const handlePointerLeave = () => {
+    setCursorWorldPoint(null);
     if (activeDragGripRef.current) {
       endDrag(false);
       activeDragGripRef.current = null;
@@ -1724,6 +1748,26 @@ export const Viewport3D: React.FC = () => {
       onContextMenu={handleContextMenu}
     >
       <canvas ref={canvasRef} className="w-full h-full block" />
+
+      {/* Revit Navigation ViewCube & Corner Triad */}
+      <ViewCube
+        ref={viewCubeRef}
+        cameraRef={cameraRef}
+        targetRef={targetRef}
+        sphericalRef={sphericalRef}
+        updateCameraPosition={updateCameraPosition}
+        fitToExtents={fitToExtents}
+        corner="top-right"
+        showAxes={true}
+      />
+
+      {/* Revit Survey Point & Project Base Point Overlay + HUD */}
+      <SurveyPointOverlay
+        cameraRef={cameraRef}
+        canvasRef={canvasRef}
+        cameraTick={cameraTick}
+        cursorWorldPoint={cursorWorldPoint}
+      />
 
       {/* WebGL unavailable: explain it rather than showing an empty dark panel. The
           other panels (2D plan, browser, properties) keep working. */}

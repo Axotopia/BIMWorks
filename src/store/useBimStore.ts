@@ -57,6 +57,7 @@ const API_BASE = '/api';
  */
 export const ZOOM_EXTENTS_EVENT = 'bimworks-zoom-extents';
 export const TILE_WINDOWS_EVENT = 'bimworks-tile-windows';
+export const TAB_VIEWS_EVENT = 'bimworks-tab-views';
 
 /**
  * UI-P0-10/UI-P0-11: interaction state that lives inside a viewport component
@@ -1213,7 +1214,13 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       RO: () => get().setActiveTool('RO', 'Model'),
       SC: () => get().setActiveTool('SC', 'Model'),
       GP: () => get().setActiveTool('GP', 'Model'),
-      TW: () => get().tagSelectedElement('IfcWall'),
+      TW: () => {
+        if (get().selectedGuid || get().selectedGuids.length > 0) {
+          get().tagSelectedElement('IfcWall');
+        } else {
+          window.dispatchEvent(new CustomEvent(TAB_VIEWS_EVENT));
+        }
+      },
       TF: () => get().tagSelectedElement('IfcSlab'),
       TC: () => get().tagSelectedElement('IfcColumn'),
       PW: () => {
