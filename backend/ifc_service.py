@@ -7491,6 +7491,7 @@ class BimModelManager:
             "drawn_by": drawn_by,
             "is_placeholder": is_placeholder,
             "viewports": [],
+            "annotations": [],
         }
         self.sheets[sid] = new_sheet
         self.sheets_rev += 1
@@ -7510,7 +7511,7 @@ class BimModelManager:
 
     def update_sheet(self, sheet_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Updates metadata of an existing sheet (e.g. sheet_title, sheet_number, drawn_by, date).
+        Updates metadata of an existing sheet (e.g. sheet_title, sheet_number, drawn_by, date, annotations).
         """
         if sheet_id not in self.sheets:
             raise ValueError(f"Sheet '{sheet_id}' not found")
@@ -7551,8 +7552,71 @@ class BimModelManager:
                     vp_clean["view_id"] = vp_clean["viewId"]
                 normalized_vps.append(vp_clean)
             s["viewports"] = normalized_vps
+        if "annotations" in updates:
+            s["annotations"] = copy.deepcopy(updates["annotations"])
         self.sheets_rev += 1
         return s
+
+    def add_sheet_annotation(self, sheet_id: str, annotation: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Adds a sheet-space annotation (text, leader, dimension, line) to a sheet.
+        """
+        if sheet_id not in self.sheets:
+            raise ValueError(f"Sheet '{sheet_id}' not found")
+        s = self.sheets[sheet_id]
+        if "annotations" not in s:
+            s["annotations"] = []
+        anno_id = annotation.get("id") or f"anno-{uuid.uuid4().hex[:8]}"
+        new_anno = {
+            "id": anno_id,
+            "kind": annotation.get("kind", "text"),
+            "layer_id": annotation.get("layer_id") or annotation.get("layerId", "layer-anno-note"),
+            "points": annotation.get("points", [[100, 100]]),
+            "text": annotation.get("text", ""),
+            "style_id": annotation.get("style_id") or annotation.get("styleId"),
+        }
+        s["annotations"].append(new_anno)
+        self.sheets_rev += 1
+        return new_anno
+
+    def update_sheet_annotation(self, sheet_id: str, annotation_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Updates an existing sheet annotation.
+        """
+        if sheet_id not in self.sheets:
+            raise ValueError(f"Sheet '{sheet_id}' not found")
+        s = self.sheets[sheet_id]
+        for anno in s.get("annotations", []):
+            if anno["id"] == annotation_id:
+                if "text" in updates:
+                    anno["text"] = updates["text"]
+                if "points" in updates:
+                    anno["points"] = updates["points"]
+                if "layer_id" in updates:
+                    anno["layer_id"] = updates["layer_id"]
+                elif "layerId" in updates:
+                    anno["layer_id"] = updates["layerId"]
+                if "style_id" in updates:
+                    anno["style_id"] = updates["style_id"]
+                elif "styleId" in updates:
+                    anno["style_id"] = updates["styleId"]
+                self.sheets_rev += 1
+                return anno
+        raise ValueError(f"Annotation '{annotation_id}' not found on sheet '{sheet_id}'")
+
+    def delete_sheet_annotation(self, sheet_id: str, annotation_id: str) -> bool:
+        """
+        Deletes a sheet annotation from a sheet.
+        """
+        if sheet_id not in self.sheets:
+            raise ValueError(f"Sheet '{sheet_id}' not found")
+        s = self.sheets[sheet_id]
+        initial_len = len(s.get("annotations", []))
+        s["annotations"] = [a for a in s.get("annotations", []) if a["id"] != annotation_id]
+        if len(s["annotations"]) == initial_len:
+            raise ValueError(f"Annotation '{annotation_id}' not found on sheet '{sheet_id}'")
+        self.sheets_rev += 1
+        return True
 
     def convert_placeholder_sheet(self, sheet_id: str) -> Dict[str, Any]:
         """Converts a placeholder sheet into a real printable sheet (SPEC §13.2)."""
@@ -7676,6 +7740,15 @@ class BimModelManager:
                 v_copy["scaleFactor"] = v_copy.get("scale_factor", 1.0)
                 vps.append(v_copy)
             item["viewports"] = vps
+
+            annos = []
+            for an in item.get("annotations", []):
+                an_copy = copy.deepcopy(an)
+                an_copy["layerId"] = an_copy.get("layer_id")
+                an_copy["styleId"] = an_copy.get("style_id")
+                annos.append(an_copy)
+            item["annotations"] = annos
+
             res.append(item)
         return res
 

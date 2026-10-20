@@ -12,6 +12,11 @@ import {
   SheetPaperSize,
   TemporaryDimension,
   SheetViewport,
+  SheetAnnotation,
+  DraftingLayer,
+  LayerGroup,
+  TextStyle,
+  DimensionStyle,
   ParametricConstraint,
   WallJoinState,
   CommandPayload,
@@ -21,6 +26,12 @@ import {
   SketchLine,
   SketchDrawTool,
 } from '../types/bim';
+import {
+  DEFAULT_DRAFTING_LAYERS,
+  DEFAULT_LAYER_GROUPS,
+  DEFAULT_TEXT_STYLES,
+  DEFAULT_DIMENSION_STYLES,
+} from '../components/sheets/annotationStyles';
 import { UnitSystem, formatLength, tryParseLength } from '../utils/units';
 import {
   InteractionSessionState,
@@ -502,6 +513,17 @@ interface BimStoreState {
   sheets: SheetDefinition[];
   activeSheetId: string;
 
+  // Sheet Drafting Layers & Annotations (Phase 2)
+  draftingLayers: DraftingLayer[];
+  layerGroups: LayerGroup[];
+  textStyles: TextStyle[];
+  dimensionStyles: DimensionStyle[];
+  activeAnnotationTool: 'select' | 'text' | 'leader' | 'dimension' | 'line';
+  activeLayerId: string;
+  activeTextStyleId: string;
+  activeDimensionStyleId: string;
+  selectedAnnotationId: string | null;
+
   // Model Data
   rev?: number;
   docId?: string;
@@ -671,6 +693,21 @@ interface BimStoreState {
   exportSheetPdf: (sheetId: string, svgContent: string) => Promise<void>;
   exportBatchPdf: (sheetsData: Array<{ sheetName: string; svgContent: string }>, filename?: string) => Promise<void>;
   exportIfc: () => Promise<void>;
+
+  // Sheet Drafting & Annotation Actions (Phase 2)
+  setActiveAnnotationTool: (tool: 'select' | 'text' | 'leader' | 'dimension' | 'line') => void;
+  setActiveLayerId: (id: string) => void;
+  setActiveTextStyleId: (id: string) => void;
+  setActiveDimensionStyleId: (id: string) => void;
+  setSelectedAnnotationId: (id: string | null) => void;
+  addSheetAnnotation: (sheetId: string, annotation: Omit<SheetAnnotation, 'id'>) => Promise<void>;
+  updateSheetAnnotation: (sheetId: string, annotationId: string, updates: Partial<SheetAnnotation>) => Promise<void>;
+  removeSheetAnnotation: (sheetId: string, annotationId: string) => Promise<void>;
+  addDraftingLayer: (layer: DraftingLayer) => void;
+  updateDraftingLayer: (layerId: string, updates: Partial<DraftingLayer>) => void;
+  deleteDraftingLayer: (layerId: string) => void;
+  addLayerGroup: (group: LayerGroup) => void;
+  updateLayerGroup: (groupId: string, updates: Partial<LayerGroup>) => void;
 
   // Wall & Modeling Tool Options (Options Bar)
   wallHeight: number;
@@ -918,6 +955,15 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     },
   ],
   activeSheetId: 'sheet-a101',
+  draftingLayers: DEFAULT_DRAFTING_LAYERS,
+  layerGroups: DEFAULT_LAYER_GROUPS,
+  textStyles: DEFAULT_TEXT_STYLES,
+  dimensionStyles: DEFAULT_DIMENSION_STYLES,
+  activeAnnotationTool: 'select',
+  activeLayerId: 'layer-anno-note',
+  activeTextStyleId: 'style-text-standard',
+  activeDimensionStyleId: 'style-dim-arch-tick',
+  selectedAnnotationId: null,
 
   rev: undefined,
   docId: undefined,
@@ -2679,6 +2725,105 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       set({ statusMessage: `Export IFC failed: ${failureMessage(e)}` });
       console.error('Failed to export IFC', e);
     }
+  },
+
+  // Sheet Drafting & Annotation Actions (Phase 2)
+  setActiveAnnotationTool: (tool) => set({ activeAnnotationTool: tool }),
+  setActiveLayerId: (id) => set({ activeLayerId: id }),
+  setActiveTextStyleId: (id) => set({ activeTextStyleId: id }),
+  setActiveDimensionStyleId: (id) => set({ activeDimensionStyleId: id }),
+  setSelectedAnnotationId: (id) => set({ selectedAnnotationId: id }),
+
+  addSheetAnnotation: async (sheetId, annotation) => {
+    try {
+      const state = get();
+      const sId = sheetId || state.activeSheetId;
+      const targetSheet = state.sheets.find((s) => s.id === sId);
+      if (!targetSheet) return;
+      const newAnno: SheetAnnotation = {
+        ...annotation,
+        id: `anno-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      };
+      const updatedAnnos = [...(targetSheet.annotations || []), newAnno];
+      set({
+        sheets: state.sheets.map((s) => (s.id === sId ? { ...s, annotations: updatedAnnos } : s)),
+        selectedAnnotationId: newAnno.id,
+      });
+      await get().updateSheet(sId, { annotations: updatedAnnos } as any);
+    } catch (e) {
+      set({ statusMessage: `Failed to add sheet annotation: ${failureMessage(e)}` });
+      console.error('Failed to add sheet annotation', e);
+      throw e;
+    }
+  },
+
+  updateSheetAnnotation: async (sheetId, annotationId, updates) => {
+    try {
+      const state = get();
+      const sId = sheetId || state.activeSheetId;
+      const targetSheet = state.sheets.find((s) => s.id === sId);
+      if (!targetSheet) return;
+      const updatedAnnos = (targetSheet.annotations || []).map((a) =>
+        a.id === annotationId ? { ...a, ...updates } : a
+      );
+      set({
+        sheets: state.sheets.map((s) => (s.id === sId ? { ...s, annotations: updatedAnnos } : s)),
+      });
+      await get().updateSheet(sId, { annotations: updatedAnnos } as any);
+    } catch (e) {
+      set({ statusMessage: `Failed to update sheet annotation: ${failureMessage(e)}` });
+      console.error('Failed to update sheet annotation', e);
+      throw e;
+    }
+  },
+
+  removeSheetAnnotation: async (sheetId, annotationId) => {
+    try {
+      const state = get();
+      const sId = sheetId || state.activeSheetId;
+      const targetSheet = state.sheets.find((s) => s.id === sId);
+      if (!targetSheet) return;
+      const updatedAnnos = (targetSheet.annotations || []).filter((a) => a.id !== annotationId);
+      set({
+        sheets: state.sheets.map((s) => (s.id === sId ? { ...s, annotations: updatedAnnos } : s)),
+        selectedAnnotationId: state.selectedAnnotationId === annotationId ? null : state.selectedAnnotationId,
+      });
+      await get().updateSheet(sId, { annotations: updatedAnnos } as any);
+    } catch (e) {
+      set({ statusMessage: `Failed to remove sheet annotation: ${failureMessage(e)}` });
+      console.error('Failed to remove sheet annotation', e);
+      throw e;
+    }
+  },
+
+  addDraftingLayer: (layer) => {
+    set((state) => ({ draftingLayers: [...state.draftingLayers, layer] }));
+  },
+
+  updateDraftingLayer: (layerId, updates) => {
+    set((state) => ({
+      draftingLayers: state.draftingLayers.map((l) => (l.id === layerId ? { ...l, ...updates } : l)),
+    }));
+  },
+
+  deleteDraftingLayer: (layerId) => {
+    set((state) => {
+      if (state.draftingLayers.length <= 1) return state;
+      return {
+        draftingLayers: state.draftingLayers.filter((l) => l.id !== layerId),
+        activeLayerId: state.activeLayerId === layerId ? state.draftingLayers[0]?.id || '' : state.activeLayerId,
+      };
+    });
+  },
+
+  addLayerGroup: (group) => {
+    set((state) => ({ layerGroups: [...state.layerGroups, group] }));
+  },
+
+  updateLayerGroup: (groupId, updates) => {
+    set((state) => ({
+      layerGroups: state.layerGroups.map((g) => (g.id === groupId ? { ...g, ...updates } : g)),
+    }));
   },
 
   fetchTypes: async () => {

@@ -257,6 +257,52 @@ export interface SheetViewport {
 
 export type SheetPaperSize = 'ARCH_D' | 'ARCH_C' | 'ISO_A1' | 'ANSI_D' | 'TABLOID' | 'LETTER';
 
+export interface SheetAnnotation {
+  id: string;
+  kind: 'text' | 'leader' | 'dimension' | 'line';
+  layerId: string;
+  points: [number, number][]; // Sheet-space coordinates (px from sheet top-left origin)
+  text?: string;
+  styleId?: string;
+}
+
+export interface DraftingLayer {
+  id: string;
+  name: string;
+  groupId?: string;
+  colour: string;
+  penWeight: number; // mm
+  lineType: 'solid' | 'dashed' | 'dotted' | 'dashdot';
+  visible: boolean;
+  locked: boolean;
+}
+
+export interface LayerGroup {
+  id: string;
+  name: string;
+  layerIds: string[];
+}
+
+export interface TextStyle {
+  id: string;
+  name: string;
+  font: string;
+  heightMm: number; // paper height in mm
+  bold: boolean;
+  italic: boolean;
+  colour: string;
+}
+
+export interface DimensionStyle {
+  id: string;
+  name: string;
+  arrowType: 'tick' | 'arrow' | 'dot' | 'none';
+  textPlacement: 'above' | 'inline' | 'below';
+  precision: number;
+  gap: number;
+  unit: 'mm' | 'm' | 'ft-in';
+}
+
 export interface SheetDefinition {
   id: string;
   sheetNumber: string;
@@ -264,6 +310,7 @@ export interface SheetDefinition {
   paperSize: SheetPaperSize;
   orientation?: 'landscape' | 'portrait';
   viewports: SheetViewport[];
+  annotations?: SheetAnnotation[];
   projectName: string;
   date: string;
   drawnBy: string;

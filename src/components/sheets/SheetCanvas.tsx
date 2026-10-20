@@ -1,8 +1,31 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Download, Plus, FileSpreadsheet, Trash2, Layers3, RotateCw, Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
+import {
+  Download,
+  Plus,
+  FileSpreadsheet,
+  Trash2,
+  Layers3,
+  RotateCw,
+  Maximize2,
+  ZoomIn,
+  ZoomOut,
+  MousePointer,
+  Type,
+  Ruler,
+  ArrowUpRight,
+  Minus,
+  Layers as LayersIcon,
+  Check,
+} from 'lucide-react';
 import { useBimStore } from '../../store/useBimStore';
-import { SheetPaperSize } from '../../types/bim';
+import { SheetPaperSize, SheetAnnotation } from '../../types/bim';
 import { PAPER_SIZES, getSheetDimensions, STANDARD_SCALES, getScaleLabel } from './paperSizes';
+import {
+  formatDimensionValue,
+  mmToSvgPx,
+  getLineTypeDashArray,
+} from './annotationStyles';
+import { LayersManagerModal } from './LayersManagerModal';
 
 export const SheetCanvas: React.FC = () => {
   const {
@@ -20,6 +43,22 @@ export const SheetCanvas: React.FC = () => {
     projectName,
     activeScale,
     georeference,
+    draftingLayers,
+    textStyles,
+    dimensionStyles,
+    activeAnnotationTool,
+    activeLayerId,
+    activeTextStyleId,
+    activeDimensionStyleId,
+    selectedAnnotationId,
+    setActiveAnnotationTool,
+    setActiveLayerId,
+    setActiveTextStyleId,
+    setActiveDimensionStyleId,
+    setSelectedAnnotationId,
+    addSheetAnnotation,
+    updateSheetAnnotation,
+    removeSheetAnnotation,
   } = useBimStore();
 
   const sheet = sheets.find((s) => s.id === activeSheetId) || sheets[0] || {
@@ -33,12 +72,13 @@ export const SheetCanvas: React.FC = () => {
     drawnBy: 'BIMWorks Architect',
     isPlaceholder: false,
     viewports: [],
+    annotations: [],
   };
 
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
-  // In-place editing state
+  // In-place title block editing state
   const [editingField, setEditingField] = useState<'title' | 'number' | 'drawnBy' | null>(null);
   const [tempValue, setTempValue] = useState<string>('');
 
@@ -58,6 +98,13 @@ export const SheetCanvas: React.FC = () => {
   const [draggingVpId, setDraggingVpId] = useState<string | null>(null);
   const [dragStart, setDragStart] = useState<{ x: number; y: number; vpX: number; vpY: number } | null>(null);
 
+  // Phase 2: Annotation Drafting State
+  const [isLayersModalOpen, setIsLayersModalOpen] = useState(false);
+  const [draftingPoints, setDraftingPoints] = useState<[number, number][]>([]);
+  const [mouseHoverPos, setMouseHoverPos] = useState<[number, number] | null>(null);
+  const [editingAnnotationId, setEditingAnnotationId] = useState<string | null>(null);
+  const [editingAnnotationText, setEditingAnnotationText] = useState<string>('');
+
   // Fit sheet to viewport screen
   const fitToScreen = useCallback(() => {
     if (!containerRef.current) return;
@@ -65,12 +112,12 @@ export const SheetCanvas: React.FC = () => {
     const containerH = containerRef.current.clientHeight;
     const padding = 80;
     const availW = containerW - padding;
-    const availH = containerH - padding - 60; // account for top bar
+    const availH = containerH - padding - 80; // account for toolbars
     if (availW <= 0 || availH <= 0) return;
     const scale = Math.min(availW / sheetWidth, availH / sheetHeight);
     const zoom = Math.max(0.2, Math.min(scale, 1.5));
     const x = (containerW - sheetWidth * zoom) / 2;
-    const y = (containerH - sheetHeight * zoom) / 2 + 25;
+    const y = (containerH - sheetHeight * zoom) / 2 + 35;
     setViewTransform({ x, y, zoom });
   }, [sheetWidth, sheetHeight]);
 
@@ -78,6 +125,15 @@ export const SheetCanvas: React.FC = () => {
   useEffect(() => {
     fitToScreen();
   }, [sheet.id, sheet.paperSize, sheet.orientation, fitToScreen]);
+
+  // Convert screen coordinates to sheet paper-space coordinates
+  const getSheetCoords = (e: React.MouseEvent | React.PointerEvent): [number, number] | null => {
+    if (!svgRef.current) return null;
+    const rect = svgRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / viewTransform.zoom;
+    const y = (e.clientY - rect.top) / viewTransform.zoom;
+    return [Math.round(x), Math.round(y)];
+  };
 
   // Handle Wheel Zoom (centered on mouse position)
   const handleWheel = (e: React.WheelEvent) => {
@@ -95,6 +151,25 @@ export const SheetCanvas: React.FC = () => {
       return { x: newX, y: newY, zoom: newZoom };
     });
   };
+
+  // Keyboard shortcut listener (Escape to cancel drafting or deselect)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (draftingPoints.length > 0) {
+          setDraftingPoints([]);
+        } else if (selectedAnnotationId) {
+          setSelectedAnnotationId(null);
+        } else if (activeAnnotationTool !== 'select') {
+          setActiveAnnotationTool('select');
+        }
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedAnnotationId && !editingAnnotationId && !editingField) {
+        removeSheetAnnotation(sheet.id, selectedAnnotationId);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [draftingPoints, selectedAnnotationId, editingAnnotationId, editingField, activeAnnotationTool, sheet.id, removeSheetAnnotation, setActiveAnnotationTool, setSelectedAnnotationId]);
 
   // Drag & drop from project browser
   const handleDragOver = (e: React.DragEvent) => {
@@ -164,8 +239,64 @@ export const SheetCanvas: React.FC = () => {
       `;
     }).join('');
 
+    // Phase 2: Vector Annotations Export
+    const annotationsSvg = (targetSheet.annotations || []).map((anno) => {
+      const layer = draftingLayers.find((l) => l.id === anno.layerId) || draftingLayers[0];
+      if (layer && !layer.visible) return '';
+      const strokeColor = layer?.colour || '#0f172a';
+      const strokeW = mmToSvgPx(layer?.penWeight || 0.25);
+      const strokeDash = getLineTypeDashArray(layer?.lineType || 'solid', layer?.penWeight || 0.25);
+
+      if (anno.kind === 'line') {
+        const p1 = anno.points[0] || [0, 0];
+        const p2 = anno.points[1] || [100, 100];
+        const dashAttr = strokeDash ? `stroke-dasharray="${strokeDash}"` : '';
+        return `<line x1="${p1[0]}" y1="${p1[1]}" x2="${p2[0]}" y2="${p2[1]}" stroke="${strokeColor}" stroke-width="${strokeW}" ${dashAttr} />`;
+      }
+      if (anno.kind === 'text') {
+        const p = anno.points[0] || [100, 100];
+        const style = textStyles.find((s) => s.id === anno.styleId) || textStyles[0];
+        const fontSize = Math.max(10, (style?.heightMm || 2.5) * 3.78);
+        const weight = style?.bold ? 'bold' : 'normal';
+        return `<text x="${p[0]}" y="${p[1]}" fill="${style?.colour || strokeColor}" font-family="${style?.font || 'sans-serif'}" font-size="${fontSize}" font-weight="${weight}">${anno.text || 'NOTE'}</text>`;
+      }
+      if (anno.kind === 'leader') {
+        const p1 = anno.points[0] || [0, 0];
+        const p2 = anno.points[1] || [50, 50];
+        const p3 = anno.points[2] || [p2[0] + 30, p2[1]];
+        const style = textStyles.find((s) => s.id === anno.styleId) || textStyles[0];
+        const fontSize = Math.max(10, (style?.heightMm || 2.5) * 3.78);
+        return `
+          <polyline points="${p1[0]},${p1[1]} ${p2[0]},${p2[1]} ${p3[0]},${p3[1]}" fill="none" stroke="${strokeColor}" stroke-width="${strokeW}" marker-start="url(#marker-arrow)" />
+          <text x="${p3[0] + 4}" y="${p3[1] - 3}" fill="${style?.colour || strokeColor}" font-size="${fontSize}">${anno.text || 'CALLOUT'}</text>
+        `;
+      }
+      if (anno.kind === 'dimension') {
+        const p1 = anno.points[0] || [0, 0];
+        const p2 = anno.points[1] || [100, 0];
+        const dimStyle = dimensionStyles.find((s) => s.id === anno.styleId) || dimensionStyles[0];
+        const dist = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+        const dimText = formatDimensionValue(dist, dimStyle);
+        const midX = (p1[0] + p2[0]) / 2;
+        const midY = (p1[1] + p2[1]) / 2;
+        return `
+          <line x1="${p1[0]}" y1="${p1[1]}" x2="${p2[0]}" y2="${p2[1]}" stroke="${strokeColor}" stroke-width="${strokeW}" />
+          <text x="${midX}" y="${midY - 4}" text-anchor="middle" fill="${strokeColor}" font-size="10" font-family="JetBrains Mono, monospace" font-weight="bold">${dimText}</text>
+        `;
+      }
+      return '';
+    }).join('');
+
     return `<?xml version="1.0" encoding="UTF-8"?>
 <svg viewBox="0 0 ${sWidth} ${sHeight}" width="${sWidth}" height="${sHeight}" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif">
+  <defs>
+    <marker id="marker-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#0f172a" />
+    </marker>
+    <marker id="marker-tick" viewBox="-5 -5 10 10" refX="0" refY="0" markerWidth="8" markerHeight="8" orient="auto">
+      <line x1="-3" y1="3" x2="3" y2="-3" stroke="#2563eb" stroke-width="1.5" />
+    </marker>
+  </defs>
   <rect x="20" y="20" width="${sWidth - 40}" height="${sHeight - 40}" fill="#ffffff" stroke="#0f172a" stroke-width="2" />
   <rect x="24" y="24" width="${sWidth - 48}" height="${sHeight - 48}" fill="none" stroke="#64748b" stroke-width="0.75" />
   <g id="title-block" transform="translate(${sWidth - 280}, 24)">
@@ -210,6 +341,9 @@ export const SheetCanvas: React.FC = () => {
     </g>
   </g>
   ${viewportsSvg}
+  <g id="sheet-annotations-export">
+    ${annotationsSvg}
+  </g>
 </svg>`;
   };
 
@@ -253,14 +387,89 @@ export const SheetCanvas: React.FC = () => {
   // Canvas container pointer down for pan
   const handleContainerPointerDown = (e: React.PointerEvent) => {
     if ((e.target as HTMLElement).closest('.viewport-element')) return;
-    if (e.button === 0 || e.button === 1 || e.shiftKey) {
+    if ((e.target as HTMLElement).closest('.annotation-element')) return;
+
+    // Pan with middle button or left button when tool is 'select'
+    if (e.button === 1 || (e.button === 0 && activeAnnotationTool === 'select') || e.shiftKey) {
       setIsPanning(true);
       setPanStart({ x: e.clientX, y: e.clientY, startX: viewTransform.x, startY: viewTransform.y });
       (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     }
   };
 
+  // Handle Sheet SVG Click for Annotation Placement
+  const handleSheetSvgClick = (e: React.MouseEvent) => {
+    if (activeAnnotationTool === 'select') {
+      setSelectedAnnotationId(null);
+      return;
+    }
+
+    const coords = getSheetCoords(e);
+    if (!coords) return;
+
+    if (activeAnnotationTool === 'text') {
+      addSheetAnnotation(sheet.id, {
+        kind: 'text',
+        layerId: activeLayerId,
+        points: [coords],
+        text: 'NOTE',
+        styleId: activeTextStyleId,
+      });
+      return;
+    }
+
+    if (activeAnnotationTool === 'line') {
+      if (draftingPoints.length === 0) {
+        setDraftingPoints([coords]);
+      } else {
+        addSheetAnnotation(sheet.id, {
+          kind: 'line',
+          layerId: activeLayerId,
+          points: [draftingPoints[0], coords],
+        });
+        setDraftingPoints([]);
+      }
+      return;
+    }
+
+    if (activeAnnotationTool === 'dimension') {
+      if (draftingPoints.length === 0) {
+        setDraftingPoints([coords]);
+      } else {
+        addSheetAnnotation(sheet.id, {
+          kind: 'dimension',
+          layerId: activeLayerId,
+          points: [draftingPoints[0], coords],
+          styleId: activeDimensionStyleId,
+        });
+        setDraftingPoints([]);
+      }
+      return;
+    }
+
+    if (activeAnnotationTool === 'leader') {
+      if (draftingPoints.length === 0) {
+        setDraftingPoints([coords]);
+      } else {
+        const shoulder = [coords[0] + 35, coords[1]] as [number, number];
+        addSheetAnnotation(sheet.id, {
+          kind: 'leader',
+          layerId: activeLayerId,
+          points: [draftingPoints[0], coords, shoulder],
+          text: 'CALLOUT',
+          styleId: activeTextStyleId,
+        });
+        setDraftingPoints([]);
+      }
+      return;
+    }
+  };
+
   const handlePointerMove = (e: React.PointerEvent) => {
+    // Update mouse hover position in sheet coords for preview linework
+    const coords = getSheetCoords(e);
+    if (coords) setMouseHoverPos(coords);
+
     if (isPanning && panStart) {
       const dx = e.clientX - panStart.x;
       const dy = e.clientY - panStart.y;
@@ -292,6 +501,8 @@ export const SheetCanvas: React.FC = () => {
     }
   };
 
+  const selectedAnnotation = (sheet.annotations || []).find((a) => a.id === selectedAnnotationId);
+
   return (
     <div
       ref={containerRef}
@@ -300,10 +511,10 @@ export const SheetCanvas: React.FC = () => {
       onPointerDown={handleContainerPointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      style={{ cursor: isPanning ? 'grabbing' : 'default' }}
+      style={{ cursor: isPanning ? 'grabbing' : activeAnnotationTool !== 'select' ? 'crosshair' : 'default' }}
     >
       {/* Top Floating Control Bar */}
-      <div className="absolute top-4 left-6 right-6 flex items-center justify-between bg-[#27272a]/95 backdrop-blur px-4 py-2 rounded-lg border border-[#3f3f46] text-xs z-10 shadow-lg">
+      <div className="absolute top-4 left-6 right-6 flex items-center justify-between bg-[#27272a]/95 backdrop-blur px-4 py-2 rounded-lg border border-[#3f3f46] text-xs z-20 shadow-lg">
         <div className="flex items-center space-x-3 text-white">
           <FileSpreadsheet size={16} className="text-[#10b981]" />
           <span className="font-bold text-sm tracking-wide">
@@ -395,6 +606,144 @@ export const SheetCanvas: React.FC = () => {
         </div>
       </div>
 
+      {/* Secondary Floating Bar: Sheet Annotation & Drafting Tools (Phase 2) */}
+      <div className="absolute top-16 left-6 flex items-center space-x-2 bg-[#27272a]/95 backdrop-blur px-3 py-1.5 rounded-lg border border-[#3f3f46] text-xs z-20 shadow-lg">
+        {/* Tool Selector Buttons */}
+        <div className="flex items-center space-x-1 bg-[#18181b] p-0.5 rounded border border-[#3f3f46]">
+          <button
+            onClick={() => { setActiveAnnotationTool('select'); setDraftingPoints([]); }}
+            className={`p-1.5 rounded transition-colors ${
+              activeAnnotationTool === 'select' ? 'bg-[#0284c7] text-white shadow-xs' : 'text-slate-400 hover:text-white'
+            }`}
+            title="Select & Move Annotations (Esc)"
+          >
+            <MousePointer size={14} />
+          </button>
+          <button
+            onClick={() => { setActiveAnnotationTool('text'); setDraftingPoints([]); }}
+            className={`p-1.5 rounded transition-colors ${
+              activeAnnotationTool === 'text' ? 'bg-[#0284c7] text-white shadow-xs' : 'text-slate-400 hover:text-white'
+            }`}
+            title="Text Note (TX) — Click to place"
+          >
+            <Type size={14} />
+          </button>
+          <button
+            onClick={() => { setActiveAnnotationTool('dimension'); setDraftingPoints([]); }}
+            className={`p-1.5 rounded transition-colors ${
+              activeAnnotationTool === 'dimension' ? 'bg-[#0284c7] text-white shadow-xs' : 'text-slate-400 hover:text-white'
+            }`}
+            title="Aligned Dimension (DI) — Click 2 points"
+          >
+            <Ruler size={14} />
+          </button>
+          <button
+            onClick={() => { setActiveAnnotationTool('leader'); setDraftingPoints([]); }}
+            className={`p-1.5 rounded transition-colors ${
+              activeAnnotationTool === 'leader' ? 'bg-[#0284c7] text-white shadow-xs' : 'text-slate-400 hover:text-white'
+            }`}
+            title="Leader Callout — Click target, then shoulder"
+          >
+            <ArrowUpRight size={14} />
+          </button>
+          <button
+            onClick={() => { setActiveAnnotationTool('line'); setDraftingPoints([]); }}
+            className={`p-1.5 rounded transition-colors ${
+              activeAnnotationTool === 'line' ? 'bg-[#0284c7] text-white shadow-xs' : 'text-slate-400 hover:text-white'
+            }`}
+            title="Detail Line (DL) — Click start and end points"
+          >
+            <Minus size={14} />
+          </button>
+        </div>
+
+        <div className="h-4 w-px bg-slate-700" />
+
+        {/* Active Layer Selector */}
+        <div className="flex items-center space-x-1.5">
+          <span className="text-[11px] text-slate-400 font-medium">Layer:</span>
+          <select
+            value={activeLayerId}
+            onChange={(e) => setActiveLayerId(e.target.value)}
+            className="bg-[#18181b] text-slate-200 border border-[#3f3f46] rounded px-2 py-0.5 text-[11px] font-mono outline-none cursor-pointer hover:border-[#0284c7] transition-colors"
+            title="Active Drafting Layer"
+          >
+            {draftingLayers.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Layers Manager Modal Launcher */}
+        <button
+          onClick={() => setIsLayersModalOpen(true)}
+          className="flex items-center space-x-1 px-2.5 py-1 bg-[#3f3f46] hover:bg-[#52525b] text-slate-200 hover:text-white rounded text-[11px] border border-[#52525b] transition-colors"
+          title="Drafting Layers & Styles Manager"
+        >
+          <LayersIcon size={12} className="text-[#38bdf8]" />
+          <span>Layers...</span>
+        </button>
+
+        {/* Drafting Status Cue */}
+        {draftingPoints.length > 0 && (
+          <span className="text-[11px] text-amber-300 font-mono bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800">
+            Click 2nd point (Esc to cancel)
+          </span>
+        )}
+      </div>
+
+      {/* Selected Annotation Context Bar */}
+      {selectedAnnotation && (
+        <div className="absolute top-28 left-6 flex items-center space-x-2 bg-slate-900/95 backdrop-blur px-3 py-1.5 rounded-lg border border-[#0284c7] text-xs z-20 shadow-xl animate-in fade-in duration-150">
+          <span className="font-semibold text-slate-300 capitalize">{selectedAnnotation.kind} Annotation:</span>
+
+          {(selectedAnnotation.kind === 'text' || selectedAnnotation.kind === 'leader') && (
+            <div className="flex items-center space-x-1">
+              <input
+                type="text"
+                value={editingAnnotationText || selectedAnnotation.text || ''}
+                onChange={(e) => setEditingAnnotationText(e.target.value)}
+                onBlur={() => {
+                  if (editingAnnotationText) {
+                    updateSheetAnnotation(sheet.id, selectedAnnotation.id, { text: editingAnnotationText });
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && editingAnnotationText) {
+                    updateSheetAnnotation(sheet.id, selectedAnnotation.id, { text: editingAnnotationText });
+                  }
+                }}
+                placeholder="Annotation text"
+                className="bg-slate-800 border border-slate-700 text-white px-2 py-0.5 rounded text-xs outline-none focus:border-[#38bdf8] font-mono"
+              />
+            </div>
+          )}
+
+          <select
+            value={selectedAnnotation.layerId}
+            onChange={(e) => updateSheetAnnotation(sheet.id, selectedAnnotation.id, { layerId: e.target.value })}
+            className="bg-slate-800 border border-slate-700 text-slate-200 px-1.5 py-0.5 rounded text-[11px] font-mono outline-none"
+            title="Change Layer"
+          >
+            {draftingLayers.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
+            ))}
+          </select>
+
+          <button
+            onClick={() => removeSheetAnnotation(sheet.id, selectedAnnotation.id)}
+            className="p-1 hover:bg-red-900/50 text-red-400 hover:text-red-300 rounded transition-colors"
+            title="Delete Annotation (Del)"
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
+      )}
+
       {/* Sheet Canvas Pan/Zoom Wrapper */}
       <div
         style={{
@@ -408,6 +757,7 @@ export const SheetCanvas: React.FC = () => {
           style={{ width: `${sheetWidth}px`, height: `${sheetHeight}px` }}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
+          onClick={handleSheetSvgClick}
         >
           <svg
             ref={svgRef}
@@ -417,6 +767,41 @@ export const SheetCanvas: React.FC = () => {
             className="w-full h-full block font-sans"
             xmlns="http://www.w3.org/2000/svg"
           >
+            <defs>
+              <marker
+                id="marker-arrow"
+                viewBox="0 0 10 10"
+                refX="8"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto-start-reverse"
+              >
+                <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#0f172a" />
+              </marker>
+              <marker
+                id="marker-tick"
+                viewBox="-5 -5 10 10"
+                refX="0"
+                refY="0"
+                markerWidth="8"
+                markerHeight="8"
+                orient="auto"
+              >
+                <line x1="-3" y1="3" x2="3" y2="-3" stroke="#2563eb" strokeWidth="1.5" />
+              </marker>
+              <marker
+                id="marker-dot"
+                viewBox="-5 -5 10 10"
+                refX="0"
+                refY="0"
+                markerWidth="6"
+                markerHeight="6"
+              >
+                <circle cx="0" cy="0" r="3" fill="#2563eb" />
+              </marker>
+            </defs>
+
             {/* Sheet Outer Border & Margin */}
             <rect
               x="20"
@@ -763,10 +1148,244 @@ export const SheetCanvas: React.FC = () => {
                 </g>
               );
             })}
+
+            {/* ========================================================= */}
+            {/* SHEET-SPACE ANNOTATIONS LAYER (Phase 2)                   */}
+            {/* Text, Leaders, Dimensions, Detail Lines                    */}
+            {/* ========================================================= */}
+            <g id="sheet-annotations">
+              {(sheet.annotations || []).map((anno) => {
+                const layer = draftingLayers.find((l) => l.id === anno.layerId) || draftingLayers[0];
+                if (layer && !layer.visible) return null;
+
+                const strokeColor = layer?.colour || '#0f172a';
+                const strokeW = mmToSvgPx(layer?.penWeight || 0.25);
+                const strokeDash = getLineTypeDashArray(layer?.lineType || 'solid', layer?.penWeight || 0.25);
+                const isSelected = selectedAnnotationId === anno.id;
+
+                if (anno.kind === 'line') {
+                  const p1 = anno.points[0] || [0, 0];
+                  const p2 = anno.points[1] || [100, 100];
+                  return (
+                    <g
+                      key={anno.id}
+                      className="cursor-pointer annotation-element"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedAnnotationId(anno.id);
+                      }}
+                    >
+                      {isSelected && (
+                        <line
+                          x1={p1[0]}
+                          y1={p1[1]}
+                          x2={p2[0]}
+                          y2={p2[1]}
+                          stroke="#38bdf8"
+                          strokeWidth={strokeW + 6}
+                          opacity={0.4}
+                          strokeLinecap="round"
+                        />
+                      )}
+                      <line
+                        x1={p1[0]}
+                        y1={p1[1]}
+                        x2={p2[0]}
+                        y2={p2[1]}
+                        stroke={strokeColor}
+                        strokeWidth={strokeW}
+                        strokeDasharray={strokeDash}
+                      />
+                    </g>
+                  );
+                }
+
+                if (anno.kind === 'text') {
+                  const p = anno.points[0] || [100, 100];
+                  const style = textStyles.find((s) => s.id === anno.styleId) || textStyles[0];
+                  const fontSize = Math.max(10, (style?.heightMm || 2.5) * 3.78);
+                  return (
+                    <g
+                      key={anno.id}
+                      transform={`translate(${p[0]}, ${p[1]})`}
+                      className="cursor-pointer annotation-element"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedAnnotationId(anno.id);
+                        setEditingAnnotationText(anno.text || '');
+                      }}
+                    >
+                      {isSelected && (
+                        <rect
+                          x="-4"
+                          y={-fontSize - 2}
+                          width={Math.max(50, (anno.text?.length || 4) * (fontSize * 0.6) + 12)}
+                          height={fontSize + 8}
+                          fill="none"
+                          stroke="#38bdf8"
+                          strokeWidth="1.2"
+                          strokeDasharray="3, 2"
+                        />
+                      )}
+                      <text
+                        x="0"
+                        y="0"
+                        fill={style?.colour || strokeColor}
+                        fontFamily={style?.font || 'sans-serif'}
+                        fontSize={fontSize}
+                        fontWeight={style?.bold ? 'bold' : 'normal'}
+                        fontStyle={style?.italic ? 'italic' : 'normal'}
+                      >
+                        {anno.text || 'NOTE'}
+                      </text>
+                    </g>
+                  );
+                }
+
+                if (anno.kind === 'leader') {
+                  const p1 = anno.points[0] || [0, 0];
+                  const p2 = anno.points[1] || [50, 50];
+                  const p3 = anno.points[2] || [p2[0] + 30, p2[1]];
+                  const style = textStyles.find((s) => s.id === anno.styleId) || textStyles[0];
+                  const fontSize = Math.max(10, (style?.heightMm || 2.5) * 3.78);
+                  return (
+                    <g
+                      key={anno.id}
+                      className="cursor-pointer annotation-element"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedAnnotationId(anno.id);
+                        setEditingAnnotationText(anno.text || '');
+                      }}
+                    >
+                      {isSelected && (
+                        <polyline
+                          points={`${p1[0]},${p1[1]} ${p2[0]},${p2[1]} ${p3[0]},${p3[1]}`}
+                          fill="none"
+                          stroke="#38bdf8"
+                          strokeWidth={strokeW + 6}
+                          opacity={0.4}
+                          strokeLinecap="round"
+                        />
+                      )}
+                      <polyline
+                        points={`${p1[0]},${p1[1]} ${p2[0]},${p2[1]} ${p3[0]},${p3[1]}`}
+                        fill="none"
+                        stroke={strokeColor}
+                        strokeWidth={strokeW}
+                        markerStart="url(#marker-arrow)"
+                      />
+                      <text
+                        x={p3[0] + 4}
+                        y={p3[1] - 3}
+                        fill={style?.colour || strokeColor}
+                        fontFamily={style?.font || 'sans-serif'}
+                        fontSize={fontSize}
+                        fontWeight={style?.bold ? 'bold' : 'normal'}
+                      >
+                        {anno.text || 'CALLOUT'}
+                      </text>
+                    </g>
+                  );
+                }
+
+                if (anno.kind === 'dimension') {
+                  const p1 = anno.points[0] || [0, 0];
+                  const p2 = anno.points[1] || [100, 0];
+                  const dimStyle = dimensionStyles.find((s) => s.id === anno.styleId) || dimensionStyles[0];
+                  const dist = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+                  const dimText = formatDimensionValue(dist, dimStyle);
+                  const midX = (p1[0] + p2[0]) / 2;
+                  const midY = (p1[1] + p2[1]) / 2;
+
+                  // Extension witness lines
+                  const angle = Math.atan2(p2[1] - p1[1], p2[0] - p1[0]);
+                  const perpAngle = angle + Math.PI / 2;
+                  const witnessLen = 10;
+                  const w1a = [p1[0] - Math.cos(perpAngle) * witnessLen, p1[1] - Math.sin(perpAngle) * witnessLen];
+                  const w1b = [p1[0] + Math.cos(perpAngle) * witnessLen, p1[1] + Math.sin(perpAngle) * witnessLen];
+                  const w2a = [p2[0] - Math.cos(perpAngle) * witnessLen, p2[1] - Math.sin(perpAngle) * witnessLen];
+                  const w2b = [p2[0] + Math.cos(perpAngle) * witnessLen, p2[1] + Math.sin(perpAngle) * witnessLen];
+
+                  return (
+                    <g
+                      key={anno.id}
+                      className="cursor-pointer annotation-element"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedAnnotationId(anno.id);
+                      }}
+                    >
+                      {isSelected && (
+                        <line
+                          x1={p1[0]}
+                          y1={p1[1]}
+                          x2={p2[0]}
+                          y2={p2[1]}
+                          stroke="#38bdf8"
+                          strokeWidth={strokeW + 6}
+                          opacity={0.4}
+                        />
+                      )}
+                      {/* Witness lines */}
+                      <line x1={w1a[0]} y1={w1a[1]} x2={w1b[0]} y2={w1b[1]} stroke={strokeColor} strokeWidth={0.75} />
+                      <line x1={w2a[0]} y1={w2a[1]} x2={w2b[0]} y2={w2b[1]} stroke={strokeColor} strokeWidth={0.75} />
+                      {/* Main Dimension Line */}
+                      <line
+                        x1={p1[0]}
+                        y1={p1[1]}
+                        x2={p2[0]}
+                        y2={p2[1]}
+                        stroke={strokeColor}
+                        strokeWidth={strokeW}
+                        markerStart={dimStyle.arrowType === 'arrow' ? 'url(#marker-arrow)' : 'url(#marker-tick)'}
+                        markerEnd={dimStyle.arrowType === 'arrow' ? 'url(#marker-arrow)' : 'url(#marker-tick)'}
+                      />
+                      {/* Dimension Text */}
+                      <text
+                        x={midX}
+                        y={midY - 4}
+                        textAnchor="middle"
+                        fill={strokeColor}
+                        fontSize="10"
+                        fontFamily="JetBrains Mono, monospace"
+                        fontWeight="bold"
+                      >
+                        {dimText}
+                      </text>
+                    </g>
+                  );
+                }
+
+                return null;
+              })}
+
+              {/* Active Drafting Rubberband / Preview */}
+              {draftingPoints.length > 0 && mouseHoverPos && (
+                <g>
+                  <line
+                    x1={draftingPoints[0][0]}
+                    y1={draftingPoints[0][1]}
+                    x2={mouseHoverPos[0]}
+                    y2={mouseHoverPos[1]}
+                    stroke="#38bdf8"
+                    strokeWidth="1.5"
+                    strokeDasharray="4, 3"
+                  />
+                  <circle cx={draftingPoints[0][0]} cy={draftingPoints[0][1]} r="3" fill="#38bdf8" />
+                  <circle cx={mouseHoverPos[0]} cy={mouseHoverPos[1]} r="3" fill="#38bdf8" />
+                </g>
+              )}
+            </g>
           </svg>
         </div>
       </div>
+
+      {/* Layers & Styles Manager Modal */}
+      <LayersManagerModal
+        isOpen={isLayersModalOpen}
+        onClose={() => setIsLayersModalOpen(false)}
+      />
     </div>
   );
 };
-
