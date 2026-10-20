@@ -303,6 +303,14 @@ export interface DimensionStyle {
   unit: 'mm' | 'm' | 'ft-in';
 }
 
+export interface SheetRevision {
+  id: string;
+  sequence: number;
+  description: string;
+  date: string;
+  drawnBy?: string;
+}
+
 export interface SheetDefinition {
   id: string;
   sheetNumber: string;
@@ -311,6 +319,7 @@ export interface SheetDefinition {
   orientation?: 'landscape' | 'portrait';
   viewports: SheetViewport[];
   annotations?: SheetAnnotation[];
+  revisions?: SheetRevision[];
   projectName: string;
   date: string;
   drawnBy: string;

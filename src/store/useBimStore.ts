@@ -13,6 +13,7 @@ import {
   TemporaryDimension,
   SheetViewport,
   SheetAnnotation,
+  SheetRevision,
   DraftingLayer,
   LayerGroup,
   TextStyle,
@@ -694,7 +695,7 @@ interface BimStoreState {
   exportBatchPdf: (sheetsData: Array<{ sheetName: string; svgContent: string }>, filename?: string) => Promise<void>;
   exportIfc: () => Promise<void>;
 
-  // Sheet Drafting & Annotation Actions (Phase 2)
+  // Sheet Drafting & Annotation Actions (Phase 2 & 3)
   setActiveAnnotationTool: (tool: 'select' | 'text' | 'leader' | 'dimension' | 'line') => void;
   setActiveLayerId: (id: string) => void;
   setActiveTextStyleId: (id: string) => void;
@@ -703,6 +704,11 @@ interface BimStoreState {
   addSheetAnnotation: (sheetId: string, annotation: Omit<SheetAnnotation, 'id'>) => Promise<void>;
   updateSheetAnnotation: (sheetId: string, annotationId: string, updates: Partial<SheetAnnotation>) => Promise<void>;
   removeSheetAnnotation: (sheetId: string, annotationId: string) => Promise<void>;
+  duplicateSheet: (sheetId: string) => Promise<string | null>;
+  addSheetRevision: (sheetId: string, revision: Omit<SheetRevision, 'id'>) => Promise<void>;
+  updateSheetRevision: (sheetId: string, revId: string, patch: Partial<SheetRevision>) => Promise<void>;
+  removeSheetRevision: (sheetId: string, revId: string) => Promise<void>;
+  dimAllViewport: (sheetId: string, viewportId: string) => Promise<void>;
   addDraftingLayer: (layer: DraftingLayer) => void;
   updateDraftingLayer: (layerId: string, updates: Partial<DraftingLayer>) => void;
   deleteDraftingLayer: (layerId: string) => void;
@@ -2793,6 +2799,187 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       set({ statusMessage: `Failed to remove sheet annotation: ${failureMessage(e)}` });
       console.error('Failed to remove sheet annotation', e);
       throw e;
+    }
+  },
+
+  duplicateSheet: async (sheetId: string) => {
+    try {
+      const state = get();
+      const target = state.sheets.find((s) => s.id === sheetId);
+      if (!target) return null;
+
+      let baseNum = target.sheetNumber || 'A101';
+      let nextNum = `${baseNum}-COPY`;
+      const match = baseNum.match(/^(.*?)(\d+)$/);
+      if (match) {
+        const prefix = match[1];
+        let numVal = parseInt(match[2], 10) + 1;
+        while (state.sheets.some((s) => s.sheetNumber.toLowerCase() === `${prefix}${numVal}`.toLowerCase())) {
+          numVal++;
+        }
+        nextNum = `${prefix}${numVal}`;
+      } else {
+        let copyIdx = 1;
+        while (state.sheets.some((s) => s.sheetNumber.toLowerCase() === `${baseNum}-COPY${copyIdx > 1 ? copyIdx : ''}`.toLowerCase())) {
+          copyIdx++;
+        }
+        nextNum = `${baseNum}-COPY${copyIdx > 1 ? copyIdx : ''}`;
+      }
+
+      const newTitle = `${target.sheetTitle} (Copy)`;
+      await get().createSheet(nextNum, newTitle, target.paperSize, target.orientation);
+
+      const updatedState = get();
+      const newSheet = updatedState.sheets.find((s) => s.sheetNumber === nextNum);
+      if (newSheet) {
+        const clonedVps = (target.viewports || []).map((vp) => ({
+          ...vp,
+          id: `vp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        }));
+        const clonedAnnos = (target.annotations || []).map((anno) => ({
+          ...anno,
+          id: `anno-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        }));
+        const clonedRevs = (target.revisions || []).map((rev) => ({
+          ...rev,
+          id: `rev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        }));
+
+        await get().updateSheet(newSheet.id, {
+          viewports: clonedVps,
+          annotations: clonedAnnos,
+          revisions: clonedRevs,
+        });
+
+        set({ activeSheetId: newSheet.id });
+        set({ statusMessage: `Duplicated Sheet ${target.sheetNumber} -> ${nextNum}` });
+        return newSheet.id;
+      }
+      return null;
+    } catch (e) {
+      set({ statusMessage: `Failed to duplicate sheet: ${failureMessage(e)}` });
+      console.error('Failed to duplicate sheet', e);
+      return null;
+    }
+  },
+
+  addSheetRevision: async (sheetId: string, revision: Omit<SheetRevision, 'id'>) => {
+    try {
+      const state = get();
+      const sId = sheetId || state.activeSheetId;
+      const target = state.sheets.find((s) => s.id === sId);
+      if (!target) return;
+      const newRev: SheetRevision = {
+        ...revision,
+        id: `rev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      };
+      const updatedRevs = [...(target.revisions || []), newRev];
+      set({
+        sheets: state.sheets.map((s) => (s.id === sId ? { ...s, revisions: updatedRevs } : s)),
+      });
+      await get().updateSheet(sId, { revisions: updatedRevs } as any);
+    } catch (e) {
+      set({ statusMessage: `Failed to add revision: ${failureMessage(e)}` });
+      console.error('Failed to add revision', e);
+      throw e;
+    }
+  },
+
+  updateSheetRevision: async (sheetId: string, revId: string, patch: Partial<SheetRevision>) => {
+    try {
+      const state = get();
+      const sId = sheetId || state.activeSheetId;
+      const target = state.sheets.find((s) => s.id === sId);
+      if (!target) return;
+      const updatedRevs = (target.revisions || []).map((r) => (r.id === revId ? { ...r, ...patch } : r));
+      set({
+        sheets: state.sheets.map((s) => (s.id === sId ? { ...s, revisions: updatedRevs } : s)),
+      });
+      await get().updateSheet(sId, { revisions: updatedRevs } as any);
+    } catch (e) {
+      set({ statusMessage: `Failed to update revision: ${failureMessage(e)}` });
+      console.error('Failed to update revision', e);
+      throw e;
+    }
+  },
+
+  removeSheetRevision: async (sheetId: string, revId: string) => {
+    try {
+      const state = get();
+      const sId = sheetId || state.activeSheetId;
+      const target = state.sheets.find((s) => s.id === sId);
+      if (!target) return;
+      const updatedRevs = (target.revisions || []).filter((r) => r.id !== revId);
+      set({
+        sheets: state.sheets.map((s) => (s.id === sId ? { ...s, revisions: updatedRevs } : s)),
+      });
+      await get().updateSheet(sId, { revisions: updatedRevs } as any);
+    } catch (e) {
+      set({ statusMessage: `Failed to remove revision: ${failureMessage(e)}` });
+      console.error('Failed to remove revision', e);
+      throw e;
+    }
+  },
+
+  dimAllViewport: async (sheetId: string, viewportId: string) => {
+    try {
+      const state = get();
+      const sId = sheetId || state.activeSheetId;
+      const targetSheet = state.sheets.find((s) => s.id === sId);
+      if (!targetSheet) return;
+      const vp = (targetSheet.viewports || []).find((v) => v.id === viewportId);
+      if (!vp) return;
+
+      const layer = state.draftingLayers.find((l) => l.name.toLowerCase().includes('dim')) || state.draftingLayers[0];
+      const dimStyle = state.dimensionStyles[0];
+
+      const offset = 25;
+      const x1 = vp.x;
+      const x2 = vp.x + vp.width;
+      const y1 = vp.y;
+      const y2 = vp.y + vp.height;
+
+      const topDim: SheetAnnotation = {
+        id: `anno-${Date.now()}-1`,
+        kind: 'dimension',
+        layerId: layer.id,
+        points: [[x1, y1 - offset], [x2, y1 - offset]],
+        styleId: dimStyle.id,
+      };
+
+      const leftDim: SheetAnnotation = {
+        id: `anno-${Date.now()}-2`,
+        kind: 'dimension',
+        layerId: layer.id,
+        points: [[x1 - offset, y2], [x1 - offset, y1]],
+        styleId: dimStyle.id,
+      };
+
+      const midX = (x1 + x2) / 2;
+      const bottomSub1: SheetAnnotation = {
+        id: `anno-${Date.now()}-3`,
+        kind: 'dimension',
+        layerId: layer.id,
+        points: [[x1, y2 + offset + 20], [midX, y2 + offset + 20]],
+        styleId: dimStyle.id,
+      };
+      const bottomSub2: SheetAnnotation = {
+        id: `anno-${Date.now()}-4`,
+        kind: 'dimension',
+        layerId: layer.id,
+        points: [[midX, y2 + offset + 20], [x2, y2 + offset + 20]],
+        styleId: dimStyle.id,
+      };
+
+      const updatedAnnos = [...(targetSheet.annotations || []), topDim, leftDim, bottomSub1, bottomSub2];
+      set({
+        sheets: state.sheets.map((s) => (s.id === sId ? { ...s, annotations: updatedAnnos } : s)),
+        statusMessage: `DIMALL: Generated 4 automated boundary dimension strings for viewport`,
+      });
+      await get().updateSheet(sId, { annotations: updatedAnnos } as any);
+    } catch (e) {
+      set({ statusMessage: `DIMALL failed: ${failureMessage(e)}` });
+      console.error('DIMALL failed', e);
     }
   },
 

@@ -7506,6 +7506,15 @@ class BimModelManager:
             "is_placeholder": is_placeholder,
             "viewports": [],
             "annotations": [],
+            "revisions": [
+                {
+                    "id": "rev-1",
+                    "sequence": 1,
+                    "description": "INITIAL BIM ISSUE",
+                    "date": date or "2026-10-13",
+                    "drawn_by": drawn_by,
+                }
+            ],
         }
         self.sheets[sid] = new_sheet
         self.sheets_rev += 1
@@ -7525,7 +7534,7 @@ class BimModelManager:
 
     def update_sheet(self, sheet_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Updates metadata of an existing sheet (e.g. sheet_title, sheet_number, drawn_by, date, annotations).
+        Updates metadata of an existing sheet (e.g. sheet_title, sheet_number, drawn_by, date, annotations, revisions).
         """
         if sheet_id not in self.sheets:
             raise ValueError(f"Sheet '{sheet_id}' not found")
@@ -7568,6 +7577,8 @@ class BimModelManager:
             s["viewports"] = normalized_vps
         if "annotations" in updates:
             s["annotations"] = copy.deepcopy(updates["annotations"])
+        if "revisions" in updates:
+            s["revisions"] = copy.deepcopy(updates["revisions"])
         self.sheets_rev += 1
         return s
 
