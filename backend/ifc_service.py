@@ -6775,18 +6775,32 @@ class BimModelManager:
         )
         # A plan cuts; an elevation does not; a section does.
         cut_z = None
-        if view_type in ("floor_plan", "plan", "section"):
+        base = 0.0
+        if view_type in ("floor_plan", "plan"):
+            resolved_level = self._resolve_plan_level(None, cut_elevation)
+            level_meta = self.levels.get(resolved_level) if resolved_level else None
+            base = float(level_meta.get("elevation", 0.0)) if level_meta else 0.0
+            min_lvl = min((float(lv.get("elevation", 0.0)) for lv in self.levels.values()), default=0.0)
+            if self.levels and float(cut_elevation) < min_lvl:
+                abs_cut = base + float(cut_elevation)
+            else:
+                abs_cut = float(cut_elevation)
+            cut_z = feet_to_metres(abs_cut)
+        elif view_type == "section":
             cut_z = feet_to_metres(float(cut_elevation))
 
         # The view range is applied in MODEL units, so convert from feet (the
         # parametric unit) to metres (the geometry's unit) before filtering.
         metric_range = None
         if view_range:
-            metric_range = {
-                k: feet_to_metres(float(v))
-                for k, v in view_range.items()
-                if v not in (None, "") and k in ("cut", "top", "bottom", "view_depth")
-            }
+            metric_range = {}
+            min_lvl = min((float(lv.get("elevation", 0.0)) for lv in self.levels.values()), default=0.0)
+            for k, v in view_range.items():
+                if v not in (None, "") and k in ("cut", "top", "bottom", "view_depth"):
+                    val = float(v)
+                    if view_type in ("floor_plan", "plan") and self.levels and val < min_lvl:
+                        val += base
+                    metric_range[k] = feet_to_metres(val)
 
         # Lineweights come from a table rather than being hard-coded here, so a view
         # template can restyle a drawing without touching the renderer.
