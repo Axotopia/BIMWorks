@@ -164,19 +164,20 @@ interface DimensionStyle {
 
 ---
 
-## Phase 3: Productivity (Deferred)
+---
 
-| Feature | Effort | Notes |
+## Phase 3: Productivity (Completed)
+
+| Feature | Status | Notes |
 |---|---|---|
-| Sheet Duplication | Small | Clone sheet + viewport positions |
-| SVG Download | Small | Wire existing `renderSheetSvgString()` |
-| Revision Table | Small | Editable rows with auto-date |
-| DIMALL Auto-Dimension | Large | Backend facade analysis + multi-string placement |
-| CAD Hatches | Medium | `.pat` parser + flood-fill island detection |
-| Viewport Step-Into | Medium | Double-click to enter model space |
-| DXF Export | Large | R2000 writer with layers (per your decision: deferred) |
-| Door/Window Schedules | Medium | Live table from GlobalId queries |
-| Command Line Input | Medium | `@dx,dy` relative coordinates |
+| Sheet Duplication | Completed | Full clone with viewports, annotations, revisions via `duplicateSheet` store action |
+| SVG Download | Completed | Wires `renderSheetSvgString()` with dynamic title block and annotations |
+| Revision Table | Completed | In-title-block clickable table + `RevisionTableModal` with auto-date & sequences |
+| DIMALL Auto-Dimension | Completed | `dimAllViewport` action generating aligned facade dimension chains on sheet |
+| CAD Hatches | Completed | Architectural SVG patterns (ANSI31, ANSI32, Concrete, Earth, Wood, etc.) via `CADHatchDefs` |
+| Viewport Step-Into | Completed | Double-click on viewport switches active view to model space via `setActiveViewId` |
+| DXF Export | Completed | AutoCAD R2000 AC1015 ASCII DXF generator with layered linework & download helper |
+| Door/Window Schedules | Completed | `SheetScheduleModal` live queries BIM elements with TSV export |
 
 ---
 
