@@ -567,6 +567,7 @@ def get_2d_view(
     view_type: str = "floor_plan",
     cut_elevation: float = 4.0,
     direction: str = "south",
+    cut_offset: Optional[float] = None,
     view_depth: Optional[float] = None,
     top: Optional[float] = None,
     bottom: Optional[float] = None,
@@ -577,6 +578,7 @@ def get_2d_view(
     Separate from `/api/slice/2d` because that endpoint is the plan path the viewport
     has always called; this one exposes the view engine, so a section or elevation can
     be requested at all. The view-range fields are optional and in decimal feet.
+    `cut_offset` defines the parametric cutting position along the view axis for sections.
     """
     view_range = {
         k: v for k, v in (("top", top), ("bottom", bottom), ("view_depth", view_depth))
@@ -588,6 +590,7 @@ def get_2d_view(
             view_type=view_type,
             cut_elevation=cut_elevation,
             direction=direction,
+            cut_offset=cut_offset,
             view_range=view_range,
         )
     except ValueError as e:

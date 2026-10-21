@@ -292,11 +292,19 @@ function sliceContext(
     }
   }
 
+  let cutOffset: number | undefined = undefined;
+  if (active?.line) {
+    const mx = (active.line.start[0] + active.line.end[0]) / 2;
+    const my = (active.line.start[1] + active.line.end[1]) / 2;
+    cutOffset = (direction === 'south' || direction === 'north') ? my : mx;
+  }
+
   return {
     viewType: active?.type ?? 'floor_plan',
     cut: cutElevation ?? range?.cut ?? 4.0,
     levelId: active?.levelId ?? (active as any)?.level_id,
     direction,
+    cutOffset,
     top: range?.top,
     bottom: range?.bottom,
     viewDepth: range?.viewDepth ?? range?.view_depth,
@@ -1929,6 +1937,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     if (ctx.viewType !== 'floor_plan') {
       q.set('view_type', ctx.viewType);
       q.set('direction', ctx.direction);
+      if (ctx.cutOffset !== undefined) q.set('cut_offset', String(ctx.cutOffset));
       if (ctx.top !== undefined) q.set('top', String(ctx.top));
       if (ctx.bottom !== undefined) q.set('bottom', String(ctx.bottom));
       // A view depth of 0 means "not set"; sending it would filter everything out.
@@ -2211,10 +2220,18 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           }
         }
 
+        let cutOffset: number | undefined = undefined;
+        if (active?.line) {
+          const mx = (active.line.start[0] + active.line.end[0]) / 2;
+          const my = (active.line.start[1] + active.line.end[1]) / 2;
+          cutOffset = (direction === 'south' || direction === 'north') ? my : mx;
+        }
+
         const params = new URLSearchParams({
           view_type: viewType,
           cut_elevation: String(cut),
           direction,
+          ...(cutOffset !== undefined ? { cut_offset: String(cutOffset) } : {}),
           // The store uses camelCase; the API uses the Revit field names.
           ...(range?.top !== undefined ? { top: String(range.top) } : {}),
           ...(range?.bottom !== undefined ? { bottom: String(range.bottom) } : {}),

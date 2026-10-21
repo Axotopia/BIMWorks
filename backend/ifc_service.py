@@ -6727,6 +6727,7 @@ class BimModelManager:
     def render_2d_view(self, view_type: str = "floor_plan",
                        cut_elevation: float = FEET_4,
                        direction: str = "south",
+                       cut_offset: Optional[float] = None,
                        view_range: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
         """
         Renders a plan, section or elevation into the 2D vector contract.
@@ -6775,6 +6776,7 @@ class BimModelManager:
         )
         # A plan cuts; an elevation does not; a section does.
         cut_z = None
+        cut_depth = None
         base = 0.0
         if view_type in ("floor_plan", "plan"):
             resolved_level = self._resolve_plan_level(None, cut_elevation)
@@ -6786,8 +6788,14 @@ class BimModelManager:
             else:
                 abs_cut = float(cut_elevation)
             cut_z = feet_to_metres(abs_cut)
+            cut_depth = camera.depth((0.0, 0.0, cut_z))
         elif view_type == "section":
-            cut_z = feet_to_metres(float(cut_elevation))
+            if cut_offset is not None:
+                offset_m = feet_to_metres(float(cut_offset))
+                pt = (offset_m, 0.0, 0.0) if key in ("east", "west") else (0.0, offset_m, 0.0)
+                cut_depth = camera.depth(pt)
+            else:
+                cut_depth = camera.depth((0.0, 0.0, 0.0))
 
         # The view range is applied in MODEL units, so convert from feet (the
         # parametric unit) to metres (the geometry's unit) before filtering.
@@ -6807,7 +6815,7 @@ class BimModelManager:
         from hlr_renderer import LineweightTable
 
         table = LineweightTable()
-        view = projector.render(camera=camera, cut_z=cut_z, view_range=metric_range)
+        view = projector.render(camera=camera, cut_depth=cut_depth, cut_z=cut_z, view_range=metric_range)
         contract = projector.to_contract(view, lineweights=table, view_range=view_range)
         for path_key in ("cut_paths", "projection_paths", "hidden_paths"):
             for entry in contract.get(path_key, []):
@@ -6817,6 +6825,8 @@ class BimModelManager:
         contract["direction"] = key
         contract["view_range"] = dict(view_range or {})
         contract["cut_elevation"] = float(cut_elevation)
+        if cut_offset is not None:
+            contract["cut_offset"] = float(cut_offset)
         contract["renderer"] = "mesh-hlr"
         # Annotation for every view type, not just plans.
         return self._annotate_view(contract, cut_elevation, view_type)
@@ -7393,8 +7403,9 @@ class BimModelManager:
         # is axis-aligned and its dimensions are square to the building. This call was
         # the only caller of `_orient_plan`, and deleting it with the old tail of
         # `_mesh_hlr_plan_contract` silently stopped rotating plans for a rotated model
-        # (`plan_rotation` is -17.1 deg on the reference building).
-        contract = self._orient_plan(contract, self._plan_rotation())
+        # (`plan_rotation` is -17.1 deg on the reference building). Only applies to horizontal plans.
+        if view_type in ("floor_plan", "plan"):
+            contract = self._orient_plan(contract, self._plan_rotation())
         dims_out = []
         if hasattr(self, "dimensions") and self.dimensions:
             for did, d in self.dimensions.items():
@@ -7420,6 +7431,7 @@ class BimModelManager:
                         "length": val,
                         "text": format_feet_inches(val),
                         "offset_norm": [0.0, 1.0],
+                        "offset": float(d.get("offset", 0.8)),
                         "is_locked": bool(d.get("is_locked", False)),
                         "ref_a": ref_a,
                         "ref_b": ref_b,
@@ -7450,6 +7462,7 @@ class BimModelManager:
                     "length": val,
                     "text": format_feet_inches(val),
                     "offset_norm": [float(nx), float(ny)],
+                    "offset": float(d.get("offset", 0.8)),
                     "is_locked": bool(d.get("is_locked", False)),
                     "ref_a": ref_a,
                     "ref_b": ref_b,

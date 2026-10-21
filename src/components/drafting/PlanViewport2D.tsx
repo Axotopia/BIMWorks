@@ -273,10 +273,22 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
         origCenter: [number, number];
         startMouse: [number, number];
         hasMoved: boolean;
+      }
+    | {
+        type: 'dimension-line';
+        dimKey: string;
+        origOffset: number;
+        norm: [number, number];
+        startMouse: [number, number];
+        hasMoved: boolean;
       };
 
   const activeDragAnnotationRef = useRef<DragAnnotation | null>(null);
-  const [dragAnnotationPreview, setDragAnnotationPreview] = useState<(DragAnnotation & { dx: number; dy: number }) | null>(null);
+  const [dragAnnotationPreview, setDragAnnotationPreview] = useState<
+    (DragAnnotation & { dx: number; dy: number; previewOffset?: number }) | null
+  >(null);
+  const [dimensionOffsets, setDimensionOffsets] = useState<Record<string, number>>({});
+  const justDraggedRef = useRef<boolean>(false);
 
   // Memoized snap segments for SnapEngine
   const snapSegments = useMemo<SnapSegment[]>(() => {
@@ -599,6 +611,26 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
     };
   };
 
+  const handleDimensionMouseDown = (
+    dimKey: string,
+    currentOffset: number,
+    norm: [number, number],
+    e: React.MouseEvent
+  ) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const raw = getRawModelCoords(e.clientX, e.clientY);
+    if (!raw) return;
+    activeDragAnnotationRef.current = {
+      type: 'dimension-line',
+      dimKey,
+      origOffset: currentOffset,
+      norm,
+      startMouse: [raw[0], raw[1]],
+      hasMoved: false,
+    };
+  };
+
   // Mouse interaction: Panning vs Geometry Authoring vs Box Selection
   const handleMouseDown = (e: React.MouseEvent) => {
     // MMB always pans, Alt+LMB also pans
@@ -836,6 +868,17 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
       if (Math.hypot(dx, dy) > 0.08) {
         drag.hasMoved = true;
       }
+      if (drag.type === 'dimension-line') {
+        const delta = dx * drag.norm[0] + dy * drag.norm[1];
+        const previewOffset = Math.max(0.1, drag.origOffset + delta);
+        setDragAnnotationPreview({
+          ...drag,
+          dx,
+          dy,
+          previewOffset,
+        });
+        return;
+      }
       setDragAnnotationPreview({
         ...drag,
         dx,
@@ -927,17 +970,33 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
       activeDragAnnotationRef.current = null;
 
       if (!drag.hasMoved || Math.hypot(dx, dy) < 0.15) {
-        // Single pick / click: change view or select grid
+        // Single pick / click: select element, do not switch active view
         if (drag.type === 'elevation' || drag.type === 'section-head' || drag.type === 'section-line') {
-          setActiveViewId(drag.id);
+          setSelectedGuid(drag.id);
+        } else if (drag.type === 'dimension-line') {
+          setSelectedGuid(drag.dimKey);
         } else if (drag.type === 'grid') {
           handleElementClick(drag.guid, e);
         }
         return;
       }
 
+      justDraggedRef.current = true;
+      setTimeout(() => {
+        justDraggedRef.current = false;
+      }, 300);
+
       // Drag and move committed
-      if (drag.type === 'elevation') {
+      if (drag.type === 'dimension-line') {
+        const delta = dx * drag.norm[0] + dy * drag.norm[1];
+        const finalOffset = Math.max(0.1, drag.origOffset + delta);
+        setDimensionOffsets((prev) => ({
+          ...prev,
+          [drag.dimKey]: finalOffset,
+        }));
+        setStatusMessage(`Adjusted dimension line offset to ${finalOffset.toFixed(2)} ft`);
+        return;
+      } else if (drag.type === 'elevation') {
         const newStart: [number, number] = [drag.origPos[0] + dx, drag.origPos[1] + dy];
         const newEnd: [number, number] = [drag.origEnd[0] + dx, drag.origEnd[1] + dy];
         updateViewLine(drag.id, { start: newStart, end: newEnd });
@@ -1517,22 +1576,30 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
             />
           ))}
 
-          {/* 6. Associative Dimensions with Interactive Padlock & EQ Toggles */}
+          {/* 6. Associative Dimensions with Interactive Manipulation, Padlock & EQ Toggles */}
           {sliced2D?.dimensions.map((dim, idx) => {
             if (!dim.start || !dim.end || dim.status === 'lost') return null;
-            const isSelected = selectedGuid === dim.guid;
+            const dimKey = dim.id || dim.guid || `dim-${idx}`;
+            const isSelected = selectedGuid === dim.guid || selectedGuid === dim.id || selectedGuid === dimKey;
+            const isDimDragged = dragAnnotationPreview?.type === 'dimension-line' && dragAnnotationPreview.dimKey === dimKey;
+            const currentOffset = isDimDragged
+              ? (dragAnnotationPreview.previewOffset ?? 0.8)
+              : (dimensionOffsets[dimKey] ?? (dim as any).offset ?? 0.8);
+
             // `GeometricReference.guid` is optional (hint-only point references have none), so
             // narrow once here rather than relying on optional-chain narrowing at the call site.
             const refAGuid = dim.ref_a?.guid ?? null;
             const refBGuid = dim.ref_b?.guid ?? null;
-            const offDist = 0.8;
             const offsetNorm = dim.offset_norm || [0, 1];
-            const dx = offsetNorm[0] * offDist;
-            const dy = offsetNorm[1] * offDist;
+            const dx = offsetNorm[0] * currentOffset;
+            const dy = offsetNorm[1] * currentOffset;
             const mx = (dim.start[0] + dim.end[0]) / 2 + dx;
             const my = (dim.start[1] + dim.end[1]) / 2 + dy;
             const dimDx = dim.end[0] - dim.start[0];
             const dimDy = dim.end[1] - dim.start[1];
+            const dimLen = Math.hypot(dimDx, dimDy) || 1;
+            const udx = dimDx / dimLen;
+            const udy = dimDy / dimLen;
             let deg = (Math.atan2(dimDy, dimDx) * 180) / Math.PI;
             if (deg > 90) deg -= 180;
             if (deg < -90) deg += 180;
@@ -1558,7 +1625,7 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
             const showBadges = isSelected || isLocked || isEq;
 
             return (
-              <g key={dim.id || `dim-${idx}`} className="text-dimension select-none">
+              <g key={dimKey} className="text-dimension select-none">
                 {/* Witness lines from wall to dimension line */}
                 <line
                   x1={dim.start[0]}
@@ -1579,14 +1646,53 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
                   vectorEffect="non-scaling-stroke"
                 />
 
-                {/* Dimension line */}
+                {/* Wide hit line to grab and manipulate dimension line offset */}
                 <line
                   x1={dim.start[0] + dx}
                   y1={dim.start[1] + dy}
                   x2={dim.end[0] + dx}
                   y2={dim.end[1] + dy}
-                  stroke={isSelected ? '#0284c7' : '#64748b'}
-                  strokeWidth="1.0"
+                  stroke="transparent"
+                  strokeWidth="12"
+                  vectorEffect="non-scaling-stroke"
+                  className="cursor-move"
+                  onMouseDown={(e) => handleDimensionMouseDown(dimKey, currentOffset, offsetNorm, e)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (justDraggedRef.current) return;
+                    setSelectedGuid(dim.guid || dim.id || dimKey);
+                  }}
+                />
+
+                {/* Visible dimension line */}
+                <line
+                  x1={dim.start[0] + dx}
+                  y1={dim.start[1] + dy}
+                  x2={dim.end[0] + dx}
+                  y2={dim.end[1] + dy}
+                  stroke={isSelected || isDimDragged ? '#0284c7' : '#64748b'}
+                  strokeWidth={isSelected || isDimDragged ? '1.8' : '1.0'}
+                  vectorEffect="non-scaling-stroke"
+                  className="cursor-move pointer-events-none"
+                />
+
+                {/* Architectural tick marks at dimension line ends */}
+                <line
+                  x1={dim.start[0] + dx - udx * 0.15 - offsetNorm[0] * 0.15}
+                  y1={dim.start[1] + dy - udy * 0.15 - offsetNorm[1] * 0.15}
+                  x2={dim.start[0] + dx + udx * 0.15 + offsetNorm[0] * 0.15}
+                  y2={dim.start[1] + dy + udy * 0.15 + offsetNorm[1] * 0.15}
+                  stroke={isSelected || isDimDragged ? '#0284c7' : '#64748b'}
+                  strokeWidth="1.5"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <line
+                  x1={dim.end[0] + dx - udx * 0.15 - offsetNorm[0] * 0.15}
+                  y1={dim.end[1] + dy - udy * 0.15 - offsetNorm[1] * 0.15}
+                  x2={dim.end[0] + dx + udx * 0.15 + offsetNorm[0] * 0.15}
+                  y2={dim.end[1] + dy + udy * 0.15 + offsetNorm[1] * 0.15}
+                  stroke={isSelected || isDimDragged ? '#0284c7' : '#64748b'}
+                  strokeWidth="1.5"
                   vectorEffect="non-scaling-stroke"
                 />
 
@@ -1607,6 +1713,7 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
                   className="cursor-pointer hover:fill-sky-600 transition-colors"
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (justDraggedRef.current) return;
                     const targetId = dim.id || dim.guid;
                     if (targetId) {
                       setEditingDimension({ id: targetId, mx, my });
@@ -1735,7 +1842,8 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
                       onMouseDown={(evt) => handleSectionLineMouseDown(secView.id, line, evt)}
                       onClick={(evt) => {
                         evt.stopPropagation();
-                        setActiveViewId(secView.id);
+                        if (justDraggedRef.current) return;
+                        setSelectedGuid(secView.id);
                       }}
                       onDoubleClick={(evt) => {
                         evt.stopPropagation();
@@ -1755,13 +1863,14 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
                       className="cursor-move pointer-events-none"
                     />
 
-                    {/* Start Head (drag to stretch, click/double-click to switch to section view) */}
+                    {/* Start Head (drag to stretch, double-click to switch to section view) */}
                     <g
                       className="cursor-move group/head"
                       onMouseDown={(evt) => handleSectionHeadMouseDown(secView.id, 'start', line, evt)}
                       onClick={(evt) => {
                         evt.stopPropagation();
-                        setActiveViewId(secView.id);
+                        if (justDraggedRef.current) return;
+                        setSelectedGuid(secView.id);
                       }}
                       onDoubleClick={(evt) => {
                         evt.stopPropagation();
@@ -1794,13 +1903,14 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
                       </text>
                     </g>
 
-                    {/* End Head (drag to stretch, click/double-click to switch to section view) */}
+                    {/* End Head (drag to stretch, double-click to switch to section view) */}
                     <g
                       className="cursor-move group/head"
                       onMouseDown={(evt) => handleSectionHeadMouseDown(secView.id, 'end', line, evt)}
                       onClick={(evt) => {
                         evt.stopPropagation();
-                        setActiveViewId(secView.id);
+                        if (justDraggedRef.current) return;
+                        setSelectedGuid(secView.id);
                       }}
                       onDoubleClick={(evt) => {
                         evt.stopPropagation();
@@ -1871,7 +1981,8 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
                     onMouseDown={(evt) => handleElevationMouseDown(elevView.id, line, evt)}
                     onClick={(evt) => {
                       evt.stopPropagation();
-                      setActiveViewId(elevView.id);
+                      if (justDraggedRef.current) return;
+                      setSelectedGuid(elevView.id);
                     }}
                     onDoubleClick={(evt) => {
                       evt.stopPropagation();

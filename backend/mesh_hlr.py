@@ -138,9 +138,10 @@ class MeshHlrProjector:
                 continue
             yield a, b, c
 
-    def _prepare(self, camera: ViewCamera) -> List[Dict[str, Any]]:
+    def _prepare(self, camera: ViewCamera, cut_depth: Optional[float] = None) -> List[Dict[str, Any]]:
         cam_key = camera.key
-        if self._prepared is not None and self._prepared_camera_key == cam_key:
+        cd_round = round(cut_depth, 4) if cut_depth is not None else None
+        if self._prepared is not None and self._prepared_camera_key == (cam_key, cd_round):
             return self._prepared
         prepared: List[Dict[str, Any]] = []
         for mesh in self.meshes:
@@ -148,7 +149,7 @@ class MeshHlrProjector:
             geom_rev = mesh.get("geom_rev")
             verts = mesh.get("vertices")
             geom_key = geom_rev if geom_rev is not None else (id(verts), len(verts) if verts else 0)
-            cache_key = (guid, geom_key, cam_key)
+            cache_key = (guid, geom_key, cam_key, cd_round)
             if self._prepared_cache is not None and cache_key in self._prepared_cache:
                 prepared.append(self._prepared_cache[cache_key])
                 continue
@@ -157,12 +158,14 @@ class MeshHlrProjector:
             min_depth = None
             z_lo = z_hi = None
             for tri in self._triangles(mesh):
+                depths = [camera.depth(p) for p in tri]
+                if cut_depth is not None and max(depths) < cut_depth - 1e-6:
+                    continue
                 for p in tri:
                     z = p[2]
                     z_lo = z if z_lo is None else min(z_lo, z)
                     z_hi = z if z_hi is None else max(z_hi, z)
                 pts = [camera.project(p) for p in tri]
-                depths = [camera.depth(p) for p in tri]
                 try:
                     poly = Polygon(pts)
                 except Exception:
@@ -214,7 +217,7 @@ class MeshHlrProjector:
         # Nearest first: an element's occluders are exactly the earlier entries.
         prepared.sort(key=lambda m: m["min_depth"])
         self._prepared = prepared
-        self._prepared_camera_key = cam_key
+        self._prepared_camera_key = (cam_key, cd_round)
         return prepared
 
     def _apply_view_range(self, prepared, view_range: Dict[str, float]):
@@ -401,6 +404,86 @@ class MeshHlrProjector:
             return []
         return [(a, b)]
 
+    @staticmethod
+    def _triangle_depth_segments(tri, camera: ViewCamera, cut_depth: float) -> List[Tuple[Point2, Point2]]:
+        """Where a triangle crosses the camera depth plane camera.depth(p) == cut_depth."""
+        pts = []
+        for i in range(3):
+            a, b = tri[i], tri[(i + 1) % 3]
+            da = camera.depth(a) - cut_depth
+            db = camera.depth(b) - cut_depth
+            if abs(da) < 1e-12:
+                pts.append(a)
+            if da * db < 0:
+                t = da / (da - db)
+                pts.append((
+                    a[0] + (b[0] - a[0]) * t,
+                    a[1] + (b[1] - a[1]) * t,
+                    a[2] + (b[2] - a[2]) * t,
+                ))
+        if len(pts) < 2:
+            return []
+        a, b = pts[0], pts[1]
+        pa = camera.project(a)
+        pb = camera.project(b)
+        if abs(pa[0] - pb[0]) < 1e-6 and abs(pa[1] - pb[1]) < 1e-6:
+            return []
+        return [(pa, pb)]
+
+    def cut_at_depth(self, cut_depth: float, camera: ViewCamera,
+                     meshes: Optional[Sequence[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+        """
+        The sectioned solid at `cut_depth` along the camera viewing axis, as 2D polylines.
+        """
+        cam_key = camera.key
+        cd_round = round(cut_depth, 6)
+        out: List[Dict[str, Any]] = []
+        for mesh in (meshes if meshes is not None else self.meshes):
+            guid = mesh.get("guid")
+            geom_rev = mesh.get("geom_rev")
+            verts = mesh.get("vertices")
+            geom_key = geom_rev if geom_rev is not None else (id(verts), len(verts) if verts else 0)
+            cache_key = (guid, geom_key, cd_round, cam_key)
+            if self._cut_cache is not None and cache_key in self._cut_cache:
+                out.extend(self._cut_cache[cache_key])
+                continue
+
+            segments: List[Tuple[Point2, Point2]] = []
+            for tri in self._triangles(mesh):
+                segments.extend(self._triangle_depth_segments(tri, camera, cut_depth))
+            if not segments:
+                if self._cut_cache is not None:
+                    self._cut_cache[cache_key] = []
+                continue
+            lines = [LineString([s[0], s[1]]) for s in segments]
+            try:
+                merged = unary_union(lines)
+            except Exception:
+                merged = None
+            mesh_out = []
+            if merged is None:
+                for line in lines:
+                    mesh_out.append({
+                        "guid": mesh.get("guid"),
+                        "ifc_class": mesh.get("ifc_class"),
+                        "name": mesh.get("name"),
+                        "coords": [(round(x, 6), round(y, 6)) for x, y in line.coords],
+                    })
+            else:
+                for g in (merged.geoms if hasattr(merged, "geoms") else [merged]):
+                    if g.is_empty or g.geom_type != "LineString":
+                        continue
+                    mesh_out.append({
+                        "guid": mesh.get("guid"),
+                        "ifc_class": mesh.get("ifc_class"),
+                        "name": mesh.get("name"),
+                        "coords": [(round(x, 6), round(y, 6)) for x, y in g.coords],
+                    })
+            if self._cut_cache is not None:
+                self._cut_cache[cache_key] = mesh_out
+            out.extend(mesh_out)
+        return out
+
     def cut_at(self, plane_z: float, camera: ViewCamera,
                meshes: Optional[Sequence[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         """
@@ -465,12 +548,13 @@ class MeshHlrProjector:
     # -- render -------------------------------------------------------------
     def render(self, camera: Optional[ViewCamera] = None,
                cut_z: Optional[float] = None,
+               cut_depth: Optional[float] = None,
                view_range: Optional[Dict[str, float]] = None,
                include_guids: Optional[Iterable[str]] = None) -> ProjectedView:
         """
         Computes the three partitions.
 
-        `cut_z` enables the cut partition. `camera` defaults to a plan looking down.
+        `cut_depth` or `cut_z` enables the cut partition. `camera` defaults to a plan looking down.
 
         `view_range` carries the Revit fields (`cut`, `top`, `bottom`, `view_depth`)
         in MODEL units and is honoured, not merely reported:
@@ -484,9 +568,14 @@ class MeshHlrProjector:
         what the older callers expect.
         """
         camera = camera or ViewCamera()
-        if self._prepared_camera_key != camera.key:
+        effective_depth = cut_depth
+        if effective_depth is None and cut_z is not None:
+            effective_depth = camera.depth((0.0, 0.0, cut_z))
+
+        cam_state_key = (camera.key, round(effective_depth, 4) if effective_depth is not None else None)
+        if self._prepared_camera_key != cam_state_key:
             self._prepared = None
-        prepared = self._prepare(camera)
+        prepared = self._prepare(camera, cut_depth=effective_depth)
         # A VIEW is a selection of the model, not just a camera position: a floor plan
         # shows one storey. Filtering here means the cut, the projection and the hidden
         # linework all agree on what is in the view, rather than each being filtered
@@ -499,8 +588,17 @@ class MeshHlrProjector:
             prepared = self._apply_view_range(prepared, view_range)
         view = ProjectedView(camera=camera)
 
-        if cut_z is not None:
+        if effective_depth is not None:
             # Section only the meshes in this view (storey selection and/or view range).
+            if include_guids is not None or view_range:
+                allowed = {m["guid"] for m in prepared}
+                view.cut = self.cut_at_depth(
+                    effective_depth, camera,
+                    [m for m in self.meshes if m.get("guid") in allowed],
+                )
+            else:
+                view.cut = self.cut_at_depth(effective_depth, camera)
+        elif cut_z is not None:
             if include_guids is not None or view_range:
                 allowed = {m["guid"] for m in prepared}
                 view.cut = self.cut_at(
