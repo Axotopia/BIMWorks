@@ -231,7 +231,7 @@ export interface OverlayDimension {
   eq_group?: string | null;
 }
 
-export type ViewType = 'floor_plan' | '3d' | 'section' | 'elevation' | 'sheet';
+export type ViewType = 'floor_plan' | '3d' | 'section' | 'elevation' | 'sheet' | 'drafting';
 
 export type CameraProjectionMode = 'perspective' | 'isometric';
 
@@ -241,6 +241,8 @@ export interface ViewDefinition {
   type: ViewType;
   levelId?: string;
   scale: string;
+  scaleDenominator?: number;
+  number?: number;
   detailLevel: 'coarse' | 'medium' | 'fine';
   visualStyle: 'wireframe' | 'hidden_line' | 'consistent_colors';
   projection?: CameraProjectionMode;
@@ -266,17 +268,90 @@ export interface SheetViewport {
   width: number;
   height: number;
   scaleFactor: number;
+  scale?: number;
+  center?: { x: number; y: number } | null;
+  drawingNumber?: string;
+  hiddenLayers?: string[];
 }
 
-export type SheetPaperSize = 'ARCH_D' | 'ARCH_C' | 'ISO_A1' | 'ANSI_D' | 'TABLOID' | 'LETTER';
+export type SheetPaperSize =
+  | 'ARCH_D'
+  | 'ARCH_C'
+  | 'ARCH_B'
+  | 'ARCH_A'
+  | 'ARCH_E'
+  | 'ARCH_E1'
+  | 'ISO_A0'
+  | 'ISO_A1'
+  | 'ISO_A2'
+  | 'ISO_A3'
+  | 'ISO_A4'
+  | 'ANSI_A'
+  | 'ANSI_B'
+  | 'ANSI_C'
+  | 'ANSI_D'
+  | 'ANSI_E'
+  | 'TABLOID'
+  | 'LETTER'
+  | 'LEGAL';
+
+export interface Pt {
+  x: number;
+  y: number;
+}
+
+export type DraftShape =
+  | { type: 'line'; a: Pt; b: Pt }
+  | { type: 'polyline'; pts: Pt[]; closed: boolean }
+  | { type: 'circle'; c: Pt; r: number }
+  | { type: 'arc'; c: Pt; r: number; start: number; end: number };
+
+export interface AxisShape {
+  type: 'axis';
+  a: Pt;
+  b: Pt;
+  label: string;
+  bubble: 'circle' | 'square';
+  ends: 'both' | 'start' | 'end' | 'none';
+  size: number;
+  height: number;
+  lineType: 'solid' | 'dashed' | 'dotted' | 'dashdot';
+}
+
+export interface LevelRef {
+  at: Pt;
+  storey?: string;
+}
+
+export type AnnotationShape =
+  | { type: 'text'; p: Pt; text: string; height: number; rotation: number; frame?: boolean; leader?: Pt }
+  | { type: 'leader'; pts: Pt[]; text: string; height: number }
+  | { type: 'dimension'; variant: 'aligned' | 'linear'; a: Pt; b: Pt; at: Pt; height: number; text?: string; textAt?: Pt }
+  | { type: 'radial'; c: Pt; r: number; at: Pt; diameter: boolean; height: number }
+  | { type: 'angular'; c: Pt; a: Pt; b: Pt; at: Pt; height: number }
+  | { type: 'level'; p: Pt; value: number; height: number; ref?: LevelRef }
+  | AxisShape
+  | { type: 'symbol'; symbolId: string; p: Pt; scale: number; rotation: number; followsNorth?: boolean }
+  | { type: 'hatch'; loops: Pt[][]; pattern: string; scale: number; angle: number; color?: string };
+
+export type EntityShape = DraftShape | AnnotationShape;
+
+export interface DraftEntity {
+  id: string;
+  viewId: string;
+  layerId: string;
+  shape: EntityShape;
+  params?: Record<string, string | number | boolean>;
+}
 
 export interface SheetAnnotation {
   id: string;
-  kind: 'text' | 'leader' | 'dimension' | 'line';
+  kind: 'text' | 'leader' | 'dimension' | 'line' | 'draft_entity';
   layerId: string;
   points: [number, number][]; // Sheet-space coordinates (px from sheet top-left origin)
   text?: string;
   styleId?: string;
+  shape?: EntityShape;
 }
 
 export interface DraftingLayer {
