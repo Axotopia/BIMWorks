@@ -29,6 +29,7 @@ import {
   SketchDrawTool,
   PlaneLockType,
   CameraProjectionMode,
+  DraftEntity,
 } from '../types/bim';
 import {
   calculateMeshVolume,
@@ -40,6 +41,8 @@ import {
   DEFAULT_TEXT_STYLES,
   DEFAULT_DIMENSION_STYLES,
 } from '../components/sheets/annotationStyles';
+import { draftingFrame } from '../components/sheets/annotationEngine';
+import { DEFAULT_DRAFT_ENTITIES } from '../components/drafting/defaultDraftEntities';
 import { UnitSystem, formatLength, tryParseLength } from '../utils/units';
 import {
   InteractionSessionState,
@@ -535,6 +538,7 @@ interface BimStoreState {
   activeTextStyleId: string;
   activeDimensionStyleId: string;
   selectedAnnotationId: string | null;
+  draftEntities: DraftEntity[];
 
   // Model Data
   rev?: number;
@@ -735,6 +739,12 @@ interface BimStoreState {
   deleteDraftingLayer: (layerId: string) => void;
   addLayerGroup: (group: LayerGroup) => void;
   updateLayerGroup: (groupId: string, updates: Partial<LayerGroup>) => void;
+  setDraftEntities: (entities: DraftEntity[]) => void;
+  createDraftingView: (name: string, scale?: string, scaleDenominator?: number) => string;
+  deleteDraftingView: (viewId: string) => void;
+  addDraftEntity: (entity: Omit<DraftEntity, 'id'>) => string;
+  updateDraftEntity: (id: string, updates: Partial<DraftEntity>) => void;
+  removeDraftEntity: (id: string) => void;
 
   // Wall & Modeling Tool Options (Options Bar)
   wallHeight: number;
@@ -946,6 +956,16 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       visualStyle: 'hidden_line',
       viewRange: { ...DEFAULT_VIEW_RANGE },
     },
+    {
+      id: 'view-drafting-parapet',
+      name: 'Drafting: Parapet Detail',
+      type: 'drafting',
+      scale: '1" = 1\'-0"',
+      scaleDenominator: 12,
+      detailLevel: 'fine',
+      visualStyle: 'hidden_line',
+      viewRange: { ...DEFAULT_VIEW_RANGE },
+    },
   ],
   activeViewId: 'view-3d',
   viewLayout: 'split-2v',
@@ -992,6 +1012,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   activeTextStyleId: 'style-text-standard',
   activeDimensionStyleId: 'style-dim-arch-tick',
   selectedAnnotationId: null,
+  draftEntities: DEFAULT_DRAFT_ENTITIES,
 
   rev: undefined,
   docId: undefined,
@@ -1300,8 +1321,8 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     set({ activeViewId: id });
     const view = get().views.find((v) => v.id === id);
     // Any 2D view type, not just plans: sections and elevations are drawn by the same
-    // view engine and were previously never requested.
-    if (view && view.type !== '3d' && view.type !== 'sheet') {
+    // view engine and were previously never requested. Drafting views are pure 2D and do not fetch slices.
+    if (view && view.type !== '3d' && view.type !== 'sheet' && view.type !== 'drafting') {
       const cut = view.viewRange?.cut ?? (view as any)?.view_range?.cut ?? 4.0;
       get().fetch2DSlice(cut);
     } else if (view && view.type === '3d' && view.projection) {
@@ -2806,13 +2827,22 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
   addViewportToSheet: async (sheetId, viewId, x, y) => {
     try {
+      const view = get().views.find((v) => v.id === viewId);
+      let width = 480;
+      let height = 360;
+      if (view && view.type === 'drafting') {
+        const drafts = get().draftEntities.filter((e) => e.viewId === viewId);
+        const frame = draftingFrame(drafts, view.scaleDenominator || 12);
+        width = Math.max(140, Math.round(frame.width));
+        height = Math.max(100, Math.round(frame.height));
+      }
       await get().dispatchTransaction('addViewportToSheet', {
         sheet_id: sheetId,
         view_id: viewId,
         x,
         y,
-        width: 480,
-        height: 360,
+        width,
+        height,
         scale_factor: 1.0,
       }, `Add Viewport to Sheet`);
     } catch (e) {
@@ -3209,6 +3239,61 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   updateLayerGroup: (groupId, updates) => {
     set((state) => ({
       layerGroups: state.layerGroups.map((g) => (g.id === groupId ? { ...g, ...updates } : g)),
+    }));
+  },
+
+  setDraftEntities: (entities) => set({ draftEntities: entities }),
+
+  createDraftingView: (name, scale = '1" = 1\'-0"', scaleDenominator = 12) => {
+    const id = `view-drafting-${Date.now()}`;
+    const newView: ViewDefinition = {
+      id,
+      name,
+      type: 'drafting',
+      scale,
+      scaleDenominator,
+      detailLevel: 'fine',
+      visualStyle: 'hidden_line',
+      viewRange: {
+        top: 8.0,
+        cut: 4.0,
+        bottom: 0.0,
+        viewDepth: 0.0,
+      },
+    };
+    set((state) => ({
+      views: [...state.views, newView],
+      activeViewId: id,
+    }));
+    return id;
+  },
+
+  deleteDraftingView: (viewId) => {
+    set((state) => ({
+      views: state.views.filter((v) => v.id !== viewId),
+      draftEntities: state.draftEntities.filter((e) => e.viewId !== viewId),
+      activeViewId: state.activeViewId === viewId ? (state.views[0]?.id || 'view-3d') : state.activeViewId,
+    }));
+  },
+
+  addDraftEntity: (entity) => {
+    const id = `draft-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const fullEntity: DraftEntity = { ...entity, id };
+    set((state) => ({
+      draftEntities: [...state.draftEntities, fullEntity],
+    }));
+    return id;
+  },
+
+  updateDraftEntity: (id, updates) => {
+    set((state) => ({
+      draftEntities: state.draftEntities.map((e) => (e.id === id ? { ...e, ...updates } : e)),
+    }));
+  },
+
+  removeDraftEntity: (id) => {
+    set((state) => ({
+      draftEntities: state.draftEntities.filter((e) => e.id !== id),
     }));
   },
 

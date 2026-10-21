@@ -51,6 +51,46 @@ export const DEFAULT_DRAFTING_LAYERS: DraftingLayer[] = [
     visible: true,
     locked: false,
   },
+  {
+    id: 'layer-draft-heavy',
+    name: 'A-DETL-HEVY',
+    groupId: 'group-drafting',
+    colour: '#0f172a',
+    penWeight: 0.5,
+    lineType: 'solid',
+    visible: true,
+    locked: false,
+  },
+  {
+    id: 'layer-draft-medium',
+    name: 'A-DETL-MEDM',
+    groupId: 'group-drafting',
+    colour: '#1e293b',
+    penWeight: 0.35,
+    lineType: 'solid',
+    visible: true,
+    locked: false,
+  },
+  {
+    id: 'layer-draft-fine',
+    name: 'A-DETL-FINE',
+    groupId: 'group-drafting',
+    colour: '#475569',
+    penWeight: 0.18,
+    lineType: 'solid',
+    visible: true,
+    locked: false,
+  },
+  {
+    id: 'layer-draft-hatch',
+    name: 'A-DETL-PATR',
+    groupId: 'group-drafting',
+    colour: '#64748b',
+    penWeight: 0.13,
+    lineType: 'solid',
+    visible: true,
+    locked: false,
+  },
 ];
 
 export const DEFAULT_LAYER_GROUPS: LayerGroup[] = [
@@ -58,6 +98,11 @@ export const DEFAULT_LAYER_GROUPS: LayerGroup[] = [
     id: 'group-annotations',
     name: 'Annotations & Dimensions',
     layerIds: ['layer-anno-note', 'layer-anno-dims', 'layer-anno-lead', 'layer-anno-line'],
+  },
+  {
+    id: 'group-drafting',
+    name: 'Drafting Linework & Detail',
+    layerIds: ['layer-draft-heavy', 'layer-draft-medium', 'layer-draft-fine', 'layer-draft-hatch'],
   },
   {
     id: 'group-revisions',
