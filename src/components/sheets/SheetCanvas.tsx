@@ -106,6 +106,16 @@ export const SheetCanvas: React.FC = () => {
   // Dynamic Sheet dimensions based on paper size & orientation
   const { width: sheetWidth, height: sheetHeight } = getSheetDimensions(sheet.paperSize, sheet.orientation);
 
+  const paperDef = PAPER_SIZES[sheet.paperSize] || PAPER_SIZES.ARCH_D;
+  const isPortrait = sheet.orientation === 'portrait';
+  const paperWidthMm = isPortrait ? paperDef.heightMm : paperDef.widthMm;
+  const paperHeightMm = isPortrait ? paperDef.widthMm : paperDef.heightMm;
+  const margin = paperDef.defaultMarginMm ?? 10;
+  const frameResult = renderSheetFrame(paperWidthMm, paperHeightMm, {
+    margins: { top: margin, right: margin, bottom: margin, left: margin + 5 },
+    showZoneReferences: true,
+  });
+
   // Pan & Zoom state
   const [viewTransform, setViewTransform] = useState<{ x: number; y: number; zoom: number }>({ x: 0, y: 0, zoom: 1 });
   const [isPanning, setIsPanning] = useState(false);
@@ -233,8 +243,9 @@ export const SheetCanvas: React.FC = () => {
     const isPortrait = targetSheet.orientation === 'portrait';
     const pWidthMm = isPortrait ? paperDef.heightMm : paperDef.widthMm;
     const pHeightMm = isPortrait ? paperDef.widthMm : paperDef.heightMm;
+    const expMargin = paperDef.defaultMarginMm ?? 10;
     const exportFrame = renderSheetFrame(pWidthMm, pHeightMm, {
-      margins: paperDef.defaultMarginsMm,
+      margins: { top: expMargin, right: expMargin, bottom: expMargin, left: expMargin + 5 },
       showZoneReferences: true,
     });
 
@@ -366,6 +377,7 @@ export const SheetCanvas: React.FC = () => {
       <line x1="-3" y1="3" x2="3" y2="-3" stroke="#2563eb" stroke-width="1.5" />
     </marker>
     ${getCadHatchDefsSvgString()}
+  </defs>
   <g id="sheet-frame" transform="scale(3.7795275591)">
     ${exportFrame.svgElements}
   </g>
@@ -936,24 +948,11 @@ export const SheetCanvas: React.FC = () => {
               </marker>
             </defs>
 
-            {/* Sheet Outer Border & Margin */}
-            <rect
-              x="20"
-              y="20"
-              width={sheetWidth - 40}
-              height={sheetHeight - 40}
-              fill="#ffffff"
-              stroke="#0f172a"
-              strokeWidth="2"
-            />
-            <rect
-              x="24"
-              y="24"
-              width={sheetWidth - 48}
-              height={sheetHeight - 48}
-              fill="none"
-              stroke="#64748b"
-              strokeWidth="0.75"
+            {/* Professional Architectural Drawing Frame (Outer/Inner Border, Zone Reference Grid A-F & 1-8, Trim/Fold Marks) */}
+            <g
+              id="sheet-frame"
+              transform="scale(3.7795275591)"
+              dangerouslySetInnerHTML={{ __html: frameResult.svgElements }}
             />
 
             {/* ========================================================= */}
@@ -1248,52 +1247,86 @@ export const SheetCanvas: React.FC = () => {
                     </div>
                   </foreignObject>
 
-                  {/* Embedded 2D Vector Plan Linework */}
-                  <g transform={`translate(180, 220) scale(${vpScale}, -${vpScale})`}>
-                    {/* Slabs */}
-                    {sliced2D?.slabs.map((slab) => (
-                      <path
-                        key={`s-slab-${slab.guid}`}
-                        d={slab.d}
-                        stroke="#cbd5e1"
-                        strokeWidth="0.05"
-                        fill="#f8fafc"
-                      />
-                    ))}
+                  {/* Embedded 2D Linework (IFC Model Slice or Drafting View Entities) */}
+                  {viewDef?.type === 'drafting' ? (
+                    (() => {
+                      const vDrafts = draftEntities.filter((e) => e.viewId === vp.viewId);
+                      const extent = draftsExtent(vDrafts);
+                      const center = extent
+                        ? { x: (extent.min.x + extent.max.x) / 2, y: (extent.min.y + extent.max.y) / 2 }
+                        : { x: 0, y: 0 };
+                      const scaleDenom = viewDef.scaleDenominator || 12;
+                      const k = 3.7795275591 / scaleDenom;
+                      const cx = vp.width / 2;
+                      const cy = vp.height / 2;
+                      return (
+                        <g
+                          className="drafting-view-entities"
+                          transform={`translate(${cx}, ${cy}) scale(${k}, -${k}) translate(${-center.x}, ${-center.y})`}
+                          dangerouslySetInnerHTML={{
+                            __html: vDrafts
+                              .map((e) => {
+                                const layer = draftingLayers.find((l) => l.id === e.layerId);
+                                const strokeColor = layer?.colour || '#0f172a';
+                                const strokeWidth = (layer?.penWeight || 0.35) * (scaleDenom / 3.78);
+                                return renderEntityShapeToSvg(e.shape, {
+                                  color: strokeColor,
+                                  strokeWidth,
+                                  fontSize: 10 * (scaleDenom / 12),
+                                });
+                              })
+                              .join('\n'),
+                          }}
+                        />
+                      );
+                    })()
+                  ) : (
+                    <g transform={`translate(180, 220) scale(${vpScale}, -${vpScale})`}>
+                      {/* Slabs */}
+                      {sliced2D?.slabs.map((slab) => (
+                        <path
+                          key={`s-slab-${slab.guid}`}
+                          d={slab.d}
+                          stroke="#cbd5e1"
+                          strokeWidth="0.05"
+                          fill="#f8fafc"
+                        />
+                      ))}
 
-                    {/* Walls Cut */}
-                    {sliced2D?.cut_paths.map((p, pIdx) => (
-                      <path
-                        key={`s-cut-${pIdx}`}
-                        d={p.d}
-                        stroke="#0f172a"
-                        strokeWidth="0.07"
-                        fill={useCadHatching ? 'url(#hatch-ansi31)' : '#cbd5e1'}
-                      />
-                    ))}
+                      {/* Walls Cut */}
+                      {sliced2D?.cut_paths.map((p, pIdx) => (
+                        <path
+                          key={`s-cut-${pIdx}`}
+                          d={p.d}
+                          stroke="#0f172a"
+                          strokeWidth="0.07"
+                          fill={useCadHatching ? 'url(#hatch-ansi31)' : '#cbd5e1'}
+                        />
+                      ))}
 
-                    {/* Projections */}
-                    {sliced2D?.projection_paths.map((p, pIdx) => (
-                      <path
-                        key={`s-proj-${pIdx}`}
-                        d={p.d}
-                        stroke="#334155"
-                        strokeWidth="0.03"
-                        fill="none"
-                      />
-                    ))}
+                      {/* Projections */}
+                      {sliced2D?.projection_paths.map((p, pIdx) => (
+                        <path
+                          key={`s-proj-${pIdx}`}
+                          d={p.d}
+                          stroke="#334155"
+                          strokeWidth="0.03"
+                          fill="none"
+                        />
+                      ))}
 
-                    {/* Swings */}
-                    {sliced2D?.swing_paths.map((p, pIdx) => (
-                      <path
-                        key={`s-swing-${pIdx}`}
-                        d={p.d}
-                        stroke="#2563eb"
-                        strokeWidth="0.025"
-                        fill="none"
-                      />
-                    ))}
-                  </g>
+                      {/* Swings */}
+                      {sliced2D?.swing_paths.map((p, pIdx) => (
+                        <path
+                          key={`s-swing-${pIdx}`}
+                          d={p.d}
+                          stroke="#2563eb"
+                          strokeWidth="0.025"
+                          fill="none"
+                        />
+                      ))}
+                    </g>
+                  )}
 
                   {/* ========================================================= */}
                   {/* AUTOMATIC VIEW TITLE BAR BELOW VIEWPORT                   */}
@@ -1314,7 +1347,7 @@ export const SheetCanvas: React.FC = () => {
                       fontSize="11"
                       fontWeight="bold"
                     >
-                      {index + 1}
+                      {vp.drawingNumber || (index + 1)}
                     </text>
 
                     {/* View Name & Scale Line */}
@@ -1322,7 +1355,7 @@ export const SheetCanvas: React.FC = () => {
                       {viewName}
                     </text>
                     <text x="32" y="11" fill="#64748b" fontSize="9" fontFamily="JetBrains Mono, monospace">
-                      Scale: {getScaleLabel(vpScale)}
+                      Scale: {viewDef?.scale || getScaleLabel(vpScale)}
                     </text>
                     <line x1="30" y1="18" x2={vp.width - 40} y2="18" stroke="#0f172a" strokeWidth="1.2" />
                   </g>
