@@ -23,6 +23,13 @@ import {
   UniversalFaceHit,
 } from '../../interaction/directModeling';
 import { SectionCutBar, CutAxis } from './SectionCutBar';
+import { createFineZoomModifierTracker, computeZoomFactor } from './wheelZoom';
+import { anchorTargetToCursorRay } from './zoomSurface';
+import { computeOrbitPivot } from './orbitPivot';
+import { ViewportHud } from './hud/ViewportHud';
+import { RectSelection3D, evaluate3DMarqueeSelection, MarqueeRect } from './RectSelection3D';
+import { compute3DMeasurement, Measurement3DState } from './measure3D';
+import { MeasureTriadOverlay } from './MeasureTriadOverlay';
 
 /**
  * UI-P0-13: pointer capture over a React synthetic mouse event.
@@ -126,6 +133,7 @@ export const Viewport3D: React.FC = () => {
     selectedGuid,
     selectedGuids,
     setSelectedGuid,
+    setSelectedGuids,
     hoveredGuid,
     setHoveredGuid,
     activeTool,
@@ -236,6 +244,17 @@ export const Viewport3D: React.FC = () => {
   const pushPullPreviewMeshRef = useRef<THREE.Mesh | null>(null);
   const [liveGripValue, setLiveGripValue] = useState<{ label: string; value: number } | null>(null);
   const [isEditingDim, setIsEditingDim] = useState<boolean>(false);
+  const [marqueeRect, setMarqueeRect] = useState<MarqueeRect | null>(null);
+  const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const [measurement3D, setMeasurement3D] = useState<Measurement3DState | null>(null);
+  const measureStartPointRef = useRef<[number, number, number] | null>(null);
+
+  useEffect(() => {
+    if (activeTool !== 'TP') {
+      measureStartPointRef.current = null;
+      setMeasurement3D(null);
+    }
+  }, [activeTool]);
 
   const handleCommitLiveValue = useCallback((feet: number) => {
     if (activeTool === 'WA' && wallStartPoint && wallCurrentPoint) {
@@ -621,10 +640,30 @@ export const Viewport3D: React.FC = () => {
     // `e.preventDefault()` both viewports called could not reliably stop the page
     // from scrolling behind the app while the camera zoomed. Capturing here and
     // stopping propagation is what actually keeps the gesture inside the viewport.
+    const fineZoomTracker = createFineZoomModifierTracker(window);
     const handleNativeWheel = (event: WheelEvent) => {
       event.preventDefault();
       event.stopPropagation();
-      const zoomFactor = event.deltaY > 0 ? 1.15 : 0.85;
+      const isFine = fineZoomTracker.isHeld();
+      const zoomFactor = computeZoomFactor(event.deltaY, isFine);
+      const isZoomIn = event.deltaY < 0;
+
+      if (cameraRef.current && canvasRef.current && isZoomIn) {
+        const canvasRect = canvasRef.current.getBoundingClientRect();
+        const visibleMeshes = Array.from(threeMeshesRef.current.values()).filter((m) => m.visible);
+        const anchor = anchorTargetToCursorRay(
+          cameraRef.current,
+          event.clientX - canvasRect.left,
+          event.clientY - canvasRect.top,
+          canvasRect.width,
+          canvasRect.height,
+          visibleMeshes,
+          targetRef.current,
+          isZoomIn
+        );
+        targetRef.current.copy(anchor.newTarget);
+      }
+
       sphericalRef.current.radius = Math.max(
         0.5,
         Math.min(10000, sphericalRef.current.radius * zoomFactor)
@@ -679,6 +718,7 @@ export const Viewport3D: React.FC = () => {
       cancelAnimationFrame(animationFrameId);
       window.removeEventListener('resize', handleResize);
       wheelTarget?.removeEventListener('wheel', handleNativeWheel);
+      fineZoomTracker.dispose();
       resizeObserver.disconnect();
       // UI-P0-12: release the scene's own resources too, not just the renderer.
       // The section-box wireframe previously outlived the viewport entirely.
@@ -987,6 +1027,25 @@ export const Viewport3D: React.FC = () => {
       // Middle Mouse Button
       e.preventDefault();
       if (e.shiftKey) {
+        if (cameraRef.current && canvasRef.current) {
+          const canvasRect = canvasRef.current.getBoundingClientRect();
+          const visibleMeshes = Array.from(threeMeshesRef.current.values()).filter((m) => m.visible);
+          const selectedMeshList = selectedGuids
+            .map((g) => threeMeshesRef.current.get(g))
+            .filter((m): m is THREE.Mesh => Boolean(m));
+          const pivot = computeOrbitPivot(
+            cameraRef.current,
+            e.clientX - canvasRect.left,
+            e.clientY - canvasRect.top,
+            canvasRect.width,
+            canvasRect.height,
+            visibleMeshes,
+            targetRef.current,
+            selectedMeshList
+          );
+          targetRef.current.copy(pivot.newTarget);
+          sphericalRef.current = pivot.newSpherical;
+        }
         isNavigatingRef.current = { mode: 'orbit', startX: e.clientX, startY: e.clientY };
       } else {
         isNavigatingRef.current = { mode: 'pan', startX: e.clientX, startY: e.clientY };
@@ -1007,6 +1066,34 @@ export const Viewport3D: React.FC = () => {
 
       const raycaster = new THREE.Raycaster();
       raycaster.setFromCamera(mouse, cameraRef.current);
+
+      // Tape Measure Tool (TP): 3D Distance with Orthogonal Triad Locks
+      if (activeTool === 'TP') {
+        const hits = raycaster.intersectObjects(
+          Array.from(threeMeshesRef.current.values()).filter((m) => m.visible),
+          false
+        );
+        let pt3D: [number, number, number] | null = null;
+        if (hits.length > 0) {
+          pt3D = [hits[0].point.x, hits[0].point.y, hits[0].point.z];
+        } else {
+          const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+          const hitPt = new THREE.Vector3();
+          if (raycaster.ray.intersectPlane(groundPlane, hitPt)) {
+            pt3D = [hitPt.x, hitPt.y, hitPt.z];
+          }
+        }
+        if (pt3D) {
+          if (!measureStartPointRef.current) {
+            measureStartPointRef.current = pt3D;
+            setMeasurement3D(compute3DMeasurement(pt3D, pt3D, e.shiftKey));
+          } else {
+            setMeasurement3D(compute3DMeasurement(measureStartPointRef.current, pt3D, e.shiftKey));
+            measureStartPointRef.current = null;
+          }
+        }
+        return;
+      }
 
       // Direct Modeling Tools: LI (Line), REC (Rectangle), CI (Circle)
       if (activeTool === 'LI' || activeTool === 'REC' || activeTool === 'CI') {
@@ -1242,6 +1329,8 @@ export const Viewport3D: React.FC = () => {
           return;
         } else {
           setSelectedGuid(null);
+          setSelectedGuids([]);
+          marqueeStartRef.current = { x: e.clientX, y: e.clientY };
           return;
         }
       }
@@ -1480,6 +1569,48 @@ export const Viewport3D: React.FC = () => {
       return;
     }
 
+    // 3D Marquee selection drag tracking
+    if (marqueeStartRef.current && canvasRef.current) {
+      const dist = Math.hypot(e.clientX - marqueeStartRef.current.x, e.clientY - marqueeStartRef.current.y);
+      if (dist > 4) {
+        const canvasRect = canvasRef.current.getBoundingClientRect();
+        setMarqueeRect({
+          x0: marqueeStartRef.current.x - canvasRect.left,
+          y0: marqueeStartRef.current.y - canvasRect.top,
+          x1: e.clientX - canvasRect.left,
+          y1: e.clientY - canvasRect.top,
+        });
+      }
+    }
+
+    // 3D Tape Measure (TP) live readout update
+    if (activeTool === 'TP' && measureStartPointRef.current && cameraRef.current && canvasRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const mouse = new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(mouse, cameraRef.current);
+      const hits = raycaster.intersectObjects(
+        Array.from(threeMeshesRef.current.values()).filter((m) => m.visible),
+        false
+      );
+      let currPt: [number, number, number] | null = null;
+      if (hits.length > 0) {
+        currPt = [hits[0].point.x, hits[0].point.y, hits[0].point.z];
+      } else {
+        const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+        const hitPt = new THREE.Vector3();
+        if (raycaster.ray.intersectPlane(groundPlane, hitPt)) {
+          currPt = [hitPt.x, hitPt.y, hitPt.z];
+        }
+      }
+      if (currPt) {
+        setMeasurement3D(compute3DMeasurement(measureStartPointRef.current, currPt, e.shiftKey));
+      }
+    }
+
     // Update cursor world coordinates on XY ground plane
     if (!isNavigatingRef.current.mode && cameraRef.current && canvasRef.current) {
       const rect = canvasRef.current.getBoundingClientRect();
@@ -1637,6 +1768,28 @@ export const Viewport3D: React.FC = () => {
       activePushPullRef.current = null;
       setLiveGripValue(null);
     }
+    if (marqueeRect && canvasRef.current && cameraRef.current) {
+      const canvasRect = canvasRef.current.getBoundingClientRect();
+      const hitGuids = evaluate3DMarqueeSelection(
+        marqueeRect,
+        cameraRef.current,
+        threeMeshesRef.current,
+        canvasRect.width,
+        canvasRect.height
+      );
+      if (e.shiftKey || e.ctrlKey || e.metaKey) {
+        const merged = Array.from(new Set([...selectedGuids, ...hitGuids]));
+        setSelectedGuids(merged);
+      } else {
+        setSelectedGuids(hitGuids);
+        setSelectedGuid(hitGuids[0] || null);
+      }
+      setMarqueeRect(null);
+      marqueeStartRef.current = null;
+    } else {
+      marqueeStartRef.current = null;
+    }
+
     isNavigatingRef.current.mode = null;
     dispatchInteraction({ type: 'pointer_up', screenPoint: [e.clientX, e.clientY] });
     // UI-P0-13: release the capture taken on mousedown.
@@ -1649,6 +1802,8 @@ export const Viewport3D: React.FC = () => {
 
   /** A pointer that left the viewport must not leave a gesture latched. */
   const handlePointerLeave = () => {
+    setMarqueeRect(null);
+    marqueeStartRef.current = null;
     setCursorWorldPoint(null);
     if (activeDragGripRef.current) {
       endDrag(false);
@@ -1840,6 +1995,20 @@ export const Viewport3D: React.FC = () => {
         canvasRef={canvasRef}
         cameraTick={cameraTick}
         cursorWorldPoint={cursorWorldPoint}
+      />
+
+      {/* Lapin 6-Region Viewport HUD (VisibilityChips, Projection, Status) */}
+      <ViewportHud />
+
+      {/* 3D Window vs. Crossing Marquee Selection Overlay */}
+      <RectSelection3D rect={marqueeRect} />
+
+      {/* 3D Measurement Triad & Axis Constraint Overlay */}
+      <MeasureTriadOverlay
+        measurement={measurement3D}
+        camera={cameraRef.current}
+        canvasWidth={canvasRef.current?.clientWidth ?? 0}
+        canvasHeight={canvasRef.current?.clientHeight ?? 0}
       />
 
       {/* WebGL unavailable: explain it rather than showing an empty dark panel. The
