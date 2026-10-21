@@ -1,10 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  DockviewReact,
-  DockviewReadyEvent,
-  IDockviewPanelProps,
-} from 'dockview-react';
-import {
   Columns2,
   Rows2,
   Grid2X2,
@@ -16,23 +11,31 @@ import {
   Eye,
   Scissors,
   FileSpreadsheet,
+  X,
+  Plus,
+  SlidersHorizontal,
+  FolderOpen,
+  Maximize,
+  Compass,
+  RotateCw,
+  Sparkles,
+  Glasses,
+  Sun,
+  LayoutGrid,
 } from 'lucide-react';
-import { useBimStore, TILE_WINDOWS_EVENT, TAB_VIEWS_EVENT, ZOOM_EXTENTS_EVENT } from '../../store/useBimStore';
+import {
+  useBimStore,
+  TILE_WINDOWS_EVENT,
+  TAB_VIEWS_EVENT,
+  ZOOM_EXTENTS_EVENT,
+} from '../../store/useBimStore';
 import { ProjectBrowser } from '../browser/ProjectBrowser';
 import { PropertiesPalette } from '../properties/PropertiesPalette';
 import { Viewport3D } from '../viewport/Viewport3D';
 import { PlanViewport2D } from '../drafting/PlanViewport2D';
 import { SheetCanvas } from '../sheets/SheetCanvas';
 
-// Component wrappers for Dockview MDI
-const ThreeDPanel: React.FC<IDockviewPanelProps> = () => <Viewport3D />;
-const PlanPanel: React.FC<IDockviewPanelProps> = () => <PlanViewport2D />;
-const SheetPanel: React.FC<IDockviewPanelProps> = () => <SheetCanvas />;
-const BrowserPanel: React.FC<IDockviewPanelProps> = () => <ProjectBrowser />;
-const PropertiesPanel: React.FC<IDockviewPanelProps> = () => <PropertiesPalette />;
-
 export const Workspace: React.FC = () => {
-  const dockviewApiRef = useRef<any>(null);
   const {
     activeViewId,
     activeSheetId,
@@ -43,27 +46,90 @@ export const Workspace: React.FC = () => {
     viewLayout,
     setViewLayout,
     cycleViewLayout,
+    activeScale,
+    setScale,
+    activeDetailLevel,
+    setDetailLevel,
+    activeVisualStyle,
+    setVisualStyle,
+    cameraProjection,
+    setCameraProjection,
+    hiddenGuids,
+    isolatedGuids,
+    resetTempVisibility,
+    tempHideSelected,
+    selectedGuid,
+    setViewRangeModalOpen,
+    displayUnit,
+    setDisplayUnit,
+    sectionBox,
+    toggleSectionBox,
   } = useBimStore();
 
-  const [isBrowserOpen, setIsBrowserOpen] = useState(true);
-  const [isPropertiesOpen, setIsPropertiesOpen] = useState(true);
-  const [splitRatio, setSplitRatio] = useState(0.5); // 50/50 split
-  const isDraggingSplit = useRef(false);
+  // Left sidebar management (stacked Properties over Project Browser - Revit / BIMCraft standard)
+  const [sidebarWidth, setSidebarWidth] = useState<number>(310);
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+  const [sidebarMode, setSidebarMode] = useState<'both' | 'properties' | 'browser'>('both');
+  const [sidebarSplitRatio, setSidebarSplitRatio] = useState<number>(0.52); // Properties 52%, Browser 48%
+  const isDraggingSidebarWidth = useRef<boolean>(false);
+  const isDraggingSidebarSplit = useRef<boolean>(false);
+
+  // Multi-view split management (WT Split 2V: 2D on Left, 3D on Right)
+  const [splitRatio, setSplitRatio] = useState<number>(0.5);
+  const isDraggingSplit = useRef<boolean>(false);
+
+  // Open Document Tabs management (BIMCraft view_tabs)
+  const [openViewIds, setOpenViewIds] = useState<string[]>([
+    'view-3d',
+    'view-level-1',
+    'view-level-2',
+    'sheet-a101',
+  ]);
+
+  // Keep openViewIds updated when an activeViewId or activeSheetId is selected
+  useEffect(() => {
+    if (activeViewId && !openViewIds.includes(activeViewId)) {
+      setOpenViewIds((prev) => [...prev, activeViewId]);
+    }
+  }, [activeViewId, openViewIds]);
+
+  useEffect(() => {
+    if (activeSheetId && !openViewIds.includes(activeSheetId)) {
+      setOpenViewIds((prev) => [...prev, activeSheetId]);
+    }
+  }, [activeSheetId, openViewIds]);
 
   const activeView = views.find((v) => v.id === activeViewId);
-  const isSheetActive = activeView?.type === 'sheet' || activeViewId.startsWith('sheet-');
+  const isSheetActive =
+    activeView?.type === 'sheet' ||
+    activeViewId.startsWith('sheet-') ||
+    (activeSheetId && activeViewId === activeSheetId);
 
-  // Handle drag resizing between 2D and 3D in Split 2V
+  // Drag resizing for sidebar width and vertical stack
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      if (!isDraggingSplit.current) return;
-      const totalWidth = window.innerWidth - (isBrowserOpen ? 260 : 0) - (isPropertiesOpen ? 290 : 0);
-      const startX = isBrowserOpen ? 260 : 0;
-      const ratio = Math.max(0.15, Math.min(0.85, (e.clientX - startX) / totalWidth));
-      setSplitRatio(ratio);
+      if (isDraggingSidebarWidth.current) {
+        const newWidth = Math.max(220, Math.min(550, e.clientX));
+        setSidebarWidth(newWidth);
+      } else if (isDraggingSidebarSplit.current) {
+        const sidebarElem = document.getElementById('bimworks-left-sidebar');
+        if (sidebarElem) {
+          const rect = sidebarElem.getBoundingClientRect();
+          const relativeY = e.clientY - rect.top;
+          const ratio = Math.max(0.15, Math.min(0.85, relativeY / rect.height));
+          setSidebarSplitRatio(ratio);
+        }
+      } else if (isDraggingSplit.current) {
+        const startX = isSidebarOpen ? sidebarWidth : 24;
+        const totalWidth = window.innerWidth - startX;
+        const ratio = Math.max(0.15, Math.min(0.85, (e.clientX - startX) / totalWidth));
+        setSplitRatio(ratio);
+      }
     };
 
     const handleMouseUp = () => {
+      isDraggingSidebarWidth.current = false;
+      isDraggingSidebarSplit.current = false;
       isDraggingSplit.current = false;
       document.body.style.cursor = 'default';
     };
@@ -74,152 +140,16 @@ export const Workspace: React.FC = () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isBrowserOpen, isPropertiesOpen]);
+  }, [isSidebarOpen, sidebarWidth]);
 
-  // Dockview Components
-  const components = {
-    threeD: ThreeDPanel,
-    plan: PlanPanel,
-    sheet: SheetPanel,
-    browser: BrowserPanel,
-    properties: PropertiesPanel,
-  };
-
-  const onReady = (event: DockviewReadyEvent) => {
-    dockviewApiRef.current = event.api;
-
-    const browserPanel = event.api.addPanel({
-      id: 'panel-browser',
-      component: 'browser',
-      title: 'Project Browser',
-      position: { direction: 'left' },
-      initialWidth: 260,
-    });
-
-    const centerPanel = event.api.addPanel({
-      id: 'view-3d',
-      component: 'threeD',
-      title: '{3D}',
-      position: { direction: 'right', referencePanel: browserPanel },
-    });
-
-    event.api.addPanel({
-      id: 'view-level-1',
-      component: 'plan',
-      title: 'Floor Plan',
-      position: { referencePanel: centerPanel },
-    });
-
-    event.api.addPanel({
-      id: 'view-level-2',
-      component: 'plan',
-      title: 'Floor Plan 2',
-      position: { referencePanel: centerPanel },
-    });
-
-    event.api.addPanel({
-      id: 'view-roof',
-      component: 'plan',
-      title: 'Floor Plan 3',
-      position: { referencePanel: centerPanel },
-    });
-
-    event.api.addPanel({
-      id: 'sheet-a101',
-      component: 'sheet',
-      title: 'A101 - FLOOR PLAN & SECTIONS',
-      position: { referencePanel: centerPanel },
-    });
-
-    centerPanel.api.setActive();
-
-    event.api.addPanel({
-      id: 'panel-properties',
-      component: 'properties',
-      title: 'Properties',
-      position: { direction: 'right' },
-      initialWidth: 290,
-    });
-
-    event.api.onDidActivePanelChange((e) => {
-      const id = e.panel?.id;
-      if (!id) return;
-      if (id.startsWith('view-')) {
-        setActiveViewId(id);
-      } else if (id.startsWith('sheet-')) {
-        setActiveSheetId(id);
-      }
-    });
-  };
-
-  // Sync tab titles with model
-  useEffect(() => {
-    const api = dockviewApiRef.current;
-    if (!api || !views.length) return;
-    ['view-level-1', 'view-level-2', 'view-roof'].forEach((panelId) => {
-      const panel = api.getPanel?.(panelId);
-      const view = views.find((v) => v.id === panelId);
-      if (panel && view) panel.setTitle(view.name);
-    });
-  }, [views]);
-
-  // Window events for Tile and Tab
-  useEffect(() => {
-    if (dockviewApiRef.current && activeViewId) {
-      const panel = dockviewApiRef.current.getPanel(activeViewId);
-      if (panel) {
-        panel.api.setActive();
-      } else {
-        const view = views.find((v) => v.id === activeViewId);
-        if (view) {
-          const comp = view.type === '3d' ? 'threeD' : 'plan';
-          const centerPanel = dockviewApiRef.current.getPanel('view-3d');
-          dockviewApiRef.current.addPanel({
-            id: view.id,
-            component: comp,
-            title: view.name,
-            position: centerPanel ? { referencePanel: centerPanel } : undefined,
-          });
-        }
-      }
-    }
-  }, [activeViewId, views]);
-
-  useEffect(() => {
-    if (dockviewApiRef.current && activeSheetId) {
-      const panel = dockviewApiRef.current.getPanel(activeSheetId);
-      if (panel) {
-        panel.api.setActive();
-      }
-    }
-  }, [activeSheetId]);
-
+  // Listen to Window Tiling & Tab commands (WT / TW / ZE)
   useEffect(() => {
     const handleTile = () => {
-      cycleViewLayout();
+      setViewLayout('split-2v');
     };
 
     const handleTabViews = () => {
-      setViewLayout('tabs');
-      const api = dockviewApiRef.current;
-      if (!api) return;
-      const threeDPanel = api.getPanel('view-3d');
-      if (!threeDPanel) return;
-      const allPanelIds = ['view-level-1', 'view-level-2', 'view-roof', 'sheet-a101', 'sheet-a201'];
-      if (activeViewId && !allPanelIds.includes(activeViewId)) {
-        allPanelIds.push(activeViewId);
-      }
-      allPanelIds.forEach((pId) => {
-        const p = api.getPanel(pId);
-        if (p && p !== threeDPanel) {
-          p.api.moveTo({
-            referencePanel: threeDPanel,
-          });
-        }
-      });
-      setTimeout(() => {
-        window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT));
-      }, 100);
+      setViewLayout('single-2d');
     };
 
     window.addEventListener(TILE_WINDOWS_EVENT, handleTile);
@@ -230,207 +160,279 @@ export const Workspace: React.FC = () => {
       window.removeEventListener(TAB_VIEWS_EVENT, handleTabViews);
       window.removeEventListener('bimworks-tab-windows', handleTabViews);
     };
-  }, [cycleViewLayout, setViewLayout, activeViewId, activeSheetId]);
+  }, [setViewLayout]);
 
-  // 2D View Switcher items
-  const planViews = views.filter((v) => v.type === 'floor_plan');
-  const elevViews = views.filter((v) => v.type === 'elevation');
-  const secViews = views.filter((v) => v.type === 'section');
+  // Helper to close a document tab
+  const handleCloseTab = (idToClose: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (openViewIds.length <= 1) return; // Keep at least one tab open
+    const filtered = openViewIds.filter((id) => id !== idToClose);
+    setOpenViewIds(filtered);
+    if (activeViewId === idToClose) {
+      const nextId = filtered[filtered.length - 1];
+      setActiveViewId(nextId);
+      if (nextId.startsWith('sheet-')) {
+        setActiveSheetId(nextId);
+      }
+    }
+  };
+
+  // Helper to get view tab display metadata
+  const getViewTabMeta = (id: string) => {
+    if (id === 'view-3d') {
+      return {
+        name: '{3D}',
+        type: '3d',
+        icon: <Box size={13} className="text-[#2563eb]" />,
+      };
+    }
+    const foundSheet = sheets.find((s) => s.id === id);
+    if (foundSheet || id.startsWith('sheet-')) {
+      const label = foundSheet ? `${foundSheet.sheetNumber} - ${foundSheet.sheetTitle}` : id.toUpperCase();
+      return {
+        name: label,
+        type: 'sheet',
+        icon: <FileSpreadsheet size={13} className="text-[#7c3aed]" />,
+      };
+    }
+    const foundView = views.find((v) => v.id === id);
+    if (foundView) {
+      let icon = <Layers size={13} className="text-[#0284c7]" />;
+      if (foundView.type === 'section') {
+        icon = <Scissors size={13} className="text-[#db2777]" />;
+      } else if (foundView.type === 'elevation') {
+        icon = <Eye size={13} className="text-[#059669]" />;
+      }
+      return {
+        name: foundView.name,
+        type: foundView.type,
+        icon,
+      };
+    }
+    return {
+      name: id,
+      type: 'plan',
+      icon: <Layers size={13} className="text-[#64748b]" />,
+    };
+  };
+
+  const isTempActive = hiddenGuids.length > 0 || isolatedGuids.length > 0;
 
   return (
-    <div className="flex-1 w-full h-full flex overflow-hidden bg-[#e2e8f0] select-none font-sans relative">
-      {/* 1. Left Dock: Project Browser */}
-      {isBrowserOpen ? (
-        <div className="w-[260px] h-full flex-shrink-0 relative border-r border-[#cbd5e1] shadow-sm z-10 flex flex-col">
-          <ProjectBrowser />
-          <button
-            onClick={() => setIsBrowserOpen(false)}
-            className="absolute top-2 right-1.5 p-1 bg-slate-200 hover:bg-slate-300 rounded text-slate-600 transition-colors z-20"
-            title="Collapse Project Browser"
-          >
-            <ChevronLeft size={13} />
-          </button>
-        </div>
-      ) : (
-        <button
-          onClick={() => setIsBrowserOpen(true)}
-          className="w-5 h-full bg-[#f1f5f9] hover:bg-[#e2e8f0] border-r border-[#cbd5e1] flex items-center justify-center text-slate-500 z-10 transition-colors"
-          title="Expand Project Browser"
+    <div className="flex-1 w-full h-full flex overflow-hidden bg-[#f1f5f9] select-none font-sans relative">
+      {/* 1. LEFT DOCK: Unified Properties + Project Browser (BIMCraft / Revit standard) */}
+      {isSidebarOpen ? (
+        <div
+          id="bimworks-left-sidebar"
+          style={{ width: `${sidebarWidth}px` }}
+          className="h-full flex-shrink-0 relative border-r border-[#cbd5e1] bg-[#f8fafc] flex flex-col z-20 shadow-xs"
         >
-          <ChevronRight size={14} />
-        </button>
-      )}
+          {/* Sidebar Top Switcher Header (Both / Properties / Browser) */}
+          <div className="h-7 bg-[#f1f5f9] border-b border-[#cbd5e1] px-2 flex items-center justify-between text-[11px] text-[#475569] shrink-0">
+            <div className="flex items-center space-x-1">
+              <button
+                onClick={() => setSidebarMode('both')}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold transition-colors ${
+                  sidebarMode === 'both'
+                    ? 'bg-white text-[#0f172a] shadow-2xs border border-[#cbd5e1]'
+                    : 'hover:bg-[#e2e8f0] text-[#64748b]'
+                }`}
+                title="Show Properties on top, Project Browser on bottom"
+              >
+                Split
+              </button>
+              <button
+                onClick={() => setSidebarMode('properties')}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold transition-colors ${
+                  sidebarMode === 'properties'
+                    ? 'bg-white text-[#0f172a] shadow-2xs border border-[#cbd5e1]'
+                    : 'hover:bg-[#e2e8f0] text-[#64748b]'
+                }`}
+                title="Maximize Properties Palette"
+              >
+                Properties
+              </button>
+              <button
+                onClick={() => setSidebarMode('browser')}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold transition-colors ${
+                  sidebarMode === 'browser'
+                    ? 'bg-white text-[#0f172a] shadow-2xs border border-[#cbd5e1]'
+                    : 'hover:bg-[#e2e8f0] text-[#64748b]'
+                }`}
+                title="Maximize Project Browser"
+              >
+                Browser
+              </button>
+            </div>
 
-      {/* 2. Center Stage (Multi-View Workspace) */}
-      <div className="flex-1 h-full flex flex-col min-w-0 min-h-0 bg-[#0f172a] relative overflow-hidden">
-        {/* Multi-View Header Bar (View Mode Switcher & 2D View Pills) */}
-        <div className="h-8 bg-[#1e293b] border-b border-slate-700/80 px-2.5 flex items-center justify-between text-xs text-slate-200 select-none z-20 flex-shrink-0 shadow-md">
-          {/* Left: View Layout Switcher (Split, Quad, 3D, 2D, Tabs) */}
-          <div className="flex items-center space-x-1">
-            <span className="text-[10px] uppercase font-bold text-slate-400 mr-1.5 tracking-wider">
-              Layout:
-            </span>
-
-            {/* Split 2V (Plan + 3D) */}
+            {/* Collapse Sidebar Button */}
             <button
-              onClick={() => setViewLayout('split-2v')}
-              className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-semibold transition-all ${
-                viewLayout === 'split-2v'
-                  ? 'bg-sky-600 text-white shadow'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
-              }`}
-              title="Split 2V: 2D Plan & 3D Model Side-by-Side (WT)"
+              onClick={() => setIsSidebarOpen(false)}
+              className="p-1 hover:bg-[#e2e8f0] rounded text-[#64748b] hover:text-[#0f172a] transition-colors"
+              title="Collapse Side Palettes"
             >
-              <Columns2 size={12} />
-              <span>Split 2V</span>
-            </button>
-
-            {/* Quad 4-View */}
-            <button
-              onClick={() => setViewLayout('quad')}
-              className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-semibold transition-all ${
-                viewLayout === 'quad'
-                  ? 'bg-sky-600 text-white shadow'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
-              }`}
-              title="Quad 4-View: Plan, Elevation, Section, 3D Model (Revit 4-View)"
-            >
-              <Grid2X2 size={12} />
-              <span>Quad 4</span>
-            </button>
-
-            {/* Split 2H (Stacked) */}
-            <button
-              onClick={() => setViewLayout('split-2h')}
-              className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-semibold transition-all ${
-                viewLayout === 'split-2h'
-                  ? 'bg-sky-600 text-white shadow'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
-              }`}
-              title="Split 2H: 2D Plan on Top, 3D on Bottom"
-            >
-              <Rows2 size={12} />
-              <span>Stacked</span>
-            </button>
-
-            {/* Single 3D */}
-            <button
-              onClick={() => setViewLayout('single-3d')}
-              className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-semibold transition-all ${
-                viewLayout === 'single-3d'
-                  ? 'bg-sky-600 text-white shadow'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
-              }`}
-              title="Full Screen {3D} Perspective Viewport"
-            >
-              <Box size={12} />
-              <span>{'{3D}'}</span>
-            </button>
-
-            {/* Single 2D */}
-            <button
-              onClick={() => setViewLayout('single-2d')}
-              className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-semibold transition-all ${
-                viewLayout === 'single-2d'
-                  ? 'bg-sky-600 text-white shadow'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
-              }`}
-              title="Full Screen 2D Plan / Elevation / Section"
-            >
-              <Layers size={12} />
-              <span>2D Only</span>
-            </button>
-
-            {/* Dockview Tabs */}
-            <button
-              onClick={() => setViewLayout('tabs')}
-              className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-semibold transition-all ${
-                viewLayout === 'tabs'
-                  ? 'bg-sky-600 text-white shadow'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
-              }`}
-              title="Revit MDI Dockview Tabs (TW)"
-            >
-              <span>Tabs</span>
+              <ChevronLeft size={13} />
             </button>
           </div>
 
-          {/* Right: Quick View Switcher for the 2D Viewport */}
-          <div className="flex items-center space-x-1 overflow-x-auto">
-            <span className="text-[10px] text-slate-400 uppercase font-semibold mr-1">
-              Active 2D:
-            </span>
+          {/* Sidebar Content Area */}
+          <div className="flex-1 w-full min-h-0 flex flex-col relative overflow-hidden">
+            {sidebarMode === 'both' && (
+              <>
+                {/* Properties (Top Half) */}
+                <div
+                  style={{ height: `${sidebarSplitRatio * 100}%` }}
+                  className="w-full relative overflow-hidden flex flex-col min-h-[120px]"
+                >
+                  <PropertiesPalette />
+                </div>
 
-            {/* Plans */}
-            {planViews.map((pv) => (
-              <button
-                key={pv.id}
-                onClick={() => setActiveViewId(pv.id)}
-                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                  activeViewId === pv.id
-                    ? 'bg-sky-500/30 text-sky-300 border border-sky-500/60 font-semibold'
-                    : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {pv.name.replace('Floor Plan: ', '')}
-              </button>
-            ))}
+                {/* Vertical Splitter between Properties & Browser */}
+                <div
+                  onMouseDown={() => {
+                    isDraggingSidebarSplit.current = true;
+                    document.body.style.cursor = 'row-resize';
+                  }}
+                  className="h-1.5 w-full bg-[#e2e8f0] hover:bg-[#2563eb] cursor-row-resize flex items-center justify-center transition-colors shrink-0 z-10 group"
+                  title="Drag to resize Properties / Project Browser split"
+                >
+                  <div className="w-8 h-0.5 bg-[#94a3b8] group-hover:bg-white rounded" />
+                </div>
 
-            {/* Section 1 */}
-            {secViews.length > 0 && (
-              <button
-                onClick={() => setActiveViewId(secViews[0].id)}
-                className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                  activeViewId === secViews[0].id
-                    ? 'bg-pink-500/30 text-pink-300 border border-pink-500/60 font-semibold'
-                    : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
-                title="Section View"
-              >
-                <Scissors size={10} className="text-pink-400" />
-                <span>Section 1</span>
-              </button>
+                {/* Project Browser (Bottom Half) */}
+                <div className="flex-1 w-full min-h-[100px] relative overflow-hidden flex flex-col">
+                  <ProjectBrowser />
+                </div>
+              </>
             )}
 
-            {/* South Elevation */}
-            {elevViews.length > 0 && (
-              <button
-                onClick={() => setActiveViewId(elevViews[0].id)}
-                className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                  activeViewId === elevViews[0].id
-                    ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-500/60 font-semibold'
-                    : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
-                title="South Elevation"
-              >
-                <Eye size={10} className="text-emerald-400" />
-                <span>South Elev</span>
-              </button>
+            {sidebarMode === 'properties' && (
+              <div className="w-full h-full relative overflow-hidden flex flex-col">
+                <PropertiesPalette />
+              </div>
             )}
 
-            {/* Sheet A101 */}
-            {sheets.length > 0 && (
-              <button
-                onClick={() => {
-                  setActiveSheetId(sheets[0].id);
-                  setActiveViewId(sheets[0].id);
-                }}
-                className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                  isSheetActive
-                    ? 'bg-purple-500/30 text-purple-300 border border-purple-500/60 font-semibold'
-                    : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
-                title="Sheet A101"
-              >
-                <FileSpreadsheet size={10} className="text-purple-400" />
-                <span>A101</span>
-              </button>
+            {sidebarMode === 'browser' && (
+              <div className="w-full h-full relative overflow-hidden flex flex-col">
+                <ProjectBrowser />
+              </div>
             )}
+          </div>
+
+          {/* Right Edge Resizer for Sidebar Width */}
+          <div
+            onMouseDown={() => {
+              isDraggingSidebarWidth.current = true;
+              document.body.style.cursor = 'col-resize';
+            }}
+            className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-[#2563eb] transition-colors z-30"
+            title="Drag to adjust palette width"
+          />
+        </div>
+      ) : (
+        /* Collapsed Sidebar Rail */
+        <div className="w-6 h-full bg-[#f1f5f9] border-r border-[#cbd5e1] flex flex-col items-center py-2 z-20 shrink-0">
+          <button
+            onClick={() => setIsSidebarOpen(true)}
+            className="p-1 hover:bg-[#e2e8f0] rounded text-[#475569] hover:text-[#0f172a] transition-colors mb-4"
+            title="Expand Palettes (Properties & Browser)"
+          >
+            <ChevronRight size={14} />
+          </button>
+          <div
+            onClick={() => setIsSidebarOpen(true)}
+            className="text-[10px] font-bold text-[#64748b] tracking-widest uppercase cursor-pointer hover:text-[#0f172a] select-none"
+            style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
+          >
+            Properties & Browser
+          </div>
+        </div>
+      )}
+
+      {/* 2. CENTER STAGE: Document Tabs Bar + Canvas + View Control Bar */}
+      <div className="flex-1 h-full flex flex-col min-w-0 min-h-0 bg-[#0f172a] relative overflow-hidden">
+        {/* Top Revit Document View Tabs Bar (BIMCraft view_tabs) */}
+        <div className="h-8 bg-[#e2e8f0] border-b border-[#cbd5e1] px-1.5 flex items-center justify-between text-xs select-none z-20 flex-shrink-0">
+          {/* Scrollable Tabs */}
+          <div className="flex items-center space-x-0.5 overflow-x-auto h-full pt-1">
+            {openViewIds.map((id) => {
+              const meta = getViewTabMeta(id);
+              const isActive = activeViewId === id;
+              return (
+                <div
+                  key={id}
+                  onClick={() => {
+                    setActiveViewId(id);
+                    if (id.startsWith('sheet-')) {
+                      setActiveSheetId(id);
+                    }
+                  }}
+                  className={`flex items-center space-x-1.5 px-3 h-[27px] rounded-t text-[11px] cursor-pointer transition-all border-t border-l border-r group relative select-none ${
+                    isActive
+                      ? 'bg-white text-[#0f172a] font-semibold border-t-2 border-t-[#2563eb] border-l-[#cbd5e1] border-r-[#cbd5e1] shadow-2xs'
+                      : 'bg-[#f1f5f9] text-[#475569] hover:bg-[#e5e7eb] hover:text-[#0f172a] border-transparent'
+                  }`}
+                  title={meta.name}
+                >
+                  <span className="shrink-0">{meta.icon}</span>
+                  <span className="truncate max-w-[150px]">{meta.name}</span>
+
+                  {/* Close Tab Button */}
+                  {openViewIds.length > 1 && (
+                    <button
+                      onClick={(e) => handleCloseTab(id, e)}
+                      className={`p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-700 transition-opacity ml-1 ${
+                        isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                      }`}
+                      title={`Close ${meta.name}`}
+                    >
+                      <X size={10} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Right: Quick Layout Buttons (Tabs TW / Tile WT / Zoom Extents ZE) */}
+          <div className="flex items-center space-x-1 pl-2">
+            {/* Tab Views (TW) */}
+            <button
+              onClick={() => {
+                setViewLayout('single-2d');
+                window.dispatchEvent(new CustomEvent(TAB_VIEWS_EVENT));
+              }}
+              className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                viewLayout !== 'split-2v' && viewLayout !== 'quad'
+                  ? 'bg-white text-[#0f172a] shadow-2xs font-semibold'
+                  : 'bg-slate-200/80 text-slate-700 hover:bg-white hover:text-slate-900'
+              }`}
+              title="Tab Views (TW) - Single Full-Canvas View"
+            >
+              <span>Tabs (TW)</span>
+            </button>
+
+            {/* Tile Windows (WT) */}
+            <button
+              onClick={() => {
+                setViewLayout('split-2v');
+                window.dispatchEvent(new CustomEvent(TILE_WINDOWS_EVENT));
+              }}
+              className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                viewLayout === 'split-2v'
+                  ? 'bg-white text-[#0f172a] shadow-2xs font-semibold'
+                  : 'bg-slate-200/80 text-slate-700 hover:bg-white hover:text-slate-900'
+              }`}
+              title="Tile Windows (WT) - Side-by-Side 2D Plan & 3D Model"
+            >
+              <Columns2 size={11} />
+              <span>Tile (WT)</span>
+            </button>
 
             {/* Zoom Extents (ZE) */}
             <button
               onClick={() => window.dispatchEvent(new CustomEvent(ZOOM_EXTENTS_EVENT))}
-              className="p-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded transition-colors ml-1"
+              className="p-1 bg-slate-200/80 hover:bg-white text-slate-700 hover:text-slate-900 rounded transition-colors ml-0.5"
               title="Zoom Extents (ZE)"
             >
               <Maximize2 size={11} />
@@ -438,27 +440,25 @@ export const Workspace: React.FC = () => {
           </div>
         </div>
 
-        {/* Dynamic Multi-View Viewport Area */}
-        <div className="flex-1 w-full min-h-0 relative overflow-hidden">
-          {/* LAYOUT 1: Split 2V (Side-by-side: 2D Plan on Left, 3D on Right) */}
-          {viewLayout === 'split-2v' && (
+        {/* Viewport Canvas Area */}
+        <div className="flex-1 w-full min-h-0 relative overflow-hidden bg-[#0f172a]">
+          {/* LAYOUT A: Split 2V (Side-by-side 2D Plan & 3D Model) */}
+          {viewLayout === 'split-2v' ? (
             <div className="w-full h-full flex flex-row relative">
               {/* Left Pane: 2D Plan / Elevation / Section / Sheet */}
               <div
                 className="h-full relative overflow-hidden flex flex-col border-r border-slate-700/80"
                 style={{ width: `${splitRatio * 100}%` }}
               >
-                {/* View Header Badge */}
-                <div className="h-5 bg-slate-800/90 border-b border-slate-700 px-2 flex items-center justify-between text-[10px] text-slate-300 z-10 flex-shrink-0">
+                <div className="h-5 bg-slate-800/95 border-b border-slate-700 px-2 flex items-center justify-between text-[10px] text-slate-300 z-10 shrink-0">
                   <div className="flex items-center space-x-1.5 font-semibold text-sky-300">
                     <Layers size={11} />
                     <span>{isSheetActive ? 'Sheet: A101' : activeView?.name || 'Floor Plan'}</span>
                   </div>
                   <span className="text-slate-400 text-[9px] font-mono">
-                    {isSheetActive ? '1:1 Layout' : activeView?.scale || '1/4" = 1\'-0"'}
+                    {isSheetActive ? '1:1 Layout' : activeScale || '1/4" = 1\'-0"'}
                   </span>
                 </div>
-
                 <div className="flex-1 w-full min-h-0 relative">
                   {isSheetActive ? <SheetCanvas /> : <PlanViewport2D />}
                 </div>
@@ -470,152 +470,198 @@ export const Workspace: React.FC = () => {
                   isDraggingSplit.current = true;
                   document.body.style.cursor = 'col-resize';
                 }}
-                className="w-1.5 h-full bg-slate-800 hover:bg-sky-500 cursor-col-resize transition-colors z-20 flex items-center justify-center group flex-shrink-0"
+                className="w-1.5 h-full bg-slate-800 hover:bg-[#2563eb] cursor-col-resize transition-colors z-20 flex items-center justify-center group shrink-0"
                 title="Drag to resize 2D / 3D split"
               >
                 <div className="w-0.5 h-8 bg-slate-600 group-hover:bg-white rounded" />
               </div>
 
-              {/* Right Pane: 3D Viewport with ViewCube and Section Cut Bar */}
+              {/* Right Pane: 3D Viewport with ViewCube */}
               <div className="h-full flex-1 relative overflow-hidden flex flex-col">
-                {/* 3D View Header Badge */}
-                <div className="h-5 bg-slate-800/90 border-b border-slate-700 px-2 flex items-center justify-between text-[10px] text-slate-300 z-10 flex-shrink-0">
+                <div className="h-5 bg-slate-800/95 border-b border-slate-700 px-2 flex items-center justify-between text-[10px] text-slate-300 z-10 shrink-0">
                   <div className="flex items-center space-x-1.5 font-semibold text-emerald-300">
                     <Box size={11} />
                     <span>{'{3D} Perspective Model'}</span>
                   </div>
                   <span className="text-slate-400 text-[9px] font-mono">Three.js WebGL</span>
                 </div>
-
                 <div className="flex-1 w-full min-h-0 relative">
                   <Viewport3D />
                 </div>
               </div>
             </div>
-          )}
-
-          {/* LAYOUT 2: Quad 4-View (Top-Left: Plan, Top-Right: 3D, Bottom-Left: Elevation, Bottom-Right: Section) */}
-          {viewLayout === 'quad' && (
-            <div className="w-full h-full grid grid-cols-2 grid-rows-2 gap-1 bg-slate-900 p-1">
-              {/* Quadrant 1 (Top-Left): Floor Plan (Level 1) */}
-              <div className="relative w-full h-full flex flex-col bg-slate-950 rounded border border-slate-700/80 overflow-hidden shadow-inner">
-                <div className="h-5 bg-slate-800/95 border-b border-slate-700 px-2 flex items-center justify-between text-[10px] text-slate-200 z-10 flex-shrink-0">
-                  <span className="font-bold text-sky-300">Top / Floor Plan (Level 1)</span>
-                  <span className="text-slate-400 text-[9px]">Plan View</span>
-                </div>
-                <div className="flex-1 w-full min-h-0 relative">
-                  <PlanViewport2D viewId="view-level-1" />
-                </div>
-              </div>
-
-              {/* Quadrant 2 (Top-Right): 3D Perspective Model */}
-              <div className="relative w-full h-full flex flex-col bg-slate-950 rounded border border-slate-700/80 overflow-hidden shadow-inner">
-                <div className="h-5 bg-slate-800/95 border-b border-slate-700 px-2 flex items-center justify-between text-[10px] text-slate-200 z-10 flex-shrink-0">
-                  <span className="font-bold text-emerald-300">{'{3D} Model View'}</span>
-                  <span className="text-slate-400 text-[9px]">Perspective</span>
-                </div>
-                <div className="flex-1 w-full min-h-0 relative">
-                  <Viewport3D />
-                </div>
-              </div>
-
-              {/* Quadrant 3 (Bottom-Left): South Elevation */}
-              <div className="relative w-full h-full flex flex-col bg-slate-950 rounded border border-slate-700/80 overflow-hidden shadow-inner">
-                <div className="h-5 bg-slate-800/95 border-b border-slate-700 px-2 flex items-center justify-between text-[10px] text-slate-200 z-10 flex-shrink-0">
-                  <span className="font-bold text-amber-300">Front / South Elevation</span>
-                  <span className="text-slate-400 text-[9px]">Elevation View</span>
-                </div>
-                <div className="flex-1 w-full min-h-0 relative">
-                  <PlanViewport2D viewId="view-elev-s" />
-                </div>
-              </div>
-
-              {/* Quadrant 4 (Bottom-Right): Building Section 1 */}
-              <div className="relative w-full h-full flex flex-col bg-slate-950 rounded border border-slate-700/80 overflow-hidden shadow-inner">
-                <div className="h-5 bg-slate-800/95 border-b border-slate-700 px-2 flex items-center justify-between text-[10px] text-slate-200 z-10 flex-shrink-0">
-                  <span className="font-bold text-pink-300">Side / Building Section 1</span>
-                  <span className="text-slate-400 text-[9px]">Cut Section</span>
-                </div>
-                <div className="flex-1 w-full min-h-0 relative">
-                  <PlanViewport2D viewId="view-section-1" />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* LAYOUT 3: Split 2H (Stacked: 2D on Top, 3D on Bottom) */}
-          {viewLayout === 'split-2h' && (
-            <div className="w-full h-full flex flex-col relative">
-              <div className="flex-1 w-full relative overflow-hidden flex flex-col border-b border-slate-700/80">
-                <div className="h-5 bg-slate-800/90 border-b border-slate-700 px-2 flex items-center justify-between text-[10px] text-slate-300 z-10 flex-shrink-0">
-                  <span className="font-semibold text-sky-300">
-                    {isSheetActive ? 'Sheet: A101' : activeView?.name || 'Floor Plan'}
-                  </span>
-                </div>
-                <div className="flex-1 w-full min-h-0 relative">
-                  {isSheetActive ? <SheetCanvas /> : <PlanViewport2D />}
-                </div>
-              </div>
-
-              <div className="flex-1 w-full relative overflow-hidden flex flex-col">
-                <div className="h-5 bg-slate-800/90 border-b border-slate-700 px-2 flex items-center justify-between text-[10px] text-slate-300 z-10 flex-shrink-0">
-                  <span className="font-semibold text-emerald-300">{'{3D} Perspective Model'}</span>
-                </div>
-                <div className="flex-1 w-full min-h-0 relative">
-                  <Viewport3D />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* LAYOUT 4: Single 3D */}
-          {viewLayout === 'single-3d' && (
+          ) : activeViewId === 'view-3d' ? (
+            /* Single 3D Viewport */
             <div className="w-full h-full relative">
               <Viewport3D />
             </div>
-          )}
-
-          {/* LAYOUT 5: Single 2D */}
-          {viewLayout === 'single-2d' && (
+          ) : isSheetActive ? (
+            /* Single Sheet Viewport */
             <div className="w-full h-full relative">
-              {isSheetActive ? <SheetCanvas /> : <PlanViewport2D />}
+              <SheetCanvas />
+            </div>
+          ) : (
+            /* Single 2D Plan / Elevation / Section Viewport */
+            <div className="w-full h-full relative">
+              <PlanViewport2D />
             </div>
           )}
+        </div>
 
-          {/* LAYOUT 6: MDI Tabs (Dockview React) */}
-          {viewLayout === 'tabs' && (
-            <div className="w-full h-full dockview-theme-dark">
-              <DockviewReact
-                components={components}
-                onReady={onReady}
-                className="dockview-theme-dark h-full w-full"
-              />
+        {/* 3. Docked View Control Bar (Revit view_control_bar at bottom of canvas) */}
+        <div className="h-6 bg-[#f1f5f9] border-t border-[#cbd5e1] px-2 flex items-center justify-between text-[10px] text-[#334155] select-none z-20 shrink-0 font-sans">
+          <div className="flex items-center space-x-1.5">
+            {/* Units Selector */}
+            <select
+              value={displayUnit}
+              onChange={(e) => setDisplayUnit(e.target.value as any)}
+              className="bg-white border border-[#cbd5e1] text-[#2563eb] font-semibold rounded px-1 py-0.5 text-[10px] cursor-pointer focus:outline-none"
+              title="Display Units"
+            >
+              <option value="metric_mm">Metric (mm)</option>
+              <option value="metric_m">Metric (m)</option>
+              <option value="imperial_fractional">Fract (Ft-In)</option>
+              <option value="imperial_decimal">Dec Feet</option>
+            </select>
+
+            {/* Scale Selector */}
+            <select
+              value={activeScale}
+              onChange={(e) => setScale(e.target.value)}
+              className="bg-white border border-[#cbd5e1] text-[#0f172a] font-medium rounded px-1 py-0.5 text-[10px] cursor-pointer focus:outline-none"
+              title="View Scale"
+            >
+              <option value="1:100">1:100</option>
+              <option value="1:50">1:50</option>
+              <option value="1:20">1:20</option>
+              <option value='1/4" = 1&apos;-0"'>1/4" = 1'-0"</option>
+              <option value='1/8" = 1&apos;-0"'>1/8" = 1'-0"</option>
+              <option value='1/2" = 1&apos;-0"'>1/2" = 1'-0"</option>
+            </select>
+
+            {/* Detail Level */}
+            <div className="flex items-center bg-white border border-[#cbd5e1] rounded px-0.5">
+              {(['coarse', 'medium', 'fine'] as const).map((lvl) => (
+                <button
+                  key={lvl}
+                  onClick={() => setDetailLevel(lvl)}
+                  className={`px-1.5 py-0.5 rounded capitalize text-[10px] ${
+                    activeDetailLevel === lvl
+                      ? 'bg-[#dbeafe] text-[#1d4ed8] font-bold'
+                      : 'text-[#64748b] hover:text-[#0f172a]'
+                  }`}
+                >
+                  {lvl}
+                </button>
+              ))}
             </div>
-          )}
+
+            {/* Visual Style */}
+            <div className="flex items-center bg-white border border-[#cbd5e1] rounded px-0.5">
+              <button
+                onClick={() => setVisualStyle('hidden_line')}
+                className={`px-1.5 py-0.5 rounded text-[10px] ${
+                  activeVisualStyle === 'hidden_line'
+                    ? 'bg-[#dbeafe] text-[#1d4ed8] font-bold'
+                    : 'text-[#64748b] hover:text-[#0f172a]'
+                }`}
+                title="Hidden Line (HL)"
+              >
+                HL
+              </button>
+              <button
+                onClick={() => setVisualStyle('consistent_colors')}
+                className={`px-1.5 py-0.5 rounded text-[10px] ${
+                  activeVisualStyle === 'consistent_colors'
+                    ? 'bg-[#dbeafe] text-[#1d4ed8] font-bold'
+                    : 'text-[#64748b] hover:text-[#0f172a]'
+                }`}
+                title="Consistent Colors (CC)"
+              >
+                CC
+              </button>
+              <button
+                onClick={() => setVisualStyle('wireframe')}
+                className={`px-1.5 py-0.5 rounded text-[10px] ${
+                  activeVisualStyle === 'wireframe'
+                    ? 'bg-[#dbeafe] text-[#1d4ed8] font-bold'
+                    : 'text-[#64748b] hover:text-[#0f172a]'
+                }`}
+                title="Wireframe (WF)"
+              >
+                WF
+              </button>
+            </div>
+
+            {/* 3D Camera Projection */}
+            <div className="flex items-center bg-white border border-[#cbd5e1] rounded px-0.5">
+              <button
+                onClick={() => setCameraProjection('perspective')}
+                className={`px-1.5 py-0.5 rounded text-[10px] ${
+                  cameraProjection === 'perspective'
+                    ? 'bg-[#dbeafe] text-[#1d4ed8] font-bold'
+                    : 'text-[#64748b] hover:text-[#0f172a]'
+                }`}
+                title="Perspective 3D View"
+              >
+                Persp
+              </button>
+              <button
+                onClick={() => setCameraProjection('isometric')}
+                className={`px-1.5 py-0.5 rounded text-[10px] ${
+                  cameraProjection === 'isometric'
+                    ? 'bg-[#dbeafe] text-[#1d4ed8] font-bold'
+                    : 'text-[#64748b] hover:text-[#0f172a]'
+                }`}
+                title="Isometric (Orthographic) 3D View"
+              >
+                Iso
+              </button>
+            </div>
+
+            {/* View Range Modal */}
+            <button
+              onClick={() => setViewRangeModalOpen(true)}
+              className="p-1 hover:bg-[#e2e8f0] rounded text-[#475569] hover:text-[#0284c7] flex items-center space-x-1"
+              title="Edit View Range (VR)"
+            >
+              <SlidersHorizontal size={11} />
+              <span>VR</span>
+            </button>
+
+            {/* Temporary Hide/Isolate Glasses */}
+            <button
+              onClick={() => (isTempActive ? resetTempVisibility() : selectedGuid && tempHideSelected())}
+              className={`px-1.5 py-0.5 rounded flex items-center space-x-1 border ${
+                isTempActive
+                  ? 'bg-[#2563eb] text-white border-[#2563eb] font-bold'
+                  : 'border-transparent hover:bg-[#e2e8f0] text-[#475569]'
+              }`}
+              title="Temporary Hide/Isolate (HH / HR)"
+            >
+              <Glasses size={12} />
+              {isTempActive && <span>Active</span>}
+            </button>
+
+            {/* Section Box (BX) */}
+            <button
+              onClick={() => toggleSectionBox()}
+              className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${
+                sectionBox.enabled
+                  ? 'bg-[#dbeafe] text-[#1d4ed8] border-[#93c5fd] font-semibold'
+                  : 'border-transparent hover:bg-[#e2e8f0] text-[#64748b]'
+              }`}
+              title="Section Box (BX)"
+            >
+              BX
+            </button>
+          </div>
+
+          <div className="flex items-center space-x-2 text-[10px] text-[#64748b]">
+            <span>{activeView?.name || 'View'}</span>
+          </div>
         </div>
       </div>
-
-      {/* 3. Right Dock: Properties Palette */}
-      {isPropertiesOpen ? (
-        <div className="w-[290px] h-full flex-shrink-0 relative border-l border-[#cbd5e1] shadow-sm z-10 flex flex-col">
-          <PropertiesPalette />
-          <button
-            onClick={() => setIsPropertiesOpen(false)}
-            className="absolute top-2 left-1.5 p-1 bg-slate-200 hover:bg-slate-300 rounded text-slate-600 transition-colors z-20"
-            title="Collapse Properties Palette"
-          >
-            <ChevronRight size={13} />
-          </button>
-        </div>
-      ) : (
-        <button
-          onClick={() => setIsPropertiesOpen(true)}
-          className="w-5 h-full bg-[#f1f5f9] hover:bg-[#e2e8f0] border-l border-[#cbd5e1] flex items-center justify-center text-slate-500 z-10 transition-colors"
-          title="Expand Properties Palette"
-        >
-          <ChevronLeft size={14} />
-        </button>
-      )}
     </div>
   );
 };

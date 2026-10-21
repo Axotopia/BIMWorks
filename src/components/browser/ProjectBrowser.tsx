@@ -77,10 +77,10 @@ export const ProjectBrowser: React.FC = () => {
   };
 
   return (
-    <div className="h-full w-full bg-[#ffffff] text-[#1e293b] flex flex-col border-r border-[#dcdcdc] select-none text-xs overflow-hidden font-sans">
+    <div className="h-full w-full bg-[#ffffff] text-[#0f172a] flex flex-col select-none text-xs overflow-hidden font-sans">
       {/* Palette Title */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#f0f0f0] border-b border-[#dcdcdc] font-semibold text-[#202020]">
-        <span>Project Browser - Architecture</span>
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#f8fafc] border-b border-[#cbd5e1] font-semibold text-[#0f172a]">
+        <span>Project Browser — Architecture</span>
       </div>
 
       {/* Tree Content */}

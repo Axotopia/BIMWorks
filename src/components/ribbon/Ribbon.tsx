@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import {
   ChevronDown,
   Layers,
@@ -139,6 +139,7 @@ import {
 
 export const Ribbon: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isFileMenuOpen, setIsFileMenuOpen] = useState<boolean>(false);
   const {
     activeRibbonTab,
     setActiveRibbonTab,
@@ -458,13 +459,13 @@ export const Ribbon: React.FC = () => {
 
         {/* Middle Project Title */}
         <div className="text-[11px] text-[#64748b] font-medium hidden md:block">
-          Autodesk Revit Architectural Parity — BIMWorks 2026
+          BIMWorks Architecture — {views.find((v) => v.id === activeViewId)?.name || (activeViewId === 'view-3d' ? "3D Model" : activeViewId)}
         </div>
 
         {/* Right Status / Hotkey Buffer Indicator */}
         <div className="flex items-center space-x-2">
           {keyBuffer && (
-            <div className="bg-[#0284c7] text-white px-2 py-0.5 rounded text-[10px] font-mono font-bold animate-pulse">
+            <div className="bg-[#2563eb] text-white px-2 py-0.5 rounded text-[10px] font-mono font-bold animate-pulse">
               HOTKEY: [{keyBuffer}_]
             </div>
           )}
@@ -473,15 +474,79 @@ export const Ribbon: React.FC = () => {
       </div>
 
       {/* 2. Ribbon Tab Strip */}
-      <div className="flex items-center px-2 pt-1 border-b border-[#d1d5db] space-x-0.5 bg-[#f3f4f6]">
-        {/* Blue Revit File Tab */}
-        <button
-          onClick={handleOpenFileClick}
-          className="px-3.5 py-1 text-xs font-semibold bg-[#007acc] hover:bg-[#0062a3] text-white rounded-t shadow-xs transition-colors mr-1"
-          title="File Menu (Open, Save, Export)"
-        >
-          File
-        </button>
+      <div className="flex items-center px-2 pt-1 border-b border-[#cbd5e1] space-x-0.5 bg-[#f1f5f9]">
+        {/* Blue Revit File Tab with Dropdown */}
+        <div className="relative">
+          <button
+            onClick={() => setIsFileMenuOpen(!isFileMenuOpen)}
+            className="px-3.5 py-1 text-xs font-semibold bg-[#2563eb] hover:bg-[#1d4ed8] text-white rounded-t shadow-2xs transition-colors mr-1 flex items-center space-x-1 cursor-pointer"
+            title="File Menu (Open, Save, Export)"
+          >
+            <span>File</span>
+            <ChevronDown size={11} className="text-white/80" />
+          </button>
+
+          {isFileMenuOpen && (
+            <div
+              className="absolute top-full left-0 mt-0.5 w-60 bg-white border border-[#cbd5e1] rounded shadow-lg z-50 py-1 text-xs text-[#0f172a]"
+              onMouseLeave={() => setIsFileMenuOpen(false)}
+            >
+              <button
+                onClick={() => {
+                  setIsFileMenuOpen(false);
+                  loadSampleProject();
+                }}
+                className="w-full px-3 py-1.5 hover:bg-[#f1f5f9] flex items-center space-x-2 text-left cursor-pointer"
+              >
+                <Sparkles size={14} className="text-[#2563eb]" />
+                <div>
+                  <div className="font-semibold">Sample Project</div>
+                  <div className="text-[10px] text-[#64748b]">Load Revit architectural sample</div>
+                </div>
+              </button>
+              <div className="h-[1px] bg-[#e2e8f0] my-1" />
+              <button
+                onClick={() => {
+                  setIsFileMenuOpen(false);
+                  handleOpenFileClick();
+                }}
+                className="w-full px-3 py-1.5 hover:bg-[#f1f5f9] flex items-center space-x-2 text-left cursor-pointer"
+              >
+                <FolderOpen size={14} className="text-[#475569]" />
+                <div>
+                  <div className="font-semibold">Open... (Ctrl+O)</div>
+                  <div className="text-[10px] text-[#64748b]">Open .bimworks or .ifc file</div>
+                </div>
+              </button>
+              <button
+                onClick={() => {
+                  setIsFileMenuOpen(false);
+                  exportProjectContainer();
+                }}
+                className="w-full px-3 py-1.5 hover:bg-[#f1f5f9] flex items-center space-x-2 text-left cursor-pointer"
+              >
+                <Save size={14} className="text-[#2563eb]" />
+                <div>
+                  <div className="font-semibold">Save Project (Ctrl+S)</div>
+                  <div className="text-[10px] text-[#64748b]">Save .bimworks container</div>
+                </div>
+              </button>
+              <button
+                onClick={() => {
+                  setIsFileMenuOpen(false);
+                  exportIfc();
+                }}
+                className="w-full px-3 py-1.5 hover:bg-[#f1f5f9] flex items-center space-x-2 text-left cursor-pointer"
+              >
+                <Download size={14} className="text-[#475569]" />
+                <div>
+                  <div className="font-semibold">Export IFC4</div>
+                  <div className="text-[10px] text-[#64748b]">Export standard buildingSMART IFC4</div>
+                </div>
+              </button>
+            </div>
+          )}
+        </div>
 
         {tabs.map((tab) => (
           <button
@@ -492,8 +557,8 @@ export const Ribbon: React.FC = () => {
             }}
             className={`px-3 py-1 text-xs font-medium rounded-t border-t border-l border-r transition-colors select-none ${
               !sketchSession && activeRibbonTab === tab
-                ? 'bg-[#ffffff] border-[#d1d5db] text-[#0f172a] font-bold shadow-xs'
-                : 'border-transparent text-[#475569] hover:text-[#0f172a] hover:bg-[#e5e7eb]'
+                ? 'bg-[#ffffff] border-[#cbd5e1] text-[#0f172a] font-bold shadow-2xs border-t-2 border-t-[#2563eb]'
+                : 'border-transparent text-[#475569] hover:text-[#0f172a] hover:bg-[#e2e8f0]'
             } ${sketchSession ? 'opacity-40 cursor-not-allowed' : ''}`}
           >
             {tab}
@@ -517,17 +582,17 @@ export const Ribbon: React.FC = () => {
           </div>
         )}
 
-        {/* Revit Green/Teal Contextual Tab when elements are selected */}
+        {/* Revit Green Contextual Tab when elements are selected (BIMCraft pal().context) */}
         {!sketchSession && contextualTitle && (
           <button
             onClick={() => setActiveRibbonTab('Modify')}
-            className={`flex items-center space-x-1.5 px-3.5 py-1 text-xs font-bold rounded-t border-t border-l border-r shadow-xs ml-2 transition-all select-none ${
+            className={`flex items-center space-x-1.5 px-3.5 py-1 text-xs font-bold rounded-t border-t border-l border-r shadow-xs ml-2 transition-all select-none cursor-pointer ${
               activeRibbonTab === 'Modify'
-                ? 'bg-[#008272] text-white border-[#006659]'
-                : 'bg-[#e6f4f1] text-[#006659] border-[#a3d9d2] hover:bg-[#008272] hover:text-white'
+                ? 'bg-[#15803d] text-white border-[#166534]'
+                : 'bg-[#dcfce7] text-[#15803d] border-[#86efac] hover:bg-[#15803d] hover:text-white'
             }`}
           >
-            <Sparkles size={13} className={activeRibbonTab === 'Modify' ? 'text-[#80dfd2]' : 'text-[#008272]'} />
+            <Sparkles size={13} className={activeRibbonTab === 'Modify' ? 'text-[#86efac]' : 'text-[#15803d]'} />
             <span>Modify | {contextualTitle}</span>
           </button>
         )}

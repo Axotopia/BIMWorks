@@ -214,34 +214,37 @@ export const PropertiesPalette: React.FC = () => {
     return <Layers size={28} className="text-[#0284c7]" />;
   };
 
-  // Category Header component matching Revit Image 2
+  // Category Header component matching Revit Image 2 and BIMCraft
   const CategoryHeader: React.FC<{
     title: string;
     id: string;
   }> = ({ title, id }) => (
     <div
       onClick={() => toggleGroup(id)}
-      className="flex items-center justify-between px-2 py-1 bg-[#e8e8e8] hover:bg-[#dfdfdf] border-y border-[#d4d4d4] cursor-pointer select-none"
+      className="flex items-center justify-between px-2.5 py-1 bg-[#f1f5f9] hover:bg-[#e2e8f0] border-y border-[#e2e8f0] cursor-pointer select-none transition-colors"
     >
-      <span className="font-bold text-[11px] text-[#202020]">{title}</span>
+      <span className="font-semibold text-[11px] text-[#0f172a]">{title}</span>
       {collapsedGroups[id] ? (
-        <ChevronRight size={13} className="text-[#555555]" />
+        <ChevronRight size={13} className="text-[#64748b]" />
       ) : (
-        <ChevronDown size={13} className="text-[#555555]" />
+        <ChevronDown size={13} className="text-[#64748b]" />
       )}
     </div>
   );
 
   return (
-    <div className="h-full w-full bg-[#ffffff] text-[#222222] flex flex-col border-l border-[#dcdcdc] select-none text-[11px] font-sans overflow-hidden">
+    <div className="h-full w-full bg-[#ffffff] text-[#0f172a] flex flex-col select-none text-[11px] font-sans overflow-hidden">
       {/* 1. Window Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#f0f0f0] border-b border-[#dcdcdc]">
-        <span className="font-semibold text-xs text-[#202020]">Properties</span>
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#f8fafc] border-b border-[#cbd5e1]">
+        <span className="font-semibold text-xs text-[#0f172a]">Properties</span>
+        <span className="text-[10px] text-[#64748b] font-mono">
+          {isElementSelected ? 'Element' : 'View'}
+        </span>
       </div>
 
-      {/* 2. Type Selector Card (Image 2 Parity) */}
-      <div className="p-2 bg-[#f9f9f9] border-b border-[#dcdcdc]">
-        <div className="flex items-center space-x-2 bg-[#ffffff] border border-[#d0d0d0] rounded p-1.5 shadow-sm">
+      {/* 2. Type Selector Card */}
+      <div className="p-2 bg-[#f8fafc] border-b border-[#cbd5e1]">
+        <div className="flex items-center space-x-2 bg-[#ffffff] border border-[#cbd5e1] hover:border-[#93c5fd] rounded p-1.5 shadow-2xs transition-colors">
           {/* Thumbnail preview */}
           <div className="w-12 h-12 bg-[#f8fafc] border border-[#e2e8f0] rounded flex items-center justify-center shrink-0">
             {renderThumbnail()}

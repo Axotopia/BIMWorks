@@ -42,7 +42,7 @@ export const StatusBar: React.FC = () => {
   const isTempActive = hiddenGuids.length > 0 || isolatedGuids.length > 0;
 
   return (
-    <div className="flex items-center justify-between px-3 py-1 bg-[#f0f0f0] border-t border-[#dcdcdc] select-none text-[11px] text-[#333333] z-20 font-sans">
+    <div className="flex items-center justify-between px-3 py-1 bg-[#f1f5f9] border-t border-[#cbd5e1] select-none text-[11px] text-[#0f172a] z-20 font-sans">
       {/* Left: View Control Bar (Revit View Control Strip) */}
       <div className="flex items-center space-x-2">
         {/* Unit System Selector (Spec §11: Decimal-Feet Internals) */}
@@ -167,14 +167,14 @@ export const StatusBar: React.FC = () => {
       </div>
 
       {/* Middle: Active Command Guidance & Status Message */}
-      <div className="text-[#a1a1aa] font-medium hidden lg:flex items-center space-x-2">
+      <div className="text-[#475569] font-medium hidden lg:flex items-center space-x-2">
         {isLoadingFile ? (
-          <span className="text-[#38bdf8] font-semibold flex items-center space-x-1.5 animate-pulse">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8]" />
+          <span className="text-[#2563eb] font-semibold flex items-center space-x-1.5 animate-pulse">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#2563eb]" />
             <span>{statusMessage}</span>
           </span>
         ) : activeTool !== 'select' ? (
-          <span className="text-[#38bdf8] font-semibold">
+          <span className="text-[#2563eb] font-semibold">
             {/* UI-P0-14: say the command's name, not its tool code, and never claim a
                 placement is in progress for a tool no viewport implements. */}
             {toolCaption(activeTool)} — {toolPrompt(activeTool, interactionSession?.phase, interactionSession?.picks.length)}
@@ -184,14 +184,14 @@ export const StatusBar: React.FC = () => {
           // never bound to anything. Delete is real; the hint only mentions what works.
           <span>Selected element: {selectedGuid}. Delete removes it; Escape clears the selection.</span>
         ) : (
-          <span className="text-[#94a3b8]">{statusMessage}</span>
+          <span className="text-[#64748b]">{statusMessage}</span>
         )}
       </div>
 
       {/* Right: Two-letter hotkey buffer & Coordinate Status */}
       <div className="flex items-center space-x-3">
         {keyBuffer && (
-          <div className="bg-[#0284c7] text-white px-1.5 py-0.5 rounded font-mono font-bold text-[10px]">
+          <div className="bg-[#2563eb] text-white px-1.5 py-0.5 rounded font-mono font-bold text-[10px]">
             [{keyBuffer}_]
           </div>
         )}
