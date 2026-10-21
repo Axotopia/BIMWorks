@@ -22,6 +22,7 @@ import {
   extrudeFaceOrSolid,
   UniversalFaceHit,
 } from '../../interaction/directModeling';
+import { SectionCutBar, CutAxis } from './SectionCutBar';
 
 /**
  * UI-P0-13: pointer capture over a React synthetic mouse event.
@@ -120,6 +121,8 @@ export const Viewport3D: React.FC = () => {
     elements,
     grids,
     levels,
+    views,
+    activeViewId,
     selectedGuid,
     selectedGuids,
     setSelectedGuid,
@@ -503,6 +506,52 @@ export const Viewport3D: React.FC = () => {
     setCameraTick((t) => (t + 1) % 1000000);
   }, []);
 
+
+  // Model bounding box for interactive section slicing
+  const modelBounds = useMemo(() => {
+    if (!meshes.length) {
+      return { min: [-5, -5, 0] as [number, number, number], max: [25, 25, 12] as [number, number, number] };
+    }
+    const min: [number, number, number] = [Infinity, Infinity, Infinity];
+    const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    meshes.forEach((m) => {
+      min[0] = Math.min(min[0], m.bbox.min[0]);
+      min[1] = Math.min(min[1], m.bbox.min[1]);
+      min[2] = Math.min(min[2], m.bbox.min[2]);
+      max[0] = Math.max(max[0], m.bbox.max[0]);
+      max[1] = Math.max(max[1], m.bbox.max[1]);
+      max[2] = Math.max(max[2], m.bbox.max[2]);
+    });
+    return { min, max };
+  }, [meshes]);
+
+  // Interactive Section Plane State (inspired by BIMCraft's usec.bar)
+  const [sectionPlaneState, setSectionPlaneState] = useState<{
+    enabled: boolean;
+    axis: CutAxis;
+    offset: number;
+    flip: boolean;
+  }>({
+    enabled: false,
+    axis: 'top',
+    offset: 4.0,
+    flip: false,
+  });
+
+  // Automatically activate section bar when user arms SEC or BX tool
+  useEffect(() => {
+    if (activeTool === 'SEC') {
+      setSectionPlaneState((prev) => ({
+        ...prev,
+        enabled: true,
+        axis: 'x',
+        offset: (modelBounds.min[0] + modelBounds.max[0]) / 2,
+      }));
+    } else if (activeTool === 'BX') {
+      setSectionPlaneState((prev) => ({ ...prev, enabled: true, axis: 'box' }));
+    }
+  }, [activeTool, modelBounds]);
+
   // Initialize Three.js WebGL2 scene
   useEffect(() => {
     if (!containerRef.current || !canvasRef.current) return;
@@ -667,11 +716,38 @@ export const Viewport3D: React.FC = () => {
     updateCameraPosition();
   }, [cameraProjection, updateCameraPosition]);
 
-  // Update Section Box clipping planes
+  // Update Section Box & Dynamic Section Plane clipping planes
   useEffect(() => {
     if (!sceneRef.current || !rendererRef.current) return;
 
-    if (sectionBox.enabled) {
+    const isBox = sectionPlaneState.enabled ? sectionPlaneState.axis === 'box' : sectionBox.enabled;
+
+    if (sectionPlaneState.enabled && sectionPlaneState.axis !== 'box') {
+      const { axis, offset, flip } = sectionPlaneState;
+      let normal: THREE.Vector3;
+      let constant: number;
+
+      if (axis === 'top') {
+        normal = new THREE.Vector3(0, 0, flip ? 1 : -1);
+        constant = flip ? -offset : offset;
+      } else if (axis === 'x') {
+        normal = new THREE.Vector3(flip ? 1 : -1, 0, 0);
+        constant = flip ? -offset : offset;
+      } else {
+        normal = new THREE.Vector3(0, flip ? 1 : -1, 0);
+        constant = flip ? -offset : offset;
+      }
+
+      const plane = new THREE.Plane(normal, constant);
+      clippingPlanesRef.current = [plane];
+      rendererRef.current.clippingPlanes = [plane];
+
+      if (sectionBoxMeshRef.current && sceneRef.current) {
+        disposeObject(sectionBoxMeshRef.current);
+        sceneRef.current.remove(sectionBoxMeshRef.current);
+        sectionBoxMeshRef.current = null;
+      }
+    } else if (isBox) {
       const { min, max } = sectionBox;
       // 6 clipping planes for AABB
       const planes = [
@@ -687,14 +763,11 @@ export const Viewport3D: React.FC = () => {
 
       // Draw wireframe Section Box bounding box
       if (sectionBoxMeshRef.current) {
-        // UI-P0-12: disposing the previous wireframe's geometry/material, not just
-        // detaching it, was missing here and in every other replacement path.
         disposeObject(sectionBoxMeshRef.current);
         sceneRef.current.remove(sectionBoxMeshRef.current);
       }
       const boxGeom = new THREE.BoxGeometry(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
       const edges = new THREE.EdgesGeometry(boxGeom);
-      // The BoxGeometry only exists to derive the wireframe edges.
       boxGeom.dispose();
       const line = new THREE.LineSegments(
         edges,
@@ -716,7 +789,7 @@ export const Viewport3D: React.FC = () => {
         sectionBoxMeshRef.current = null;
       }
     }
-  }, [sectionBox]);
+  }, [sectionBox, sectionPlaneState]);
 
   // Direct 3D Modeling (LI, REC, CI) visual preview in Three.js scene
   useEffect(() => {
@@ -2246,6 +2319,42 @@ export const Viewport3D: React.FC = () => {
             </button>
           </div>
         </div>
+      )}
+
+
+      {/* Real-Time Interactive Section Plane / Cut Controller */}
+      {sectionPlaneState.enabled && (
+        <SectionCutBar
+          axis={sectionPlaneState.axis}
+          offset={sectionPlaneState.offset}
+          flip={sectionPlaneState.flip}
+          minBound={
+            sectionPlaneState.axis === 'top'
+              ? modelBounds.min[2] - 1
+              : sectionPlaneState.axis === 'x'
+              ? modelBounds.min[0] - 2
+              : modelBounds.min[1] - 2
+          }
+          maxBound={
+            sectionPlaneState.axis === 'top'
+              ? modelBounds.max[2] + 2
+              : sectionPlaneState.axis === 'x'
+              ? modelBounds.max[0] + 2
+              : modelBounds.max[1] + 2
+          }
+          onAxisChange={(axis) => setSectionPlaneState((prev) => ({ ...prev, axis }))}
+          onOffsetChange={(offset) => setSectionPlaneState((prev) => ({ ...prev, offset }))}
+          onFlipToggle={() => setSectionPlaneState((prev) => ({ ...prev, flip: !prev.flip }))}
+          onClose={() => {
+            setSectionPlaneState((prev) => ({ ...prev, enabled: false }));
+            if (activeTool === 'SEC' || activeTool === 'BX') setActiveTool('select');
+          }}
+          onAlignToPlan={() => {
+            const curView = views.find((v) => v.id === activeViewId);
+            const cutH = curView?.viewRange?.cut ?? 4.0;
+            setSectionPlaneState((prev) => ({ ...prev, axis: 'top', offset: cutH }));
+          }}
+        />
       )}
 
       {/* Right-Click Context Menu */}

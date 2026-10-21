@@ -521,6 +521,9 @@ interface BimStoreState {
   activeViewId: string;
   sheets: SheetDefinition[];
   activeSheetId: string;
+  viewLayout: 'split-2v' | 'split-2h' | 'quad' | 'single-3d' | 'single-2d' | 'tabs';
+  setViewLayout: (layout: 'split-2v' | 'split-2h' | 'quad' | 'single-3d' | 'single-2d' | 'tabs') => void;
+  cycleViewLayout: () => void;
 
   // Sheet Drafting Layers & Annotations (Phase 2)
   draftingLayers: DraftingLayer[];
@@ -945,6 +948,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     },
   ],
   activeViewId: 'view-3d',
+  viewLayout: 'split-2v',
 
   sheets: [
     {
@@ -1218,6 +1222,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         if (get().selectedGuid || get().selectedGuids.length > 0) {
           get().tagSelectedElement('IfcWall');
         } else {
+          get().setViewLayout('tabs');
           window.dispatchEvent(new CustomEvent(TAB_VIEWS_EVENT));
         }
       },
@@ -1251,7 +1256,13 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         get().createSimilar();
       },
       WT: () => {
+        get().cycleViewLayout();
         window.dispatchEvent(new CustomEvent(TILE_WINDOWS_EVENT));
+      },
+      EL: () => {
+        get().setActiveTool('EL');
+        const el = get().views.find((v) => v.type === 'elevation');
+        if (el) get().setActiveViewId(el.id);
       },
       MD: () => {
         get().setActiveTool('select');
@@ -1301,6 +1312,22 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   addView: (view) => set((s) => ({ views: [...s.views, view] })),
 
   setActiveSheetId: (id) => set({ activeSheetId: id }),
+
+  setViewLayout: (layout) => set({ viewLayout: layout }),
+
+  cycleViewLayout: () => {
+    const layouts: Array<'split-2v' | 'split-2h' | 'quad' | 'single-3d' | 'tabs'> = [
+      'split-2v',
+      'quad',
+      'split-2h',
+      'single-3d',
+      'tabs',
+    ];
+    const current = get().viewLayout;
+    const currentIndex = layouts.indexOf(current as any);
+    const nextIndex = (currentIndex + 1) % layouts.length;
+    set({ viewLayout: layouts[nextIndex] });
+  },
 
   setSelectedGuid: (guid) => {
     set({ selectedGuid: guid, selectedGuids: guid ? [guid] : [] });

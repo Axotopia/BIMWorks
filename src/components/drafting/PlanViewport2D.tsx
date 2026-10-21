@@ -119,7 +119,11 @@ function alignmentGuide(
   };
 }
 
-export const PlanViewport2D: React.FC = () => {
+export interface PlanViewport2DProps {
+  viewId?: string;
+}
+
+export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propViewId }) => {
   const {
     sliced2D,
     selectedGuid,
@@ -185,7 +189,8 @@ export const PlanViewport2D: React.FC = () => {
     modifyWallEnd,
   } = useBimStore();
 
-  const currentView = views.find((v) => v.id === activeViewId) || {
+  const targetViewId = propViewId || activeViewId;
+  const currentView = views.find((v) => v.id === targetViewId) || {
     name: 'Floor Plan: Level 1',
     type: 'floor_plan',
     viewRange: { cut: 4.0 },

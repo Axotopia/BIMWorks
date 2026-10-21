@@ -185,6 +185,9 @@ export const Ribbon: React.FC = () => {
     setPlaneLock,
     cameraProjection,
     setCameraProjection,
+    viewLayout,
+    setViewLayout,
+    cycleViewLayout,
   } = useBimStore();
 
   const primaryGuid = selectedGuids.length > 0 ? selectedGuids[selectedGuids.length - 1] : selectedGuid;
@@ -976,16 +979,22 @@ export const Ribbon: React.FC = () => {
                 'Section',
                 'SEC',
                 <Scissors size={22} className="text-[#ea580c]" />,
-                undefined,
-                notYet('SEC')
+                () => {
+                  setActiveTool('SEC');
+                  const sec = views.find((v) => v.type === 'section');
+                  if (sec) setActiveViewId(sec.id);
+                }
               )}
               {renderToolButton(
                 'EL',
                 'Elevation',
                 'EL',
                 <Eye size={22} className="text-[#0284c7]" />,
-                undefined,
-                notYet('EL')
+                () => {
+                  setActiveTool('EL');
+                  const el = views.find((v) => v.type === 'elevation');
+                  if (el) setActiveViewId(el.id);
+                }
               )}
               {renderToolButton(
                 'SHT',
@@ -1036,17 +1045,27 @@ export const Ribbon: React.FC = () => {
                 {renderSmallButton(
                   'Tile Views',
                   <Grid size={13} className="text-[#0284c7]" />,
-                  () => window.dispatchEvent(new CustomEvent(TILE_WINDOWS_EVENT)),
+                  () => {
+                    cycleViewLayout();
+                    window.dispatchEvent(new CustomEvent(TILE_WINDOWS_EVENT));
+                  },
                   undefined,
                   'Tile Windows (WT)'
                 )}
                 {renderSmallButton(
                   'Tab Views',
                   <Square size={13} className="text-[#9333ea]" />,
-                  () => window.dispatchEvent(new CustomEvent(TAB_VIEWS_EVENT)),
+                  () => {
+                    setViewLayout('tabs');
+                    window.dispatchEvent(new CustomEvent(TAB_VIEWS_EVENT));
+                  },
                   undefined,
                   'Tab Views (TW)'
                 )}
+              </div>
+              <div className="flex flex-col justify-center space-y-0.5 border-l border-slate-200 pl-1.5 ml-1">
+                {renderSmallButton('Split 2V', <Split size={13} className="text-sky-600" />, () => setViewLayout('split-2v'), 'Split 2V')}
+                {renderSmallButton('Quad 4', <Grid size={13} className="text-emerald-600" />, () => setViewLayout('quad'), 'Quad 4')}
               </div>
             </RibbonPanel>
           </>
