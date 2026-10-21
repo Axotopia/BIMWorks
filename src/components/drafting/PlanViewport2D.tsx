@@ -188,6 +188,8 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
     beginDrag,
     endDrag,
     modifyWallEnd,
+    updateViewLine,
+    modifyGridEndpoint,
     draftEntities,
     draftingLayers,
   } = useBimStore();
@@ -238,6 +240,43 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
   } | null>(null);
 
   const activeDragGrip2DRef = useRef<{ guid: string; endKind: 'start' | 'end' } | null>(null);
+
+  type DragAnnotation =
+    | {
+        type: 'elevation';
+        id: string;
+        origPos: [number, number];
+        origEnd: [number, number];
+        startMouse: [number, number];
+        hasMoved: boolean;
+      }
+    | {
+        type: 'section-head';
+        id: string;
+        end: 'start' | 'end';
+        origStart: [number, number];
+        origEnd: [number, number];
+        startMouse: [number, number];
+        hasMoved: boolean;
+      }
+    | {
+        type: 'section-line';
+        id: string;
+        origStart: [number, number];
+        origEnd: [number, number];
+        startMouse: [number, number];
+        hasMoved: boolean;
+      }
+    | {
+        type: 'grid';
+        guid: string;
+        origCenter: [number, number];
+        startMouse: [number, number];
+        hasMoved: boolean;
+      };
+
+  const activeDragAnnotationRef = useRef<DragAnnotation | null>(null);
+  const [dragAnnotationPreview, setDragAnnotationPreview] = useState<(DragAnnotation & { dx: number; dy: number }) | null>(null);
 
   // Memoized snap segments for SnapEngine
   const snapSegments = useMemo<SnapSegment[]>(() => {
@@ -478,8 +517,87 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
     setIsEditingDim(false);
     setActiveSnapCandidate(null);
     setSelectionBox(null);
+    activeDragAnnotationRef.current = null;
+    setDragAnnotationPreview(null);
     isPanningRef.current = false;
   }, [interactionResetToken, activeTool]);
+
+  const handleElevationMouseDown = (
+    id: string,
+    line: { start: [number, number]; end: [number, number] },
+    e: React.MouseEvent
+  ) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const raw = getRawModelCoords(e.clientX, e.clientY);
+    if (!raw) return;
+    activeDragAnnotationRef.current = {
+      type: 'elevation',
+      id,
+      origPos: [line.start[0], line.start[1]],
+      origEnd: [line.end[0], line.end[1]],
+      startMouse: [raw[0], raw[1]],
+      hasMoved: false,
+    };
+  };
+
+  const handleSectionHeadMouseDown = (
+    id: string,
+    endKind: 'start' | 'end',
+    line: { start: [number, number]; end: [number, number] },
+    e: React.MouseEvent
+  ) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const raw = getRawModelCoords(e.clientX, e.clientY);
+    if (!raw) return;
+    activeDragAnnotationRef.current = {
+      type: 'section-head',
+      id,
+      end: endKind,
+      origStart: [line.start[0], line.start[1]],
+      origEnd: [line.end[0], line.end[1]],
+      startMouse: [raw[0], raw[1]],
+      hasMoved: false,
+    };
+  };
+
+  const handleSectionLineMouseDown = (
+    id: string,
+    line: { start: [number, number]; end: [number, number] },
+    e: React.MouseEvent
+  ) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const raw = getRawModelCoords(e.clientX, e.clientY);
+    if (!raw) return;
+    activeDragAnnotationRef.current = {
+      type: 'section-line',
+      id,
+      origStart: [line.start[0], line.start[1]],
+      origEnd: [line.end[0], line.end[1]],
+      startMouse: [raw[0], raw[1]],
+      hasMoved: false,
+    };
+  };
+
+  const handleGridMouseDown = (
+    guid: string,
+    center: [number, number],
+    e: React.MouseEvent
+  ) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const raw = getRawModelCoords(e.clientX, e.clientY);
+    if (!raw) return;
+    activeDragAnnotationRef.current = {
+      type: 'grid',
+      guid,
+      origCenter: [center[0], center[1]],
+      startMouse: [raw[0], raw[1]],
+      hasMoved: false,
+    };
+  };
 
   // Mouse interaction: Panning vs Geometry Authoring vs Box Selection
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -711,6 +829,21 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
     if (!rawCoords) return;
     dispatchInteraction({ type: 'pointer_move', screenPoint: [e.clientX, e.clientY], point: [rawCoords[0], rawCoords[1]] });
 
+    if (activeDragAnnotationRef.current) {
+      const drag = activeDragAnnotationRef.current;
+      const dx = rawCoords[0] - drag.startMouse[0];
+      const dy = rawCoords[1] - drag.startMouse[1];
+      if (Math.hypot(dx, dy) > 0.08) {
+        drag.hasMoved = true;
+      }
+      setDragAnnotationPreview({
+        ...drag,
+        dx,
+        dy,
+      });
+      return;
+    }
+
     if (activeDragGrip2DRef.current) {
       const { guid, endKind } = activeDragGrip2DRef.current;
       const el = elements[guid];
@@ -784,6 +917,57 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
   const handleMouseUp = (e: React.MouseEvent) => {
     isPanningRef.current = false;
     dispatchInteraction({ type: 'pointer_up', screenPoint: [e.clientX, e.clientY] });
+
+    if (activeDragAnnotationRef.current) {
+      const drag = activeDragAnnotationRef.current;
+      const rawCoords = getRawModelCoords(e.clientX, e.clientY);
+      const dx = rawCoords ? rawCoords[0] - drag.startMouse[0] : 0;
+      const dy = rawCoords ? rawCoords[1] - drag.startMouse[1] : 0;
+      setDragAnnotationPreview(null);
+      activeDragAnnotationRef.current = null;
+
+      if (!drag.hasMoved || Math.hypot(dx, dy) < 0.15) {
+        // Single pick / click: change view or select grid
+        if (drag.type === 'elevation' || drag.type === 'section-head' || drag.type === 'section-line') {
+          setActiveViewId(drag.id);
+        } else if (drag.type === 'grid') {
+          handleElementClick(drag.guid, e);
+        }
+        return;
+      }
+
+      // Drag and move committed
+      if (drag.type === 'elevation') {
+        const newStart: [number, number] = [drag.origPos[0] + dx, drag.origPos[1] + dy];
+        const newEnd: [number, number] = [drag.origEnd[0] + dx, drag.origEnd[1] + dy];
+        updateViewLine(drag.id, { start: newStart, end: newEnd });
+        setStatusMessage(`Moved Elevation marker to (${newStart[0].toFixed(1)}, ${newStart[1].toFixed(1)})`);
+      } else if (drag.type === 'section-head') {
+        if (drag.end === 'start') {
+          const newStart: [number, number] = [drag.origStart[0] + dx, drag.origStart[1] + dy];
+          updateViewLine(drag.id, { start: newStart, end: drag.origEnd });
+        } else {
+          const newEnd: [number, number] = [drag.origEnd[0] + dx, drag.origEnd[1] + dy];
+          updateViewLine(drag.id, { start: drag.origStart, end: newEnd });
+        }
+        setStatusMessage(`Repositioned Section cut`);
+      } else if (drag.type === 'section-line') {
+        const newStart: [number, number] = [drag.origStart[0] + dx, drag.origStart[1] + dy];
+        const newEnd: [number, number] = [drag.origEnd[0] + dx, drag.origEnd[1] + dy];
+        updateViewLine(drag.id, { start: newStart, end: newEnd });
+        setStatusMessage(`Translated Section cut line`);
+      } else if (drag.type === 'grid') {
+        const gridObj = grids.find((g) => g.guid === drag.guid);
+        if (gridObj) {
+          const newStart: [number, number] = [gridObj.start[0] + dx, gridObj.start[1] + dy];
+          const newEnd: [number, number] = [gridObj.end[0] + dx, gridObj.end[1] + dy];
+          modifyGridEndpoint(drag.guid, 'start', newStart);
+          modifyGridEndpoint(drag.guid, 'end', newEnd);
+          setStatusMessage(`Moved Grid ${gridObj.tag || gridObj.name}`);
+        }
+      }
+      return;
+    }
 
     if (activeDragGrip2DRef.current) {
       endDrag(true);
@@ -860,9 +1044,11 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
     }
   };
 
-  /** A pointer that left the viewport must not leave a pan latched. */
+  /** A pointer that left the viewport must not leave a pan or drag latched. */
   const handlePointerLeave = () => {
     isPanningRef.current = false;
+    activeDragAnnotationRef.current = null;
+    setDragAnnotationPreview(null);
   };
 
   /**
@@ -1115,12 +1301,16 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
           {sliced2D?.grids.map((grid) => {
             const isSelected = selectedGuids.includes(grid.guid) || selectedGuid === grid.guid;
             const isHovered = hoveredGuid === grid.guid;
+            const isGridDragged = dragAnnotationPreview?.type === 'grid' && dragAnnotationPreview.guid === grid.guid;
+            const transform = isGridDragged ? `translate(${dragAnnotationPreview.dx}, ${dragAnnotationPreview.dy})` : undefined;
             return (
               <g
                 key={`grid-${grid.guid}`}
-                className="cursor-pointer group"
+                className="cursor-move group"
+                transform={transform}
                 onMouseEnter={() => setHoveredGuid(grid.guid)}
                 onMouseLeave={() => setHoveredGuid(null)}
+                onMouseDown={(e) => handleGridMouseDown(grid.guid, grid.circle_center, e)}
                 onClick={(e) => {
                   e.stopPropagation();
                   handleElementClick(grid.guid, e);
@@ -1142,6 +1332,7 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
                   stroke={isSelected ? '#0284c7' : isHovered ? '#38bdf8' : '#0f172a'}
                   strokeWidth="1.2"
                   vectorEffect="non-scaling-stroke"
+                  className="cursor-move"
                 />
                 {/* Inverted text scale to render right-side up */}
                 <text
@@ -1154,6 +1345,7 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
                   fontFamily="Inter, sans-serif"
                   fontWeight="bold"
                   fill="#0f172a"
+                  className="pointer-events-none"
                 >
                   {grid.tag}
                 </text>
@@ -1503,8 +1695,22 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
               .filter((v) => v.type === 'section')
               .map((secView, secIdx) => {
                 const line = secView.line || { start: [-2.0, 15.0], end: [35.0, 15.0] };
-                const s = line.start;
-                const e = line.end;
+                const isLineDragged = dragAnnotationPreview?.type === 'section-line' && dragAnnotationPreview.id === secView.id;
+                const isHeadStartDragged = dragAnnotationPreview?.type === 'section-head' && dragAnnotationPreview.id === secView.id && dragAnnotationPreview.end === 'start';
+                const isHeadEndDragged = dragAnnotationPreview?.type === 'section-head' && dragAnnotationPreview.id === secView.id && dragAnnotationPreview.end === 'end';
+
+                const s: [number, number] = isLineDragged
+                  ? [dragAnnotationPreview.origStart[0] + dragAnnotationPreview.dx, dragAnnotationPreview.origStart[1] + dragAnnotationPreview.dy]
+                  : isHeadStartDragged
+                  ? [dragAnnotationPreview.origStart[0] + dragAnnotationPreview.dx, dragAnnotationPreview.origStart[1] + dragAnnotationPreview.dy]
+                  : line.start;
+
+                const e: [number, number] = isLineDragged
+                  ? [dragAnnotationPreview.origEnd[0] + dragAnnotationPreview.dx, dragAnnotationPreview.origEnd[1] + dragAnnotationPreview.dy]
+                  : isHeadEndDragged
+                  ? [dragAnnotationPreview.origEnd[0] + dragAnnotationPreview.dx, dragAnnotationPreview.origEnd[1] + dragAnnotationPreview.dy]
+                  : line.end;
+
                 const dx = e[0] - s[0];
                 const dy = e[1] - s[1];
                 const len = Math.hypot(dx, dy);
@@ -1516,70 +1722,116 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
 
                 return (
                   <g key={`sec-line-${secView.id}`} className="section-marker select-none">
+                    {/* Wide hit line to grab and move section cut line */}
                     <line
                       x1={s[0]}
                       y1={s[1]}
                       x2={e[0]}
                       y2={e[1]}
-                      stroke="#0284c7"
-                      strokeWidth="1.2"
+                      stroke="transparent"
+                      strokeWidth="10"
+                      vectorEffect="non-scaling-stroke"
+                      className="cursor-move"
+                      onMouseDown={(evt) => handleSectionLineMouseDown(secView.id, line, evt)}
+                      onClick={(evt) => {
+                        evt.stopPropagation();
+                        setActiveViewId(secView.id);
+                      }}
+                      onDoubleClick={(evt) => {
+                        evt.stopPropagation();
+                        setActiveViewId(secView.id);
+                      }}
+                    />
+                    {/* Visible dashed section line */}
+                    <line
+                      x1={s[0]}
+                      y1={s[1]}
+                      x2={e[0]}
+                      y2={e[1]}
+                      stroke={isLineDragged ? '#0284c7' : '#0ea5e9'}
+                      strokeWidth={isLineDragged ? '2.0' : '1.3'}
                       strokeDasharray="6 3 2 3"
                       vectorEffect="non-scaling-stroke"
+                      className="cursor-move pointer-events-none"
                     />
-                    <circle
-                      cx={s[0]}
-                      cy={s[1]}
-                      r={headR}
-                      fill="#0284c7"
-                      className="cursor-pointer hover:fill-sky-700 transition-colors"
+
+                    {/* Start Head (drag to stretch, click/double-click to switch to section view) */}
+                    <g
+                      className="cursor-move group/head"
+                      onMouseDown={(evt) => handleSectionHeadMouseDown(secView.id, 'start', line, evt)}
                       onClick={(evt) => {
                         evt.stopPropagation();
                         setActiveViewId(secView.id);
                       }}
-                    />
-                    <polygon
-                      points={`${s[0] + nx * 0.9},${s[1] + ny * 0.9} ${s[0] + nx * 0.4 - ny * 0.3},${s[1] + ny * 0.4 + nx * 0.3} ${s[0] + nx * 0.4 + ny * 0.3},${s[1] + ny * 0.4 - nx * 0.3}`}
-                      fill="#0284c7"
-                    />
-                    <text
-                      x={s[0]}
-                      y={-s[1] + 0.16}
-                      transform="scale(1, -1)"
-                      textAnchor="middle"
-                      fontSize="0.4"
-                      fontWeight="bold"
-                      fill="#ffffff"
-                      className="pointer-events-none"
+                      onDoubleClick={(evt) => {
+                        evt.stopPropagation();
+                        setActiveViewId(secView.id);
+                      }}
                     >
-                      {tag}
-                    </text>
-                    <circle
-                      cx={e[0]}
-                      cy={e[1]}
-                      r={headR}
-                      fill="#0284c7"
-                      className="cursor-pointer hover:fill-sky-700 transition-colors"
+                      <circle
+                        cx={s[0]}
+                        cy={s[1]}
+                        r={headR}
+                        fill="#0284c7"
+                        className="hover:fill-sky-700 transition-colors"
+                      />
+                      <polygon
+                        points={`${s[0] + nx * 0.9},${s[1] + ny * 0.9} ${s[0] + nx * 0.4 - ny * 0.3},${s[1] + ny * 0.4 + nx * 0.3} ${s[0] + nx * 0.4 + ny * 0.3},${s[1] + ny * 0.4 - nx * 0.3}`}
+                        fill="#0284c7"
+                        className="hover:fill-sky-700 transition-colors"
+                      />
+                      <text
+                        x={s[0]}
+                        y={-s[1] + 0.16}
+                        transform="scale(1, -1)"
+                        textAnchor="middle"
+                        fontSize="0.4"
+                        fontWeight="bold"
+                        fill="#ffffff"
+                        className="pointer-events-none"
+                      >
+                        {tag}
+                      </text>
+                    </g>
+
+                    {/* End Head (drag to stretch, click/double-click to switch to section view) */}
+                    <g
+                      className="cursor-move group/head"
+                      onMouseDown={(evt) => handleSectionHeadMouseDown(secView.id, 'end', line, evt)}
                       onClick={(evt) => {
                         evt.stopPropagation();
                         setActiveViewId(secView.id);
                       }}
-                    />
-                    <polygon
-                      points={`${e[0] + nx * 0.9},${e[1] + ny * 0.9} ${e[0] + nx * 0.4 - ny * 0.3},${e[1] + ny * 0.4 + nx * 0.3} ${e[0] + nx * 0.4 + ny * 0.3},${e[1] + ny * 0.4 - nx * 0.3}`}
-                      fill="#0284c7"
-                    />
-                    <text
-                      x={e[0]}
-                      y={-e[1] + 0.16}
-                      transform="scale(1, -1)"
-                      textAnchor="middle"
-                      fontSize="0.4"
-                      fontWeight="bold"
-                      fill="#ffffff"
-                      className="pointer-events-none"
+                      onDoubleClick={(evt) => {
+                        evt.stopPropagation();
+                        setActiveViewId(secView.id);
+                      }}
                     >
-                      {tag}
-                    </text>
+                      <circle
+                        cx={e[0]}
+                        cy={e[1]}
+                        r={headR}
+                        fill="#0284c7"
+                        className="hover:fill-sky-700 transition-colors"
+                      />
+                      <polygon
+                        points={`${e[0] + nx * 0.9},${e[1] + ny * 0.9} ${e[0] + nx * 0.4 - ny * 0.3},${e[1] + ny * 0.4 + nx * 0.3} ${e[0] + nx * 0.4 + ny * 0.3},${e[1] + ny * 0.4 - nx * 0.3}`}
+                        fill="#0284c7"
+                        className="hover:fill-sky-700 transition-colors"
+                      />
+                      <text
+                        x={e[0]}
+                        y={-e[1] + 0.16}
+                        transform="scale(1, -1)"
+                        textAnchor="middle"
+                        fontSize="0.4"
+                        fontWeight="bold"
+                        fill="#ffffff"
+                        className="pointer-events-none"
+                      >
+                        {tag}
+                      </text>
+                    </g>
                   </g>
                 );
               })}
@@ -1589,24 +1841,56 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
             views
               .filter((v) => v.type === 'elevation')
               .map((elevView, elevIdx) => {
-                const pt = elevView.line?.start || [0, 0];
+                const line = elevView.line || { start: [0, 0], end: [0, 6] };
+                const isElevDragged = dragAnnotationPreview?.type === 'elevation' && dragAnnotationPreview.id === elevView.id;
+                const pt: [number, number] = isElevDragged
+                  ? [dragAnnotationPreview.origPos[0] + dragAnnotationPreview.dx, dragAnnotationPreview.origPos[1] + dragAnnotationPreview.dy]
+                  : line.start;
+                const ptEnd: [number, number] = isElevDragged
+                  ? [dragAnnotationPreview.origEnd[0] + dragAnnotationPreview.dx, dragAnnotationPreview.origEnd[1] + dragAnnotationPreview.dy]
+                  : line.end;
+
+                const edx = ptEnd[0] - pt[0];
+                const edy = ptEnd[1] - pt[1];
+                const elen = Math.hypot(edx, edy) || 1;
+                const unx = edx / elen;
+                const uny = edy / elen;
                 const tag = String(elevIdx + 1);
+
+                const tipX = pt[0] + unx * 1.15;
+                const tipY = pt[1] + uny * 1.15;
+                const leftX = pt[0] + unx * 0.45 - uny * 0.45;
+                const leftY = pt[1] + uny * 0.45 + unx * 0.45;
+                const rightX = pt[0] + unx * 0.45 + uny * 0.45;
+                const rightY = pt[1] + uny * 0.45 - unx * 0.45;
+
                 return (
-                  <g key={`elev-marker-${elevView.id}`} className="elevation-marker select-none">
+                  <g
+                    key={`elev-marker-${elevView.id}`}
+                    className="elevation-marker select-none cursor-move group"
+                    onMouseDown={(evt) => handleElevationMouseDown(elevView.id, line, evt)}
+                    onClick={(evt) => {
+                      evt.stopPropagation();
+                      setActiveViewId(elevView.id);
+                    }}
+                    onDoubleClick={(evt) => {
+                      evt.stopPropagation();
+                      setActiveViewId(elevView.id);
+                    }}
+                  >
                     <circle
                       cx={pt[0]}
                       cy={pt[1]}
                       r={0.65}
-                      fill="#0284c7"
-                      className="cursor-pointer hover:fill-sky-700 transition-colors"
-                      onClick={(evt) => {
-                        evt.stopPropagation();
-                        setActiveViewId(elevView.id);
-                      }}
+                      fill={isElevDragged ? '#0284c7' : '#0284c7'}
+                      stroke={isElevDragged ? '#38bdf8' : '#0369a1'}
+                      strokeWidth="0.08"
+                      className="group-hover:fill-sky-700 transition-colors"
                     />
                     <polygon
-                      points={`${pt[0]},${pt[1] + 1.1} ${pt[0] - 0.45},${pt[1] + 0.45} ${pt[0] + 0.45},${pt[1] + 0.45}`}
+                      points={`${tipX},${tipY} ${leftX},${leftY} ${rightX},${rightY}`}
                       fill="#0284c7"
+                      className="group-hover:fill-sky-700 transition-colors"
                     />
                     <text
                       x={pt[0]}

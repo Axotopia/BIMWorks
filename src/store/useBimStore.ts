@@ -239,8 +239,10 @@ function geometryPatch(
   };
 }
 
-function normalizeView(v: any): ViewDefinition {
+function normalizeView(v: any, existingViews?: ViewDefinition[]): ViewDefinition {
   const vr = v.viewRange || v.view_range || {};
+  const existing = existingViews?.find((ev) => ev.id === v.id);
+  const line = v.line ?? existing?.line;
   return {
     id: v.id,
     name: v.name,
@@ -256,6 +258,7 @@ function normalizeView(v: any): ViewDefinition {
       viewDepth: Number(vr.viewDepth ?? vr.view_depth ?? 0.0),
     },
     ...(v.sectionBox ? { sectionBox: v.sectionBox } : {}),
+    ...(line ? { line } : {}),
   };
 }
 
@@ -274,10 +277,26 @@ function sliceContext(
 ) {
   const active = views.find((v) => v.id === activeViewId);
   const range = active?.viewRange ?? (active as any)?.view_range;
+  let direction = 'south';
+  if (active?.id?.includes('north') || active?.name?.toLowerCase().includes('north')) direction = 'north';
+  else if (active?.id?.includes('east') || active?.name?.toLowerCase().includes('east')) direction = 'east';
+  else if (active?.id?.includes('west') || active?.name?.toLowerCase().includes('west')) direction = 'west';
+  else if (active?.id?.includes('south') || active?.name?.toLowerCase().includes('south')) direction = 'south';
+  else if (active?.line) {
+    const dx = active.line.end[0] - active.line.start[0];
+    const dy = active.line.end[1] - active.line.start[1];
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      direction = dy >= 0 ? 'north' : 'south';
+    } else {
+      direction = dx >= 0 ? 'east' : 'west';
+    }
+  }
+
   return {
     viewType: active?.type ?? 'floor_plan',
     cut: cutElevation ?? range?.cut ?? 4.0,
     levelId: active?.levelId ?? (active as any)?.level_id,
+    direction,
     top: range?.top,
     bottom: range?.bottom,
     viewDepth: range?.viewDepth ?? range?.view_depth,
@@ -614,6 +633,7 @@ interface BimStoreState {
 
   setActiveViewId: (id: string) => void;
   addView: (view: ViewDefinition) => void;
+  updateViewLine: (viewId: string, line: { start: [number, number]; end: [number, number] }) => void;
   /** Assigns the storey a 2D view draws, then refetches it. */
   setViewLevel: (viewId: string, levelId: string | undefined) => void;
   /** Sets the cut plane as a height ABOVE the view's level, then refetches. */
@@ -928,6 +948,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       detailLevel: 'medium',
       visualStyle: 'hidden_line',
       viewRange: { ...DEFAULT_VIEW_RANGE },
+      line: { start: [16.0, -8.0], end: [16.0, -2.0] },
     },
     {
       id: 'view-elev-n',
@@ -937,6 +958,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       detailLevel: 'medium',
       visualStyle: 'hidden_line',
       viewRange: { ...DEFAULT_VIEW_RANGE },
+      line: { start: [16.0, 38.0], end: [16.0, 32.0] },
     },
     {
       id: 'view-elev-e',
@@ -946,6 +968,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       detailLevel: 'medium',
       visualStyle: 'hidden_line',
       viewRange: { ...DEFAULT_VIEW_RANGE },
+      line: { start: [44.0, 15.0], end: [38.0, 15.0] },
     },
     {
       id: 'view-elev-w',
@@ -955,6 +978,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
       detailLevel: 'medium',
       visualStyle: 'hidden_line',
       viewRange: { ...DEFAULT_VIEW_RANGE },
+      line: { start: [-12.0, 15.0], end: [-6.0, 15.0] },
     },
     {
       id: 'view-drafting-parapet',
@@ -1331,6 +1355,19 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
   },
 
   addView: (view) => set((s) => ({ views: [...s.views, view] })),
+
+  updateViewLine: (viewId, line) => {
+    set((state) => ({
+      views: state.views.map((v) => (v.id === viewId ? { ...v, line } : v)),
+    }));
+    if (get().activeViewId === viewId) {
+      const view = get().views.find((v) => v.id === viewId);
+      if (view && view.type !== '3d' && view.type !== 'sheet' && view.type !== 'drafting') {
+        const cut = view.viewRange?.cut ?? (view as any)?.view_range?.cut ?? 4.0;
+        get().fetch2DSlice(cut);
+      }
+    }
+  },
 
   setActiveSheetId: (id) => set({ activeSheetId: id }),
 
@@ -1891,6 +1928,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
     if (ctx.levelId) q.set('level_id', String(ctx.levelId));
     if (ctx.viewType !== 'floor_plan') {
       q.set('view_type', ctx.viewType);
+      q.set('direction', ctx.direction);
       if (ctx.top !== undefined) q.set('top', String(ctx.top));
       if (ctx.bottom !== undefined) q.set('bottom', String(ctx.bottom));
       // A view depth of 0 means "not set"; sending it would filter everything out.
@@ -2029,7 +2067,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
           ...(data.levels ? { levels: data.levels } : {}),
           ...(data.grids ? { grids: data.grids } : {}),
           ...(data.sheets ? { sheets: data.sheets } : {}),
-          ...(data.views ? { views: (data.views as any[]).map(normalizeView) } : {}),
+          ...(data.views ? { views: (data.views as any[]).map((v) => normalizeView(v, cur.views)) } : {}),
           ...(data.types ? { types: data.types } : {}),
           ...(data.constraints ? { constraints: data.constraints } : {}),
           ...(data.wall_joins ? { wallJoins: data.wall_joins } : {}),
@@ -2061,7 +2099,7 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
         ...(data.slice2d ? { sliced2D: data.slice2d } : {}),
         ...(data.journal ? { transactionJournal: data.journal.slice(-50) } : {}),
         ...(data.sheets ? { sheets: data.sheets } : {}),
-        ...(data.views ? { views: (data.views as any[]).map(normalizeView) } : {}),
+        ...(data.views ? { views: (data.views as any[]).map((v) => normalizeView(v, cur.views)) } : {}),
         ...(data.types ? { types: data.types } : {}),
       });
 
@@ -2158,9 +2196,25 @@ export const useBimStore = create<BimStoreState>((set, get) => ({
 
       let url: string;
       if (viewType === 'section' || viewType === 'elevation') {
+        let direction = 'south';
+        if (active?.id?.includes('north') || active?.name?.toLowerCase().includes('north')) direction = 'north';
+        else if (active?.id?.includes('east') || active?.name?.toLowerCase().includes('east')) direction = 'east';
+        else if (active?.id?.includes('west') || active?.name?.toLowerCase().includes('west')) direction = 'west';
+        else if (active?.id?.includes('south') || active?.name?.toLowerCase().includes('south')) direction = 'south';
+        else if (active?.line) {
+          const dx = active.line.end[0] - active.line.start[0];
+          const dy = active.line.end[1] - active.line.start[1];
+          if (Math.abs(dx) >= Math.abs(dy)) {
+            direction = dy >= 0 ? 'north' : 'south';
+          } else {
+            direction = dx >= 0 ? 'east' : 'west';
+          }
+        }
+
         const params = new URLSearchParams({
           view_type: viewType,
           cut_elevation: String(cut),
+          direction,
           // The store uses camelCase; the API uses the Revit field names.
           ...(range?.top !== undefined ? { top: String(range.top) } : {}),
           ...(range?.bottom !== undefined ? { bottom: String(range.bottom) } : {}),
