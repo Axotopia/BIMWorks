@@ -34,6 +34,9 @@ import { CADHatchDefs, getCadHatchDefsSvgString } from './cadHatches';
 import { downloadSheetDxf } from './dxfExport';
 import { RevisionTableModal } from './RevisionTableModal';
 import { SheetScheduleModal } from './SheetScheduleModal';
+import { renderSheetFrame } from './sheetFrameRenderer';
+import { renderTitleBlock } from './titleBlockRenderer';
+import { draftsExtent, renderEntityShapeToSvg } from './annotationEngine';
 
 export const SheetCanvas: React.FC = () => {
   const {
@@ -72,6 +75,7 @@ export const SheetCanvas: React.FC = () => {
     setActiveViewId,
     elements,
     levels,
+    draftEntities,
   } = useBimStore();
 
   const sheet = sheets.find((s) => s.id === activeSheetId) || sheets[0] || {
@@ -225,30 +229,68 @@ export const SheetCanvas: React.FC = () => {
     const sDate = targetSheet.date || sheetDate;
     const sDrawn = targetSheet.drawnBy || 'BIMWorks Architect';
 
+    const paperDef = PAPER_SIZES[targetSheet.paperSize] || PAPER_SIZES.ARCH_D;
+    const isPortrait = targetSheet.orientation === 'portrait';
+    const pWidthMm = isPortrait ? paperDef.heightMm : paperDef.widthMm;
+    const pHeightMm = isPortrait ? paperDef.widthMm : paperDef.heightMm;
+    const exportFrame = renderSheetFrame(pWidthMm, pHeightMm, {
+      margins: paperDef.defaultMarginsMm,
+      showZoneReferences: true,
+    });
+
     const viewportsSvg = (targetSheet.viewports || []).map((vp, index) => {
       const viewDef = views.find((v) => v.id === vp.viewId);
       const viewName = viewDef?.name || 'Floor Plan: Level 1';
       const vpScale = vp.scaleFactor ?? 20;
 
-      const slabsSvg = (sliced2D?.slabs || []).map((s) => `<path d="${s.d}" stroke="#cbd5e1" stroke-width="0.05" fill="#f8fafc" />`).join('');
-      const cutsSvg = (sliced2D?.cut_paths || []).map((p) => `<path d="${p.d}" stroke="#0f172a" stroke-width="0.07" fill="${useCadHatching ? 'url(#hatch-ansi31)' : '#cbd5e1'}" />`).join('');
-      const projsSvg = (sliced2D?.projection_paths || []).map((p) => `<path d="${p.d}" stroke="#334155" stroke-width="0.03" fill="none" />`).join('');
-      const swingsSvg = (sliced2D?.swing_paths || []).map((p) => `<path d="${p.d}" stroke="#2563eb" stroke-width="0.025" fill="none" />`).join('');
-
-      return `
-        <g transform="translate(${vp.x}, ${vp.y})">
-          <rect x="0" y="0" width="${vp.width}" height="${vp.height}" fill="#ffffff" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4, 2" />
+      let contentSvg = '';
+      if (viewDef?.type === 'drafting') {
+        const vDrafts = draftEntities.filter((e) => e.viewId === vp.viewId);
+        const extent = draftsExtent(vDrafts);
+        const center = extent
+          ? { x: (extent.min.x + extent.max.x) / 2, y: (extent.min.y + extent.max.y) / 2 }
+          : { x: 0, y: 0 };
+        const scaleDenom = viewDef.scaleDenominator || 12;
+        const k = 3.7795275591 / scaleDenom;
+        const cx = vp.width / 2;
+        const cy = vp.height / 2;
+        const entitiesSvg = vDrafts
+          .map((e) => {
+            const layer = draftingLayers.find((l) => l.id === e.layerId);
+            const strokeColor = layer?.colour || '#0f172a';
+            const strokeWidth = (layer?.penWeight || 0.35) * (scaleDenom / 3.78);
+            return renderEntityShapeToSvg(e.shape, {
+              color: strokeColor,
+              strokeWidth,
+              fontSize: 10 * (scaleDenom / 12),
+            });
+          })
+          .join('\n');
+        contentSvg = `<g transform="translate(${cx}, ${cy}) scale(${k}, -${k}) translate(${-center.x}, ${-center.y})">${entitiesSvg}</g>`;
+      } else {
+        const slabsSvg = (sliced2D?.slabs || []).map((s) => `<path d="${s.d}" stroke="#cbd5e1" stroke-width="0.05" fill="#f8fafc" />`).join('');
+        const cutsSvg = (sliced2D?.cut_paths || []).map((p) => `<path d="${p.d}" stroke="#0f172a" stroke-width="0.07" fill="${useCadHatching ? 'url(#hatch-ansi31)' : '#cbd5e1'}" />`).join('');
+        const projsSvg = (sliced2D?.projection_paths || []).map((p) => `<path d="${p.d}" stroke="#334155" stroke-width="0.03" fill="none" />`).join('');
+        const swingsSvg = (sliced2D?.swing_paths || []).map((p) => `<path d="${p.d}" stroke="#2563eb" stroke-width="0.025" fill="none" />`).join('');
+        contentSvg = `
           <g transform="translate(180, 220) scale(${vpScale}, -${vpScale})">
             ${slabsSvg}
             ${cutsSvg}
             ${projsSvg}
             ${swingsSvg}
           </g>
+        `;
+      }
+
+      return `
+        <g transform="translate(${vp.x}, ${vp.y})">
+          <rect x="0" y="0" width="${vp.width}" height="${vp.height}" fill="#ffffff" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4, 2" />
+          ${contentSvg}
           <g transform="translate(20, ${vp.height + 25})">
             <circle cx="12" cy="0" r="12" fill="#0f172a" />
-            <text x="12" y="4" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="bold">${index + 1}</text>
+            <text x="12" y="4" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="bold">${vp.drawingNumber || (index + 1)}</text>
             <text x="32" y="-2" fill="#0f172a" font-size="12" font-weight="bold">${viewName}</text>
-            <text x="32" y="11" fill="#64748b" font-size="9" font-family="JetBrains Mono, monospace">Scale: ${getScaleLabel(vpScale)}</text>
+            <text x="32" y="11" fill="#64748b" font-size="9" font-family="JetBrains Mono, monospace">Scale: ${viewDef?.scale || getScaleLabel(vpScale)}</text>
             <line x1="30" y1="18" x2="${vp.width - 40}" y2="18" stroke="#0f172a" stroke-width="1.2" />
           </g>
         </g>
@@ -324,9 +366,9 @@ export const SheetCanvas: React.FC = () => {
       <line x1="-3" y1="3" x2="3" y2="-3" stroke="#2563eb" stroke-width="1.5" />
     </marker>
     ${getCadHatchDefsSvgString()}
-  </defs>
-  <rect x="20" y="20" width="${sWidth - 40}" height="${sHeight - 40}" fill="#ffffff" stroke="#0f172a" stroke-width="2" />
-  <rect x="24" y="24" width="${sWidth - 48}" height="${sHeight - 48}" fill="none" stroke="#64748b" stroke-width="0.75" />
+  <g id="sheet-frame" transform="scale(3.7795275591)">
+    ${exportFrame.svgElements}
+  </g>
   <g id="title-block" transform="translate(${sWidth - 280}, 24)">
     <rect x="0" y="0" width="256" height="${sHeight - 48}" fill="#fafafa" stroke="#0f172a" stroke-width="1.5" />
     <rect x="0" y="0" width="256" height="85" fill="#0f172a" />
