@@ -161,6 +161,7 @@ export const Ribbon: React.FC = () => {
     activeViewId,
     setActiveViewId,
     setActiveSheetId,
+    createDraftingView,
     keyBuffer,
     chainTools,
     setChainTools,
@@ -1003,6 +1004,17 @@ export const Ribbon: React.FC = () => {
                 <FileSpreadsheet size={22} className="text-[#16a34a]" />,
                 () => firstSheet && setActiveSheetId(firstSheet.id),
                 firstSheet ? undefined : 'No sheet in this project'
+              )}
+              {renderToolButton(
+                'select',
+                'Drafting View',
+                'DV',
+                <Layers size={22} className="text-[#0284c7]" />,
+                () => {
+                  const num = views.filter((v) => v.type === 'drafting').length + 1;
+                  const newId = createDraftingView(`Drafting: Detail ${num}`);
+                  setActiveViewId(newId);
+                }
               )}
             </RibbonPanel>
 

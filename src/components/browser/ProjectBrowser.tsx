@@ -30,6 +30,7 @@ export const ProjectBrowser: React.FC = () => {
     setActiveSheetId,
     createSheet,
     deleteSheet,
+    createDraftingView,
     meshes,
   } = useBimStore();
 
@@ -60,6 +61,7 @@ export const ProjectBrowser: React.FC = () => {
     threeD: true,
     elevations: true,
     sections: true,
+    draftingViews: true,
     sheets: true,
     levels: true,
     families: true,
@@ -225,6 +227,63 @@ export const ProjectBrowser: React.FC = () => {
                           <span>{v.name}</span>
                         </div>
                       ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Drafting Views */}
+              <div>
+                <div className="flex items-center justify-between py-0.5 px-1 hover:bg-[#f1f5f9] rounded text-[#475569] font-medium">
+                  <div
+                    onClick={() => toggleSection('draftingViews')}
+                    className="flex items-center space-x-1 cursor-pointer flex-1"
+                  >
+                    {expandedSections.draftingViews ? <ChevronDown size={12} className="text-[#64748b]" /> : <ChevronRight size={12} className="text-[#64748b]" />}
+                    <span>Drafting Views</span>
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const num = views.filter((v) => v.type === 'drafting').length + 1;
+                      createDraftingView(`Drafting: Detail ${num}`);
+                    }}
+                    title="New Drafting View"
+                    className="p-0.5 hover:bg-[#e2e8f0] rounded text-[#0284c7] cursor-pointer"
+                  >
+                    <Plus size={11} />
+                  </button>
+                </div>
+                {expandedSections.draftingViews && (
+                  <div className="pl-4 space-y-0.5">
+                    {views
+                      .filter((v) => v.type === 'drafting')
+                      .map((v) => (
+                        <div
+                          key={v.id}
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, v.id)}
+                          onDoubleClick={() => setActiveViewId(v.id)}
+                          onClick={() => setActiveViewId(v.id)}
+                          className={`flex items-center justify-between py-1 px-1.5 rounded cursor-pointer ${
+                            activeViewId === v.id
+                              ? 'bg-[#cce8ff] border border-[#007acc] text-[#094771] font-semibold'
+                              : 'hover:bg-[#f1f5f9] text-[#334155]'
+                          }`}
+                        >
+                          <div className="flex items-center space-x-1.5 truncate">
+                            <Layers size={13} className="text-[#0284c7]" />
+                            <span className="truncate">{v.name}</span>
+                          </div>
+                          <span className="text-[9px] font-mono text-slate-400 shrink-0 ml-1">
+                            {v.scale || '1:10'}
+                          </span>
+                        </div>
+                      ))}
+                    {views.filter((v) => v.type === 'drafting').length === 0 && (
+                      <div className="text-[10px] text-slate-400 italic py-0.5 px-1">
+                        No drafting views
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

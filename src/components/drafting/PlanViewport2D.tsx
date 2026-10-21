@@ -19,6 +19,7 @@ import {
   computeFitTransform,
   EMPTY_FIT,
 } from '../../interaction/fitExtents';
+import { renderEntityShapeToSvg } from '../sheets/annotationEngine';
 
 // ---------------------------------------------------------------------------
 // Alignment-guide geometry
@@ -187,6 +188,8 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
     beginDrag,
     endDrag,
     modifyWallEnd,
+    draftEntities,
+    draftingLayers,
   } = useBimStore();
 
   const targetViewId = propViewId || activeViewId;
@@ -1002,6 +1005,29 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
 
         {/* Global Transform: Pan & Scale */}
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${scale}, ${-scale})`}>
+          {/* Drafting View 2D Linework & Annotations */}
+          {currentView.type === 'drafting' && (
+            <g
+              id="drafting-view-entities-canvas"
+              transform="scale(0.003280839895, 0.003280839895)"
+              dangerouslySetInnerHTML={{
+                __html: draftEntities
+                  .filter((e) => e.viewId === currentView.id)
+                  .map((e) => {
+                    const layer = draftingLayers.find((l) => l.id === e.layerId);
+                    const strokeColor = layer?.colour || '#0f172a';
+                    const strokeWidth = (layer?.penWeight || 0.35) * 4;
+                    return renderEntityShapeToSvg(e.shape, {
+                      color: strokeColor,
+                      strokeWidth: strokeWidth || 1.5,
+                      fontSize: 14,
+                    });
+                  })
+                  .join('\n'),
+              }}
+            />
+          )}
+
           {/* Base Model Linework (Halftoned/Dimmed during Sketch Mode) */}
           <g className={sketchSession ? 'opacity-25 transition-opacity' : ''}>
             {/* 1. Slabs in Projection */}
@@ -2346,8 +2372,13 @@ export const PlanViewport2D: React.FC<PlanViewport2DProps> = ({ viewId: propView
                   for a 4 ft cut. One number, one unit.
                   Track A6: An elevation is a projection with no cut plane, so suppress chip. */}
               {currentView.name}
-              {(currentView as any).type !== 'elevation' && (
+              {(currentView as any).type !== 'elevation' && (currentView as any).type !== 'drafting' && (
                 <> (Cut Plane: {formatLength(currentView.viewRange?.cut ?? (currentView as any)?.view_range?.cut ?? 4.0, displayUnit)})</>
+              )}
+              {(currentView as any).type === 'drafting' && (
+                <span className="ml-1.5 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-semibold">
+                  2D Drafting Detail (Scale {(currentView as any).scale || '1:10'})
+                </span>
               )}
             </span>
             <span className="text-slate-400">|</span>
